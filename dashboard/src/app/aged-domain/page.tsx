@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, Fragment } from "react";
 import {
   Search,
   ChevronDown,
@@ -16,6 +16,7 @@ import {
   CheckCircle2,
   AlertCircle,
   Save,
+  Info,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,18 +37,16 @@ interface ToastItem {
   isError: boolean;
 }
 
-type SortKey = keyof Pick<
-  DomainResult,
-  "domain" | "totalRefDomains" | "apiHighDr" | "dbMatches" | "maxDr"
->;
+type SortKey = "domain" | "dbMatches" | "totalRefDomains" | "maxDr";
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function AgedDomainPage() {
-  // ── Inputs ──────────────────────────────────────────────────────────────────
+  // ── Form inputs ──────────────────────────────────────────────────────────────
   const [domainsText, setDomainsText] = useState("");
   const [minDr, setMinDr] = useState(30);
   const [limitPerDomain, setLimitPerDomain] = useState(100);
+  const [minDbMatches, setMinDbMatches] = useState(0); // 0 = show all
 
   // ── Analysis state ──────────────────────────────────────────────────────────
   const [loading, setLoading] = useState(false);
@@ -55,11 +54,9 @@ export default function AgedDomainPage() {
   const [cost, setCost] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // ── Sort ────────────────────────────────────────────────────────────────────
+  // ── Sort & expand ────────────────────────────────────────────────────────────
   const [sortKey, setSortKey] = useState<SortKey>("dbMatches");
   const [sortDir, setSortDir] = useState<1 | -1>(-1);
-
-  // ── Expanded rows ───────────────────────────────────────────────────────────
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
 
   // ── Backlink DB ─────────────────────────────────────────────────────────────
@@ -75,7 +72,7 @@ export default function AgedDomainPage() {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastIdRef = useRef(0);
 
-  // ─── Helpers ─────────────────────────────────────────────────────────────────
+  // ─── Toast helper ─────────────────────────────────────────────────────────────
 
   const showToast = useCallback((message: string, isError = false) => {
     const id = ++toastIdRef.current;
@@ -83,47 +80,35 @@ export default function AgedDomainPage() {
     setTimeout(() => setToasts((p) => p.filter((t) => t.id !== id)), 3500);
   }, []);
 
-  // ─── Backlink DB API ──────────────────────────────────────────────────────────
+  // ─── Backlink DB ──────────────────────────────────────────────────────────────
 
   const loadDb = useCallback(async () => {
     try {
       const res = await fetch("/api/aged-domain/db");
       const data = await res.json();
       setDbEntries(Array.isArray(data) ? data : []);
-    } catch {
-      /* ignore */
-    }
+    } catch { /* ignore */ }
   }, []);
 
-  useEffect(() => {
-    loadDb();
+  useEffect(() => { loadDb(); }, [loadDb]);
+
+  const addToDb = useCallback(async (entries: DbEntry[]) => {
+    if (!entries.length) return null;
+    const res = await fetch("/api/aged-domain/db/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ entries }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    await loadDb();
+    return data;
   }, [loadDb]);
 
-  const addToDb = useCallback(
-    async (entries: DbEntry[]) => {
-      if (!entries.length) return;
-      const res = await fetch("/api/aged-domain/db/add", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ entries }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      await loadDb();
-      return data;
-    },
-    [loadDb]
-  );
-
-  const removeFromDb = useCallback(
-    async (domain: string) => {
-      await fetch(`/api/aged-domain/db/${encodeURIComponent(domain)}`, {
-        method: "DELETE",
-      });
-      await loadDb();
-    },
-    [loadDb]
-  );
+  const removeFromDb = useCallback(async (domain: string) => {
+    await fetch(`/api/aged-domain/db/${encodeURIComponent(domain)}`, { method: "DELETE" });
+    await loadDb();
+  }, [loadDb]);
 
   const clearDb = useCallback(async () => {
     if (!dbEntries.length) return;
@@ -136,10 +121,7 @@ export default function AgedDomainPage() {
   // ─── Analysis ─────────────────────────────────────────────────────────────────
 
   const analyze = useCallback(async () => {
-    const domains = domainsText
-      .split("\n")
-      .map((d) => d.trim())
-      .filter(Boolean);
+    const domains = domainsText.split("\n").map((d) => d.trim()).filter(Boolean);
     if (!domains.length) return;
 
     setLoading(true);
@@ -165,42 +147,37 @@ export default function AgedDomainPage() {
     }
   }, [domainsText, minDr, limitPerDomain]);
 
-  // ─── Save top backlinks of a result to DB ────────────────────────────────────
+  // ─── Save top referring domains to DB ────────────────────────────────────────
 
-  const saveTopToDb = useCallback(
-    async (topDomains: TopDomain[]) => {
-      const entries = topDomains.map((d) => ({ domain: d.domain, dr: d.dr }));
-      try {
-        const data = await addToDb(entries);
-        showToast(`✅ Đã lưu ${data.added} domain mới vào DB`);
-      } catch (err) {
-        showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
-      }
-    },
-    [addToDb, showToast]
-  );
+  const saveTopToDb = useCallback(async (topDomains: TopDomain[]) => {
+    const entries = topDomains.map((d) => ({ domain: d.domain, dr: d.dr }));
+    try {
+      const data = await addToDb(entries);
+      if (data) showToast(`✅ Đã lưu ${data.added} domain mới vào DB`);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    }
+  }, [addToDb, showToast]);
 
-  // ─── Sort ─────────────────────────────────────────────────────────────────────
+  // ─── Sort & filter results ────────────────────────────────────────────────────
 
   function handleSort(key: SortKey) {
     if (sortKey === key) setSortDir((d) => (d === 1 ? -1 : 1));
-    else {
-      setSortKey(key);
-      setSortDir(-1);
-    }
+    else { setSortKey(key); setSortDir(-1); }
   }
 
-  const sortedResults = results
-    ? [...results].sort((a, b) => {
-        const av = (a[sortKey] ?? 0) as number | string;
-        const bv = (b[sortKey] ?? 0) as number | string;
-        if (typeof av === "number" && typeof bv === "number")
-          return (av - bv) * sortDir;
-        return String(av).localeCompare(String(bv)) * sortDir;
-      })
+  const displayedResults = results
+    ? [...results]
+        .filter((r) => r.dbMatches >= minDbMatches)
+        .sort((a, b) => {
+          const av = (a[sortKey] ?? 0) as number | string;
+          const bv = (b[sortKey] ?? 0) as number | string;
+          if (typeof av === "number" && typeof bv === "number") return (av - bv) * sortDir;
+          return String(av).localeCompare(String(bv)) * sortDir;
+        })
     : [];
 
-  // ─── CSV Import ───────────────────────────────────────────────────────────────
+  // ─── CSV import ───────────────────────────────────────────────────────────────
 
   async function importCsv() {
     const lines = dbCsvText.trim().split("\n");
@@ -213,15 +190,12 @@ export default function AgedDomainPage() {
         if (domain && !isNaN(dr)) entries.push({ domain, dr });
       }
     }
-    if (!entries.length) {
-      showToast("❌ Không parse được dữ liệu CSV", true);
-      return;
-    }
+    if (!entries.length) { showToast("❌ Không parse được dữ liệu CSV", true); return; }
     try {
       const data = await addToDb(entries);
       setDbCsvText("");
       setDbImportOpen(false);
-      showToast(`✅ Import ${data.added} domain mới (${entries.length} dòng)`);
+      showToast(`✅ Import ${data?.added ?? 0} domain mới (${entries.length} dòng)`);
     } catch (err) {
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
     }
@@ -229,71 +203,71 @@ export default function AgedDomainPage() {
 
   // ─── Filtered DB list ─────────────────────────────────────────────────────────
 
-  const filteredDb = dbSearch
-    ? dbEntries.filter((e) => e.domain.includes(dbSearch.toLowerCase()))
-    : dbEntries;
-
-  const sortedDb = [...filteredDb].sort((a, b) => b.dr - a.dr);
-
-  // ─── Render ───────────────────────────────────────────────────────────────────
+  const filteredDb = [...dbEntries]
+    .filter((e) => !dbSearch || e.domain.includes(dbSearch.toLowerCase()))
+    .sort((a, b) => b.dr - a.dr);
 
   const domainCount = domainsText.split("\n").filter((s) => s.trim()).length;
 
+  // ─── Render ───────────────────────────────────────────────────────────────────
+
   return (
     <div className="flex flex-col gap-6 p-6">
-      {/* Header */}
+
+      {/* ── Header ─────────────────────────────────────────────────────────────── */}
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Aged Domain — Phân tích Backlink</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Paste danh sách domain → gọi DataforSEO → so sánh với Backlink DB → lọc domain có DR cao.
+          Paste domain → gọi DataforSEO lấy Referring Domains → so sánh với Backlink DB (Domain, DR) → lọc domain đạt điều kiện.
         </p>
       </div>
 
-      {/* Config + Input */}
+      {/* ── DB empty warning ───────────────────────────────────────────────────── */}
+      {dbEntries.length === 0 && (
+        <div className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700 px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
+          <Info className="h-4 w-4 mt-0.5 shrink-0" />
+          <span>
+            <strong>Backlink DB đang trống.</strong> Hãy thêm domain tham chiếu (Domain + DR) vào DB trước.
+            Sau khi phân tích, dùng nút <strong>"Lưu vào DB"</strong> để lưu Referring Domains vào DB.
+          </span>
+        </div>
+      )}
+
+      {/* ── Config card ────────────────────────────────────────────────────────── */}
       <div className="rounded-xl border bg-card p-5 shadow-sm">
         <h2 className="text-sm font-semibold mb-4 text-muted-foreground uppercase tracking-wider">
           Cấu hình
         </h2>
 
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-5">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">
               DR tối thiểu
             </label>
-            <Input
-              type="number"
-              min={0}
-              max={100}
-              value={minDr}
-              onChange={(e) => setMinDr(Number(e.target.value))}
-            />
+            <Input type="number" min={0} max={100} value={minDr}
+              onChange={(e) => setMinDr(Number(e.target.value))} />
           </div>
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">
               Referring domains / target
             </label>
-            <Input
-              type="number"
-              min={1}
-              max={1000}
-              value={limitPerDomain}
-              onChange={(e) => setLimitPerDomain(Number(e.target.value))}
-            />
+            <Input type="number" min={1} max={1000} value={limitPerDomain}
+              onChange={(e) => setLimitPerDomain(Number(e.target.value))} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">
+              DB Matches tối thiểu
+              <span className="ml-1 text-muted-foreground/60">(0 = tất cả)</span>
+            </label>
+            <Input type="number" min={0} value={minDbMatches}
+              onChange={(e) => setMinDbMatches(Number(e.target.value))} />
           </div>
           <div className="flex flex-col justify-end">
             <p className="text-xs text-muted-foreground mb-1">
-              {domainCount} domain sẽ phân tích
+              {domainCount} domain · DB: {dbEntries.length} entries
             </p>
-            <Button
-              onClick={analyze}
-              disabled={loading || !domainCount}
-              className="gap-2 w-full"
-            >
-              {loading ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Search className="h-4 w-4" />
-              )}
+            <Button onClick={analyze} disabled={loading || !domainCount} className="gap-2 w-full">
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
               {loading ? "Đang phân tích..." : "Phân tích"}
             </Button>
           </div>
@@ -315,7 +289,7 @@ export default function AgedDomainPage() {
         </div>
       </div>
 
-      {/* Error */}
+      {/* ── Error ──────────────────────────────────────────────────────────────── */}
       {error && (
         <div className="flex items-center gap-2 rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           <AlertCircle className="h-4 w-4 shrink-0" />
@@ -323,14 +297,18 @@ export default function AgedDomainPage() {
         </div>
       )}
 
-      {/* Results */}
+      {/* ── Results table ──────────────────────────────────────────────────────── */}
       {results !== null && (
         <div className="rounded-xl border bg-card shadow-sm overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-4 border-b">
+          {/* Header bar */}
+          <div className="flex items-center justify-between px-5 py-4 border-b flex-wrap gap-2">
             <div className="flex items-center gap-2">
               <CheckCircle2 className="h-4 w-4 text-green-500" />
               <span className="text-sm font-medium">
-                {results.length} domain đã phân tích
+                {displayedResults.length} / {results.length} domain
+                {minDbMatches > 0 && (
+                  <span className="text-muted-foreground"> (DB Matches ≥ {minDbMatches})</span>
+                )}
               </span>
               {cost !== null && (
                 <Badge variant="secondary" className="text-xs">
@@ -338,18 +316,13 @@ export default function AgedDomainPage() {
                 </Badge>
               )}
             </div>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <span className="flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />
-                DB Match
-              </span>
-              <span className="flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
-                High-DR (API)
-              </span>
-            </div>
+            <p className="text-xs text-muted-foreground">
+              <span className="font-medium text-blue-600 dark:text-blue-400">DB Match</span>
+              {" "}= Referring Domain có trong DB với DR ≥ {minDr}
+            </p>
           </div>
 
+          {/* Table */}
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-muted/40 border-b">
@@ -357,8 +330,7 @@ export default function AgedDomainPage() {
                   <th className="px-4 py-3 w-8" />
                   <SortTh label="Domain" col="domain" current={sortKey} dir={sortDir} onSort={() => handleSort("domain")} />
                   <SortTh label="DB Matches" col="dbMatches" current={sortKey} dir={sortDir} onSort={() => handleSort("dbMatches")} />
-                  <SortTh label="High-DR Links" col="apiHighDr" current={sortKey} dir={sortDir} onSort={() => handleSort("apiHighDr")} />
-                  <SortTh label="Total Ref." col="totalRefDomains" current={sortKey} dir={sortDir} onSort={() => handleSort("totalRefDomains")} />
+                  <SortTh label="Total Ref. Domains" col="totalRefDomains" current={sortKey} dir={sortDir} onSort={() => handleSort("totalRefDomains")} />
                   <SortTh label="Max DR" col="maxDr" current={sortKey} dir={sortDir} onSort={() => handleSort("maxDr")} />
                   <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">
                     Lưu vào DB
@@ -366,150 +338,140 @@ export default function AgedDomainPage() {
                 </tr>
               </thead>
               <tbody>
-                {sortedResults.map((item) => {
-                  const expanded = expandedRows.has(item.domain);
-                  return (
-                    <>
-                      <tr
-                        key={item.domain}
-                        className={cn(
-                          "border-b border-border/50 hover:bg-muted/20 transition-colors cursor-pointer",
-                          item.error && "opacity-60"
-                        )}
-                        onClick={() =>
-                          setExpandedRows((prev) => {
-                            const next = new Set(prev);
-                            expanded ? next.delete(item.domain) : next.add(item.domain);
-                            return next;
-                          })
-                        }
-                      >
-                        {/* Expand toggle */}
-                        <td className="px-4 py-3 text-muted-foreground">
-                          {expanded ? (
-                            <ChevronDown className="h-4 w-4" />
-                          ) : (
-                            <ChevronRight className="h-4 w-4" />
+                {displayedResults.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="text-center py-12 text-muted-foreground text-sm">
+                      Không có domain nào đạt điều kiện DB Matches ≥ {minDbMatches}
+                    </td>
+                  </tr>
+                ) : (
+                  displayedResults.map((item) => {
+                    const expanded = expandedRows.has(item.domain);
+                    return (
+                      <Fragment key={item.domain}>
+                        {/* Main row */}
+                        <tr
+                          className={cn(
+                            "border-b border-border/50 hover:bg-muted/20 transition-colors cursor-pointer",
+                            item.error && "opacity-60"
                           )}
-                        </td>
-
-                        {/* Domain */}
-                        <td className="px-4 py-3 font-mono font-medium">
-                          {item.domain}
-                          {item.error && (
-                            <span className="ml-2 text-xs text-destructive">
-                              ({item.error})
-                            </span>
-                          )}
-                        </td>
-
-                        {/* DB Matches */}
-                        <td className="px-4 py-3">
-                          <span
-                            className={cn(
-                              "inline-flex items-center justify-center min-w-[2rem] px-2 py-0.5 rounded-full text-xs font-bold",
-                              item.dbMatches > 0
-                                ? "bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300"
-                                : "bg-muted text-muted-foreground"
-                            )}
-                          >
-                            {item.dbMatches}
-                          </span>
-                        </td>
-
-                        {/* High-DR API */}
-                        <td className="px-4 py-3">
-                          <span
-                            className={cn(
-                              "inline-flex items-center justify-center min-w-[2rem] px-2 py-0.5 rounded-full text-xs font-bold",
-                              item.apiHighDr > 0
-                                ? "bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300"
-                                : "bg-muted text-muted-foreground"
-                            )}
-                          >
-                            {item.apiHighDr}
-                          </span>
-                        </td>
-
-                        {/* Total */}
-                        <td className="px-4 py-3 text-muted-foreground">
-                          {item.totalRefDomains.toLocaleString()}
-                        </td>
-
-                        {/* Max DR */}
-                        <td className="px-4 py-3">
-                          <DrBadge dr={item.maxDr} />
-                        </td>
-
-                        {/* Save action */}
-                        <td
-                          className="px-4 py-3"
-                          onClick={(e) => e.stopPropagation()}
+                          onClick={() =>
+                            setExpandedRows((prev) => {
+                              const next = new Set(prev);
+                              expanded ? next.delete(item.domain) : next.add(item.domain);
+                              return next;
+                            })
+                          }
                         >
-                          {item.topDomains.length > 0 && (
-                            <button
-                              onClick={() => saveTopToDb(item.topDomains)}
-                              title="Lưu top backlinks vào DB"
-                              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors"
-                            >
-                              <Save className="h-3.5 w-3.5" />
-                              Lưu top
-                            </button>
-                          )}
-                        </td>
-                      </tr>
+                          {/* Expand toggle */}
+                          <td className="px-4 py-3 text-muted-foreground">
+                            {expanded
+                              ? <ChevronDown className="h-4 w-4" />
+                              : <ChevronRight className="h-4 w-4" />
+                            }
+                          </td>
 
-                      {/* Expanded row: top backlinks */}
-                      {expanded && item.topDomains.length > 0 && (
-                        <tr key={`${item.domain}-expanded`} className="bg-muted/20 border-b border-border/30">
-                          <td colSpan={7} className="px-6 py-3">
-                            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-                              Top Referring Domains
-                            </p>
-                            <div className="flex flex-wrap gap-2">
-                              {item.topDomains.map((td) => (
-                                <div
-                                  key={td.domain}
-                                  className={cn(
-                                    "flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs",
-                                    td.inDb
-                                      ? "border-blue-300 bg-blue-50 dark:bg-blue-950/40 dark:border-blue-700"
-                                      : "border-border bg-background"
-                                  )}
-                                >
-                                  <DrBadge dr={td.dr} small />
-                                  <span className="font-mono">{td.domain}</span>
-                                  <span className="text-muted-foreground">
-                                    ({td.backlinks} links)
-                                  </span>
-                                  {td.inDb && (
-                                    <Database className="h-3 w-3 text-blue-500" />
-                                  )}
-                                  <a
-                                    href={`https://${td.domain}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    onClick={(e) => e.stopPropagation()}
-                                    className="text-muted-foreground hover:text-primary"
-                                  >
-                                    <ExternalLink className="h-3 w-3" />
-                                  </a>
-                                </div>
-                              ))}
-                            </div>
+                          {/* Domain */}
+                          <td className="px-4 py-3 font-mono font-medium">
+                            {item.domain}
+                            {item.error && (
+                              <span className="ml-2 text-xs text-destructive">({item.error})</span>
+                            )}
+                          </td>
+
+                          {/* DB Matches — primary metric */}
+                          <td className="px-4 py-3">
+                            <span className={cn(
+                              "inline-flex items-center justify-center min-w-[2.5rem] px-2.5 py-1 rounded-full text-sm font-bold",
+                              item.dbMatches >= 5
+                                ? "bg-blue-600 text-white"
+                                : item.dbMatches >= 1
+                                  ? "bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300"
+                                  : "bg-muted text-muted-foreground"
+                            )}>
+                              {item.dbMatches}
+                            </span>
+                          </td>
+
+                          {/* Total referring domains */}
+                          <td className="px-4 py-3 text-muted-foreground">
+                            {item.totalRefDomains.toLocaleString()}
+                          </td>
+
+                          {/* Max DR */}
+                          <td className="px-4 py-3">
+                            <DrBadge dr={item.maxDr} />
+                          </td>
+
+                          {/* Save to DB */}
+                          <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                            {item.topDomains.length > 0 && (
+                              <button
+                                onClick={() => saveTopToDb(item.topDomains)}
+                                title="Lưu top Referring Domains vào DB"
+                                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors"
+                              >
+                                <Save className="h-3.5 w-3.5" />
+                                Lưu top
+                              </button>
+                            )}
                           </td>
                         </tr>
-                      )}
-                    </>
-                  );
-                })}
+
+                        {/* Expanded: top referring domains */}
+                        {expanded && item.topDomains.length > 0 && (
+                          <tr className="bg-muted/20 border-b border-border/30">
+                            <td colSpan={6} className="px-6 py-4">
+                              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+                                Top Referring Domains (DataforSEO)
+                              </p>
+                              <div className="flex flex-wrap gap-2">
+                                {item.topDomains.map((td) => (
+                                  <div
+                                    key={td.domain}
+                                    className={cn(
+                                      "flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs",
+                                      td.inDb
+                                        ? "border-blue-300 bg-blue-50 dark:bg-blue-950/40 dark:border-blue-700"
+                                        : "border-border bg-background"
+                                    )}
+                                  >
+                                    <DrBadge dr={td.dr} small />
+                                    <span className="font-mono">{td.domain}</span>
+                                    <span className="text-muted-foreground">
+                                      ({td.backlinks} links)
+                                    </span>
+                                    {td.inDb && (
+                                      <span title="Có trong DB">
+                                        <Database className="h-3 w-3 text-blue-500" />
+                                      </span>
+                                    )}
+                                    <a
+                                      href={`https://${td.domain}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="text-muted-foreground hover:text-primary"
+                                    >
+                                      <ExternalLink className="h-3 w-3" />
+                                    </a>
+                                  </div>
+                                ))}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })
+                )}
               </tbody>
             </table>
           </div>
         </div>
       )}
 
-      {/* Backlink DB Panel */}
+      {/* ── Backlink DB Panel ──────────────────────────────────────────────────── */}
       <div className="rounded-xl border bg-card shadow-sm">
         <button
           onClick={() => setDbOpen((o) => !o)}
@@ -517,84 +479,75 @@ export default function AgedDomainPage() {
         >
           <div className="flex items-center gap-2">
             <Database className="h-4 w-4 text-primary" />
-            <h2 className="text-sm font-semibold uppercase tracking-wide">
-              Backlink DB
-            </h2>
+            <h2 className="text-sm font-semibold uppercase tracking-wide">Backlink DB</h2>
             <span className="bg-primary/10 text-primary text-xs font-bold px-2 py-0.5 rounded-full">
               {dbEntries.length} entries
             </span>
           </div>
-          <ChevronDown
-            className={cn(
-              "h-4 w-4 text-muted-foreground transition-transform",
-              dbOpen && "rotate-180"
-            )}
-          />
+          <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", dbOpen && "rotate-180")} />
         </button>
 
         {dbOpen && (
           <div className="border-t px-6 pb-6">
-            <p className="text-xs text-muted-foreground pt-4 pb-3">
-              Cơ sở dữ liệu domain tham chiếu. Khi phân tích, hệ thống kiểm tra backlink có khớp với DB không.
+            <p className="text-xs text-muted-foreground pt-4 pb-4 leading-relaxed">
+              Cơ sở dữ liệu domain tham chiếu <strong>(Domain, DR)</strong>.
+              Khi phân tích, hệ thống kiểm tra từng Referring Domain của mỗi domain được phân tích
+              xem có khớp với DB và có DR ≥ ngưỡng yêu cầu không.
             </p>
 
-            {/* Actions */}
-            <div className="flex flex-wrap gap-2 mb-4">
+            {/* Action row */}
+            <div className="flex flex-wrap items-end gap-2 mb-4">
               {/* Manual add */}
-              <div className="flex gap-2">
+              <div>
+                <label className="block text-xs text-muted-foreground mb-1">Domain</label>
                 <Input
-                  placeholder="domain.com"
+                  placeholder="example.com"
                   value={dbManualDomain}
                   onChange={(e) => setDbManualDomain(e.target.value)}
-                  className="w-40 text-sm font-mono"
+                  className="w-44 text-sm font-mono"
+                  onKeyDown={(e) => e.key === "Enter" && e.currentTarget.nextElementSibling?.querySelector("input")?.focus()}
                 />
+              </div>
+              <div>
+                <label className="block text-xs text-muted-foreground mb-1">DR</label>
                 <Input
-                  type="number"
-                  placeholder="DR"
+                  type="number" placeholder="0–100"
                   value={dbManualDr}
                   onChange={(e) => setDbManualDr(e.target.value)}
-                  className="w-20 text-sm"
-                  min={0}
-                  max={100}
+                  className="w-24 text-sm"
+                  min={0} max={100}
                 />
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="gap-1.5 shrink-0"
-                  onClick={async () => {
-                    const domain = dbManualDomain.trim().toLowerCase();
-                    const dr = parseInt(dbManualDr);
-                    if (!domain || isNaN(dr)) return;
-                    try {
-                      await addToDb([{ domain, dr }]);
-                      setDbManualDomain("");
-                      setDbManualDr("");
-                      showToast(`✅ Đã thêm ${domain} (DR ${dr})`);
-                    } catch (err) {
-                      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
-                    }
-                  }}
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  Thêm
-                </Button>
               </div>
-
-              {/* CSV import toggle */}
               <Button
-                size="sm"
-                variant="outline"
-                className="gap-1.5"
+                size="sm" variant="outline" className="gap-1.5"
+                onClick={async () => {
+                  const domain = dbManualDomain.trim().toLowerCase();
+                  const dr = parseInt(dbManualDr);
+                  if (!domain || isNaN(dr)) return;
+                  try {
+                    await addToDb([{ domain, dr }]);
+                    setDbManualDomain("");
+                    setDbManualDr("");
+                    showToast(`✅ Đã thêm ${domain} (DR ${dr})`);
+                  } catch (err) {
+                    showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+                  }
+                }}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Thêm
+              </Button>
+
+              <Button
+                size="sm" variant="outline" className="gap-1.5"
                 onClick={() => setDbImportOpen((o) => !o)}
               >
                 <Upload className="h-3.5 w-3.5" />
                 Import CSV
               </Button>
 
-              {/* Clear all */}
               <Button
-                size="sm"
-                variant="outline"
+                size="sm" variant="outline"
                 className="gap-1.5 text-destructive border-destructive/40 hover:bg-destructive/10 ml-auto"
                 onClick={clearDb}
               >
@@ -603,13 +556,13 @@ export default function AgedDomainPage() {
               </Button>
             </div>
 
-            {/* CSV Import area */}
+            {/* CSV import */}
             {dbImportOpen && (
-              <div className="mb-4 space-y-2">
+              <div className="mb-4 space-y-2 p-4 rounded-lg border bg-muted/20">
                 <p className="text-xs text-muted-foreground">
-                  Paste CSV: mỗi dòng là{" "}
-                  <code className="font-mono bg-muted px-1 rounded">domain,dr</code>{" "}
-                  (không cần header)
+                  Format mỗi dòng:{" "}
+                  <code className="font-mono bg-muted px-1.5 py-0.5 rounded">domain.com,75</code>
+                  {" "}(không cần header)
                 </p>
                 <textarea
                   value={dbCsvText}
@@ -623,14 +576,7 @@ export default function AgedDomainPage() {
                     <Upload className="h-3.5 w-3.5" />
                     Import
                   </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => {
-                      setDbImportOpen(false);
-                      setDbCsvText("");
-                    }}
-                  >
+                  <Button size="sm" variant="ghost" onClick={() => { setDbImportOpen(false); setDbCsvText(""); }}>
                     Hủy
                   </Button>
                 </div>
@@ -642,7 +588,7 @@ export default function AgedDomainPage() {
               <div className="relative mb-3">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                 <Input
-                  placeholder="Tìm domain..."
+                  placeholder="Tìm domain trong DB..."
                   value={dbSearch}
                   onChange={(e) => setDbSearch(e.target.value)}
                   className="pl-8 text-sm h-8"
@@ -650,7 +596,7 @@ export default function AgedDomainPage() {
               </div>
             )}
 
-            {/* DB List */}
+            {/* DB list */}
             {dbEntries.length === 0 ? (
               <p className="text-center py-8 text-sm text-muted-foreground">
                 DB trống — thêm domain tham chiếu để bắt đầu so sánh
@@ -663,18 +609,15 @@ export default function AgedDomainPage() {
                       <th className="px-4 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">
                         Domain
                       </th>
-                      <th className="px-4 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide w-20">
+                      <th className="px-4 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide w-24">
                         DR
                       </th>
                       <th className="w-12" />
                     </tr>
                   </thead>
-                  <tbody className="max-h-64 overflow-y-auto">
-                    {sortedDb.slice(0, 200).map((entry) => (
-                      <tr
-                        key={entry.domain}
-                        className="border-b border-border/30 hover:bg-muted/30 group"
-                      >
+                  <tbody>
+                    {filteredDb.slice(0, 200).map((entry) => (
+                      <tr key={entry.domain} className="border-b border-border/30 hover:bg-muted/30 group">
                         <td className="px-4 py-2 font-mono text-xs">{entry.domain}</td>
                         <td className="px-4 py-2">
                           <DrBadge dr={entry.dr} small />
@@ -691,9 +634,9 @@ export default function AgedDomainPage() {
                     ))}
                   </tbody>
                 </table>
-                {sortedDb.length > 200 && (
+                {filteredDb.length > 200 && (
                   <p className="text-center text-xs text-muted-foreground py-2">
-                    Hiển thị 200/{sortedDb.length} entries
+                    Hiển thị 200/{filteredDb.length} entries
                   </p>
                 )}
               </div>
@@ -702,7 +645,7 @@ export default function AgedDomainPage() {
         )}
       </div>
 
-      {/* Toasts */}
+      {/* ── Toasts ─────────────────────────────────────────────────────────────── */}
       <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none">
         {toasts.map((t) => (
           <div
@@ -722,18 +665,8 @@ export default function AgedDomainPage() {
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function SortTh({
-  label,
-  col,
-  current,
-  dir,
-  onSort,
-}: {
-  label: string;
-  col: string;
-  current: string;
-  dir: 1 | -1;
-  onSort: () => void;
+function SortTh({ label, col, current, dir, onSort }: {
+  label: string; col: string; current: string; dir: 1 | -1; onSort: () => void;
 }) {
   const active = current === col;
   return (
@@ -743,12 +676,8 @@ function SortTh({
     >
       <span className="flex items-center gap-1">
         {label}
-        <ArrowUpDown
-          className={cn("h-3 w-3", active ? "text-primary" : "opacity-30")}
-        />
-        {active && (
-          <span className="text-primary">{dir === -1 ? "↓" : "↑"}</span>
-        )}
+        <ArrowUpDown className={cn("h-3 w-3", active ? "text-primary" : "opacity-30")} />
+        {active && <span className="text-primary">{dir === -1 ? "↓" : "↑"}</span>}
       </span>
     </th>
   );
@@ -756,21 +685,16 @@ function SortTh({
 
 function DrBadge({ dr, small = false }: { dr: number; small?: boolean }) {
   const color =
-    dr >= 70
-      ? "bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300"
-      : dr >= 40
-        ? "bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300"
-        : dr >= 20
-          ? "bg-yellow-100 dark:bg-yellow-950 text-yellow-700 dark:text-yellow-300"
-          : "bg-muted text-muted-foreground";
+    dr >= 70 ? "bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300"
+    : dr >= 40 ? "bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300"
+    : dr >= 20 ? "bg-yellow-100 dark:bg-yellow-950 text-yellow-700 dark:text-yellow-300"
+    : "bg-muted text-muted-foreground";
   return (
-    <span
-      className={cn(
-        "inline-flex items-center font-bold rounded-full",
-        small ? "text-xs px-1.5 py-0.5" : "text-sm px-2 py-0.5",
-        color
-      )}
-    >
+    <span className={cn(
+      "inline-flex items-center font-bold rounded-full",
+      small ? "text-xs px-1.5 py-0.5" : "text-sm px-2 py-0.5",
+      color
+    )}>
       {dr}
     </span>
   );
