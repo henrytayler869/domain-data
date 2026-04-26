@@ -1,0 +1,18 @@
+{
+	"$schema": "https://apify.com/schemas/v1/actor.ide.json",
+	"actorSpecification": 1,
+	"name": "namecheap-market-scraper",
+	"title": "Namecheap Market Domain Scraper",
+	"description": "Scrapes domain listings from Namecheap Marketplace with price and TLD filters.",
+	"version": "0.1",
+	"meta": {
+		"templateId": "js-crawlee-playwright-chrome",
+		"generatedBy": "Claude Code with Claude Sonnet 4.5"
+	},
+	"input": "./input_schema.json",
+	"output": "./output_schema.json",
+	"storages": {
+		"dataset": "./dataset_schema.json"
+	},
+	"dockerfile": "../Dockerfile"
+}

@@ -1,0 +1,45 @@
+{
+    "$schema": "https://apify.com/schemas/v1/input.ide.json",
+    "title": "Namecheap Market Scraper",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "priceMin": {
+            "title": "Minimum Price (USD)",
+            "type": "integer",
+            "description": "Minimum domain price in USD.",
+            "default": 0,
+            "minimum": 0
+        },
+        "priceMax": {
+            "title": "Maximum Price (USD)",
+            "type": "integer",
+            "description": "Maximum domain price in USD.",
+            "default": 200,
+            "minimum": 1
+        },
+        "tlds": {
+            "title": "TLDs to filter",
+            "type": "array",
+            "description": "List of TLDs (e.g. us.com, eu.com) to include. Leave empty to get all TLDs.",
+            "editor": "stringList",
+            "default": ["de.com", "uk.net", "gb.net", "us.com", "eu.com", "mex.com", "ru.com", "co.com", "us.org"],
+            "prefill": ["de.com", "uk.net", "gb.net", "us.com", "eu.com", "mex.com", "ru.com", "co.com", "us.org"]
+        },
+        "maxPages": {
+            "title": "Max Pages",
+            "type": "integer",
+            "description": "Maximum number of pages to scrape (0 = unlimited).",
+            "default": 0,
+            "minimum": 0
+        },
+        "maxResults": {
+            "title": "Max Results",
+            "type": "integer",
+            "description": "Maximum number of domains to scrape (0 = unlimited).",
+            "default": 0,
+            "minimum": 0
+        }
+    },
+    "required": []
+}

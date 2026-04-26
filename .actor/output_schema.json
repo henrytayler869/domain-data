@@ -1,0 +1,12 @@
+{
+    "$schema": "https://apify.com/schemas/v1/output.ide.json",
+    "actorOutputSchemaVersion": 1,
+    "title": "Namecheap Market Scraper Output",
+    "properties": {
+        "domains": {
+            "type": "string",
+            "title": "Scraped Domains",
+            "template": "{{links.apiDefaultDatasetUrl}}/items"
+        }
+    }
+}

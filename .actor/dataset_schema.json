@@ -1,0 +1,42 @@
+{
+    "$schema": "https://apify.com/schemas/v1/dataset.ide.json",
+    "actorSpecification": 1,
+    "fields": {},
+    "views": {
+        "overview": {
+            "title": "Domains",
+            "transformation": {
+                "fields": ["domainName", "tld", "price", "priceText", "buyUrl", "scrapedAt"]
+            },
+            "display": {
+                "component": "table",
+                "properties": {
+                    "domainName": {
+                        "label": "Domain Name",
+                        "format": "text"
+                    },
+                    "tld": {
+                        "label": "TLD",
+                        "format": "text"
+                    },
+                    "price": {
+                        "label": "Price (USD)",
+                        "format": "number"
+                    },
+                    "priceText": {
+                        "label": "Price (Display)",
+                        "format": "text"
+                    },
+                    "buyUrl": {
+                        "label": "Buy Link",
+                        "format": "link"
+                    },
+                    "scrapedAt": {
+                        "label": "Scraped At",
+                        "format": "date"
+                    }
+                }
+            }
+        }
+    }
+}
