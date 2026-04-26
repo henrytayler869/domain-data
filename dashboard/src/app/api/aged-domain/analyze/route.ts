@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readDb } from "@/lib/backlink-db";
+import { readSettings } from "@/lib/settings";
 
 const DATAFORSEO_ENDPOINT =
   "https://api.dataforseo.com/v3/backlinks/referring_domains/live";
@@ -39,12 +40,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No domains provided" }, { status: 400 });
     }
 
-    const login = process.env.DATAFORSEO_LOGIN;
-    const password = process.env.DATAFORSEO_PASSWORD;
+    // Read credentials from Settings (KV Store), fallback to env vars
+    const settings = await readSettings();
+    const login = settings.dataforseoLogin;
+    const password = settings.dataforseoPassword;
     if (!login || !password) {
       return NextResponse.json(
-        { error: "DataforSEO credentials not configured in .env.local" },
-        { status: 500 }
+        { error: "Chưa cấu hình DataforSEO credentials. Vào Settings để nhập API Key." },
+        { status: 400 }
       );
     }
 
