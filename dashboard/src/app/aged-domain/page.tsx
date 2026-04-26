@@ -15,7 +15,6 @@ import {
   Loader2,
   CheckCircle2,
   AlertCircle,
-  Save,
   Info,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -37,7 +36,7 @@ interface ToastItem {
   isError: boolean;
 }
 
-type SortKey = "domain" | "dbMatches" | "totalRefDomains" | "maxDr";
+type SortKey = "domain" | "dbMatches" | "totalRefDomains" | "maxDbDr";
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -147,17 +146,6 @@ export default function AgedDomainPage() {
     }
   }, [domainsText, minDr, limitPerDomain]);
 
-  // ─── Save top referring domains to DB ────────────────────────────────────────
-
-  const saveTopToDb = useCallback(async (topDomains: TopDomain[]) => {
-    const entries = topDomains.map((d) => ({ domain: d.domain, dr: d.dr }));
-    try {
-      const data = await addToDb(entries);
-      if (data) showToast(`✅ Đã lưu ${data.added} domain mới vào DB`);
-    } catch (err) {
-      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
-    }
-  }, [addToDb, showToast]);
 
   // ─── Sort & filter results ────────────────────────────────────────────────────
 
@@ -170,8 +158,11 @@ export default function AgedDomainPage() {
     ? [...results]
         .filter((r) => r.dbMatches >= minDbMatches)
         .sort((a, b) => {
-          const av = (a[sortKey] ?? 0) as number | string;
-          const bv = (b[sortKey] ?? 0) as number | string;
+          // Map SortKey to actual field (maxDbDr replaces maxDr)
+          const getVal = (r: DomainResult) =>
+            sortKey === "maxDbDr" ? r.maxDbDr : (r[sortKey as keyof DomainResult] ?? 0);
+          const av = getVal(a) as number | string;
+          const bv = getVal(b) as number | string;
           if (typeof av === "number" && typeof bv === "number") return (av - bv) * sortDir;
           return String(av).localeCompare(String(bv)) * sortDir;
         })
@@ -331,10 +322,7 @@ export default function AgedDomainPage() {
                   <SortTh label="Domain" col="domain" current={sortKey} dir={sortDir} onSort={() => handleSort("domain")} />
                   <SortTh label="DB Matches" col="dbMatches" current={sortKey} dir={sortDir} onSort={() => handleSort("dbMatches")} />
                   <SortTh label="Total Ref. Domains" col="totalRefDomains" current={sortKey} dir={sortDir} onSort={() => handleSort("totalRefDomains")} />
-                  <SortTh label="Max DR" col="maxDr" current={sortKey} dir={sortDir} onSort={() => handleSort("maxDr")} />
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                    Lưu vào DB
-                  </th>
+                  <SortTh label="Max DR (DB)" col="maxDbDr" current={sortKey} dir={sortDir} onSort={() => handleSort("maxDbDr")} />
                 </tr>
               </thead>
               <tbody>
@@ -398,23 +386,9 @@ export default function AgedDomainPage() {
                             {item.totalRefDomains.toLocaleString()}
                           </td>
 
-                          {/* Max DR */}
+                          {/* Max DR — from DB only */}
                           <td className="px-4 py-3">
-                            <DrBadge dr={item.maxDr} />
-                          </td>
-
-                          {/* Save to DB */}
-                          <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                            {item.topDomains.length > 0 && (
-                              <button
-                                onClick={() => saveTopToDb(item.topDomains)}
-                                title="Lưu top Referring Domains vào DB"
-                                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors"
-                              >
-                                <Save className="h-3.5 w-3.5" />
-                                Lưu top
-                              </button>
-                            )}
+                            <DrBadge dr={item.maxDbDr} />
                           </td>
                         </tr>
 
@@ -433,16 +407,20 @@ export default function AgedDomainPage() {
                                       "flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs",
                                       td.inDb
                                         ? "border-blue-300 bg-blue-50 dark:bg-blue-950/40 dark:border-blue-700"
-                                        : "border-border bg-background"
+                                        : "border-border bg-muted/30"
                                     )}
                                   >
-                                    <DrBadge dr={td.dr} small />
+                                    {/* DR badge — only from DB, shows "?" if not in DB */}
+                                    {td.dbDr !== null
+                                      ? <DrBadge dr={td.dbDr} small />
+                                      : <span className="inline-flex items-center font-bold rounded-full text-xs px-1.5 py-0.5 bg-muted text-muted-foreground">?</span>
+                                    }
                                     <span className="font-mono">{td.domain}</span>
                                     <span className="text-muted-foreground">
                                       ({td.backlinks} links)
                                     </span>
                                     {td.inDb && (
-                                      <span title="Có trong DB">
+                                      <span title="Có trong Backlink DB">
                                         <Database className="h-3 w-3 text-blue-500" />
                                       </span>
                                     )}
