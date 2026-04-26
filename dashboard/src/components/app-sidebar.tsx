@@ -19,11 +19,6 @@ import { cn } from "@/lib/utils";
 
 const trendDomainItems = [
   {
-    title: "Marketplace",
-    href: "/trend-domain",
-    icon: Globe,
-  },
-  {
     title: "Pipeline",
     href: "/trend-domain/pipeline",
     icon: Workflow,
