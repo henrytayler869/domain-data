@@ -16,14 +16,14 @@ import {
   CheckCircle2,
   AlertCircle,
   Info,
-  BookMarked,
+  Copy,
+  Check,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { DomainResult } from "@/app/api/aged-domain/analyze/route";
-import type { AhrefsDomainResult, AhrefsRefDomain } from "@/app/api/aged-domain/analyze-ahrefs/route";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -41,7 +41,6 @@ interface ToastItem {
 }
 
 type V1SortKey = "domain" | "dbMatches" | "totalRefDomains" | "maxDbDr";
-type V2SortKey = "domain" | "qualifiedCount" | "maxDr";
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -59,19 +58,13 @@ export default function AgedDomainPage() {
   const [loading, setLoading] = useState(false);
   const [v1Results, setV1Results] = useState<DomainResult[] | null>(null);
   const [v1Cost, setV1Cost] = useState<number | null>(null);
-  const [v2Results, setV2Results] = useState<AhrefsDomainResult[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // ── "Lưu vào DB" (Ahrefs mode) ───────────────────────────────────────────────
-  const [savingToDb, setSavingToDb] = useState(false);
-
-  // ── Sort & expand (V1) ───────────────────────────────────────────────────────
+  // ── Ahrefs mode: copy-prompt helper ─────────────────────────────────────────
+  const [copied, setCopied] = useState(false);
+  // ── Sort & expand ────────────────────────────────────────────────────────────
   const [v1SortKey, setV1SortKey] = useState<V1SortKey>("dbMatches");
   const [v1SortDir, setV1SortDir] = useState<1 | -1>(-1);
-
-  // ── Sort & expand (V2) ───────────────────────────────────────────────────────
-  const [v2SortKey, setV2SortKey] = useState<V2SortKey>("qualifiedCount");
-  const [v2SortDir, setV2SortDir] = useState<1 | -1>(-1);
 
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
 
@@ -171,71 +164,32 @@ export default function AgedDomainPage() {
     }
   }, [domainsText, minDr, limitPerDomain]);
 
-  // ─── Analyze (V2 — Ahrefs) ───────────────────────────────────────────────────
+  // ─── Copy prompt for Claude (V2 — Ahrefs via MCP) ───────────────────────────
 
-  const analyzeV2 = useCallback(async () => {
+  const copyAhrefsPrompt = useCallback(() => {
     const domains = domainsText.split("\n").map((d) => d.trim()).filter(Boolean);
     if (!domains.length) return;
-
-    setLoading(true);
-    setError(null);
-    setV2Results(null);
-    setExpandedRows(new Set());
-
-    try {
-      const res = await fetch("/api/aged-domain/analyze-ahrefs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ domains, minDr, limitPerDomain }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Phân tích thất bại");
-      setV2Results(data.results ?? []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Lỗi không xác định");
-    } finally {
-      setLoading(false);
-    }
+    const prompt =
+      `Phân tích Aged Domain bằng Ahrefs MCP.\n` +
+      `Cấu hình: DR tối thiểu = ${minDr}, limit = ${limitPerDomain} ref domains/target.\n\n` +
+      `Danh sách domain cần phân tích:\n${domains.join("\n")}\n\n` +
+      `Yêu cầu:\n` +
+      `1. Với mỗi domain, gọi Ahrefs MCP (site-explorer-referring-domains) để lấy referring domains có DR ≥ ${minDr}, sắp xếp theo domain_rating desc, limit ${limitPerDomain}.\n` +
+      `2. Tổng hợp kết quả: domain | số qualified refs | max DR.\n` +
+      `3. Lưu toàn bộ qualified referring domains (domain + DR) vào Backlink DB qua POST /api/aged-domain/db/add.`;
+    navigator.clipboard.writeText(prompt).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
   }, [domainsText, minDr, limitPerDomain]);
 
-  const handleAnalyze = mode === "ahrefs" ? analyzeV2 : analyzeV1;
+  const handleAnalyze = analyzeV1;
 
-  // ─── Save Ahrefs results to DB ────────────────────────────────────────────────
-
-  const handleSaveToDb = useCallback(async () => {
-    if (!v2Results) return;
-    // Collect all qualified domains from all results
-    const entries: DbEntry[] = [];
-    for (const r of v2Results) {
-      for (const d of r.qualifiedDomains) {
-        entries.push({ domain: d.domain, dr: d.dr });
-      }
-    }
-    if (!entries.length) {
-      showToast("Không có domain nào để lưu", true);
-      return;
-    }
-    setSavingToDb(true);
-    try {
-      const data = await addToDb(entries);
-      showToast(`✅ Đã lưu ${data?.added ?? 0} domain mới vào DB (${entries.length} dòng)`);
-    } catch (err) {
-      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
-    } finally {
-      setSavingToDb(false);
-    }
-  }, [v2Results, addToDb, showToast]);
-
-  // ─── Sort helpers ─────────────────────────────────────────────────────────────
+  // ─── Sort helper ──────────────────────────────────────────────────────────────
 
   function handleV1Sort(key: V1SortKey) {
     if (v1SortKey === key) setV1SortDir((d) => (d === 1 ? -1 : 1));
     else { setV1SortKey(key); setV1SortDir(-1); }
-  }
-
-  function handleV2Sort(key: V2SortKey) {
-    if (v2SortKey === key) setV2SortDir((d) => (d === 1 ? -1 : 1));
-    else { setV2SortKey(key); setV2SortDir(-1); }
   }
 
   // ─── Filtered + sorted results ────────────────────────────────────────────────
@@ -250,17 +204,6 @@ export default function AgedDomainPage() {
           const bv = getVal(b) as number | string;
           if (typeof av === "number" && typeof bv === "number") return (av - bv) * v1SortDir;
           return String(av).localeCompare(String(bv)) * v1SortDir;
-        })
-    : [];
-
-  const displayedV2 = v2Results
-    ? [...v2Results]
-        .filter((r) => r.qualifiedCount >= minQualified)
-        .sort((a, b) => {
-          const av = a[v2SortKey as keyof AhrefsDomainResult] as number | string ?? 0;
-          const bv = b[v2SortKey as keyof AhrefsDomainResult] as number | string ?? 0;
-          if (typeof av === "number" && typeof bv === "number") return (av - bv) * v2SortDir;
-          return String(av).localeCompare(String(bv)) * v2SortDir;
         })
     : [];
 
@@ -384,10 +327,22 @@ export default function AgedDomainPage() {
             <p className="text-xs text-muted-foreground mb-1">
               {domainCount} domain{mode === "dataforseo" && ` · DB: ${dbEntries.length} entries`}
             </p>
-            <Button onClick={handleAnalyze} disabled={loading || !domainCount} className="gap-2 w-full">
-              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-              {loading ? "Đang phân tích..." : "Phân tích"}
-            </Button>
+            {mode === "dataforseo" ? (
+              <Button onClick={handleAnalyze} disabled={loading || !domainCount} className="gap-2 w-full">
+                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                {loading ? "Đang phân tích..." : "Phân tích"}
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                onClick={copyAhrefsPrompt}
+                disabled={!domainCount}
+                className="gap-2 w-full"
+              >
+                {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+                {copied ? "Đã copy!" : "Copy prompt"}
+              </Button>
+            )}
           </div>
         </div>
 
@@ -549,134 +504,39 @@ export default function AgedDomainPage() {
         </div>
       )}
 
-      {/* ── Results: Option 2 (Ahrefs) ──────────────────────────────────────────── */}
-      {mode === "ahrefs" && v2Results !== null && (
-        <div className="rounded-xl border bg-card shadow-sm overflow-hidden">
-          {/* Header bar */}
-          <div className="flex items-center justify-between px-5 py-4 border-b flex-wrap gap-2">
-            <div className="flex items-center gap-2">
-              <CheckCircle2 className="h-4 w-4 text-green-500" />
-              <span className="text-sm font-medium">
-                {displayedV2.length} / {v2Results.length} domain
-                {minQualified > 0 && (
-                  <span className="text-muted-foreground"> (Qualified ≥ {minQualified})</span>
-                )}
-              </span>
-              <Badge variant="secondary" className="text-xs bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300 border-orange-200 dark:border-orange-800">
-                Ahrefs
-              </Badge>
-            </div>
-
-            {/* Lưu vào DB button */}
-            <Button
-              size="sm"
-              variant="outline"
-              className="gap-2"
-              onClick={handleSaveToDb}
-              disabled={savingToDb || !v2Results.some((r) => r.qualifiedDomains.length > 0)}
-            >
-              {savingToDb
-                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                : <BookMarked className="h-3.5 w-3.5" />
-              }
-              {savingToDb ? "Đang lưu..." : "Lưu vào Backlink DB"}
-            </Button>
+      {/* ── Option 2: Ahrefs via Claude MCP ────────────────────────────────────── */}
+      {mode === "ahrefs" && (
+        <div className="rounded-xl border border-orange-200 dark:border-orange-800 bg-orange-50/50 dark:bg-orange-950/20 shadow-sm overflow-hidden">
+          <div className="px-5 py-4 border-b border-orange-200 dark:border-orange-800 flex items-center gap-3">
+            <Info className="h-4 w-4 text-orange-500 shrink-0" />
+            <p className="text-sm font-medium text-orange-700 dark:text-orange-300">
+              Option 2 dùng Ahrefs MCP — phân tích qua Claude AI
+            </p>
           </div>
-
-          <p className="px-5 py-2 text-xs text-muted-foreground border-b bg-muted/20">
-            <span className="font-medium text-orange-600 dark:text-orange-400">Qualified Refs</span>
-            {" "}= Referring Domains có DR ≥ {minDr} (nguồn: Ahrefs). "Lưu vào DB" sẽ lưu toàn bộ vào Backlink DB.
-          </p>
-
-          {/* Table */}
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/40 border-b">
-                <tr>
-                  <th className="px-4 py-3 w-8" />
-                  <SortTh label="Domain" col="domain" current={v2SortKey} dir={v2SortDir} onSort={() => handleV2Sort("domain")} />
-                  <SortTh label={`Qualified Refs (DR≥${minDr})`} col="qualifiedCount" current={v2SortKey} dir={v2SortDir} onSort={() => handleV2Sort("qualifiedCount")} />
-                  <SortTh label="Max DR (Ahrefs)" col="maxDr" current={v2SortKey} dir={v2SortDir} onSort={() => handleV2Sort("maxDr")} />
-                </tr>
-              </thead>
-              <tbody>
-                {displayedV2.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} className="text-center py-12 text-muted-foreground text-sm">
-                      Không có domain nào đạt điều kiện Qualified ≥ {minQualified}
-                    </td>
-                  </tr>
-                ) : (
-                  displayedV2.map((item) => {
-                    const expanded = expandedRows.has(item.domain);
-                    return (
-                      <Fragment key={item.domain}>
-                        <tr
-                          className={cn(
-                            "border-b border-border/50 hover:bg-muted/20 transition-colors cursor-pointer",
-                            item.error && "opacity-60"
-                          )}
-                          onClick={() =>
-                            setExpandedRows((prev) => {
-                              const next = new Set(prev);
-                              expanded ? next.delete(item.domain) : next.add(item.domain);
-                              return next;
-                            })
-                          }
-                        >
-                          <td className="px-4 py-3 text-muted-foreground">
-                            {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                          </td>
-                          <td className="px-4 py-3 font-mono font-medium">
-                            {item.domain}
-                            {item.error && (
-                              <span className="ml-2 text-xs text-destructive">({item.error})</span>
-                            )}
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-1.5">
-                              <QualifiedBadge count={item.qualifiedCount} />
-                              {item.limitReached && (
-                                <span title={`Đạt giới hạn ${limitPerDomain}, có thể còn nhiều hơn`}
-                                  className="text-xs text-amber-600 dark:text-amber-400">+</span>
-                              )}
-                            </div>
-                          </td>
-                          <td className="px-4 py-3">
-                            <DrBadge dr={item.maxDr} />
-                          </td>
-                        </tr>
-                        {expanded && item.qualifiedDomains.length > 0 && (
-                          <tr className="bg-muted/20 border-b border-border/30">
-                            <td colSpan={4} className="px-6 py-4">
-                              <div className="flex items-center justify-between mb-3">
-                                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                                  Qualified Referring Domains (Ahrefs · DR ≥ {minDr})
-                                </p>
-                                <span className="text-xs text-muted-foreground">
-                                  {item.qualifiedDomains.length} domains
-                                  {item.limitReached && " (giới hạn đạt)"}
-                                </span>
-                              </div>
-                              <div className="flex flex-wrap gap-2">
-                                {item.qualifiedDomains.slice(0, 30).map((d) => (
-                                  <AhrefsRefDomainChip key={d.domain} item={d} />
-                                ))}
-                                {item.qualifiedDomains.length > 30 && (
-                                  <span className="text-xs text-muted-foreground self-center">
-                                    ... và {item.qualifiedDomains.length - 30} domain khác
-                                  </span>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </Fragment>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
+          <div className="px-5 py-4 space-y-3 text-sm text-orange-700 dark:text-orange-300">
+            <p>
+              Ahrefs MCP chạy trong context của Claude AI, không thể gọi trực tiếp từ dashboard.
+              Quy trình sử dụng:
+            </p>
+            <ol className="list-decimal list-inside space-y-1.5 text-sm">
+              <li>Nhập danh sách domain và cấu hình ở trên</li>
+              <li>Nhấn <strong>Copy prompt</strong> để sao chép yêu cầu phân tích</li>
+              <li>Paste vào cửa sổ chat với Claude</li>
+              <li>Claude sẽ dùng Ahrefs MCP để phân tích và tự động lưu kết quả vào Backlink DB</li>
+            </ol>
+            {domainCount > 0 && (
+              <div className="pt-1">
+                <Button
+                  variant="outline"
+                  onClick={copyAhrefsPrompt}
+                  disabled={!domainCount}
+                  className="gap-2 border-orange-300 dark:border-orange-700 text-orange-700 dark:text-orange-300 hover:bg-orange-100 dark:hover:bg-orange-950/50"
+                >
+                  {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+                  {copied ? "Đã copy!" : `Copy prompt (${domainCount} domain, DR≥${minDr})`}
+                </Button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -918,21 +778,3 @@ function DrBadge({ dr, small = false }: { dr: number; small?: boolean }) {
   );
 }
 
-function AhrefsRefDomainChip({ item }: { item: AhrefsRefDomain }) {
-  return (
-    <div className="flex items-center gap-1.5 rounded-lg border border-orange-200 dark:border-orange-800 bg-orange-50 dark:bg-orange-950/30 px-2.5 py-1.5 text-xs">
-      <DrBadge dr={item.dr} small />
-      <span className="font-mono">{item.domain}</span>
-      <span className="text-muted-foreground">({item.links} links)</span>
-      <a
-        href={`https://${item.domain}`}
-        target="_blank"
-        rel="noopener noreferrer"
-        onClick={(e) => e.stopPropagation()}
-        className="text-muted-foreground hover:text-primary"
-      >
-        <ExternalLink className="h-3 w-3" />
-      </a>
-    </div>
-  );
-}
