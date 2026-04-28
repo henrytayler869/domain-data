@@ -39,8 +39,9 @@ interface AhrefsTestResult {
   ok: boolean;
   error?: string;
   plan?: string | null;
-  rowsLeft?: number | null;
-  rowsLimit?: number | null;
+  unitsUsed?: number | null;
+  unitsLimit?: number | null; // null = unlimited
+  expiresAt?: string | null;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -533,11 +534,17 @@ export default function SettingsPage() {
                     <span className="font-normal">— {ahrefsTestResult.plan}</span>
                   )}
                 </div>
-                {ahrefsTestResult.rowsLeft != null && (
+                {ahrefsTestResult.unitsUsed != null && (
                   <div className="text-xs opacity-80 pl-6">
-                    Rows còn lại: {ahrefsTestResult.rowsLeft.toLocaleString()}
-                    {ahrefsTestResult.rowsLimit != null && (
-                      <span className="text-muted-foreground"> / {ahrefsTestResult.rowsLimit.toLocaleString()}</span>
+                    API units tháng này: {ahrefsTestResult.unitsUsed.toLocaleString()}
+                    {ahrefsTestResult.unitsLimit != null
+                      ? <span className="text-muted-foreground"> / {ahrefsTestResult.unitsLimit.toLocaleString()}</span>
+                      : <span className="text-muted-foreground"> (không giới hạn)</span>
+                    }
+                    {ahrefsTestResult.expiresAt && (
+                      <span className="ml-2 text-muted-foreground">
+                        · hết hạn {new Date(ahrefsTestResult.expiresAt).toLocaleDateString("vi-VN")}
+                      </span>
                     )}
                   </div>
                 )}
