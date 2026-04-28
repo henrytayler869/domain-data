@@ -1,6 +1,6 @@
 /**
  * Dashboard Settings — stored in Apify KV Store ("dashboard-settings").
- * Password is never returned to the client after being saved.
+ * Passwords/API keys are never returned to the client after being saved.
  */
 
 const APIFY_TOKEN = process.env.APIFY_TOKEN!;
@@ -11,6 +11,7 @@ const APIFY_BASE = "https://api.apify.com/v2";
 export interface Settings {
   dataforseoLogin: string;
   dataforseoPassword: string; // stored server-side only
+  ahrefsApiKey: string;       // stored server-side only
 }
 
 let _storeId: string | null = null;
@@ -45,6 +46,7 @@ export async function readSettings(): Promise<Settings> {
   const envDefaults: Settings = {
     dataforseoLogin: process.env.DATAFORSEO_LOGIN ?? "",
     dataforseoPassword: process.env.DATAFORSEO_PASSWORD ?? "",
+    ahrefsApiKey: process.env.AHREFS_API_KEY ?? "",
   };
 
   try {
@@ -58,6 +60,7 @@ export async function readSettings(): Promise<Settings> {
     return {
       dataforseoLogin: data.dataforseoLogin || envDefaults.dataforseoLogin,
       dataforseoPassword: data.dataforseoPassword || envDefaults.dataforseoPassword,
+      ahrefsApiKey: data.ahrefsApiKey || envDefaults.ahrefsApiKey,
     };
   } catch {
     return envDefaults;
@@ -68,11 +71,15 @@ export async function writeSettings(settings: Partial<Settings>): Promise<void> 
   const current = await readSettings();
   const merged: Settings = {
     dataforseoLogin: settings.dataforseoLogin ?? current.dataforseoLogin,
-    // Only update password if a non-empty value is provided
+    // Only update secret fields if a non-empty value is provided
     dataforseoPassword:
       settings.dataforseoPassword?.trim()
         ? settings.dataforseoPassword
         : current.dataforseoPassword,
+    ahrefsApiKey:
+      settings.ahrefsApiKey?.trim()
+        ? settings.ahrefsApiKey
+        : current.ahrefsApiKey,
   };
 
   const storeId = await getStoreId();

@@ -16,14 +16,18 @@ import {
   CheckCircle2,
   AlertCircle,
   Info,
+  BookMarked,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import type { DomainResult, TopDomain } from "@/app/api/aged-domain/analyze/route";
+import type { DomainResult } from "@/app/api/aged-domain/analyze/route";
+import type { AhrefsDomainResult, AhrefsRefDomain } from "@/app/api/aged-domain/analyze-ahrefs/route";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+type Mode = "dataforseo" | "ahrefs";
 
 interface DbEntry {
   domain: string;
@@ -36,26 +40,39 @@ interface ToastItem {
   isError: boolean;
 }
 
-type SortKey = "domain" | "dbMatches" | "totalRefDomains" | "maxDbDr";
+type V1SortKey = "domain" | "dbMatches" | "totalRefDomains" | "maxDbDr";
+type V2SortKey = "domain" | "qualifiedCount" | "maxDr";
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function AgedDomainPage() {
-  // ── Form inputs ──────────────────────────────────────────────────────────────
+  // ── Mode ─────────────────────────────────────────────────────────────────────
+  const [mode, setMode] = useState<Mode>("dataforseo");
+
+  // ── Form inputs (shared) ─────────────────────────────────────────────────────
   const [domainsText, setDomainsText] = useState("");
   const [minDr, setMinDr] = useState(30);
   const [limitPerDomain, setLimitPerDomain] = useState(100);
-  const [minDbMatches, setMinDbMatches] = useState(0); // 0 = show all
+  const [minQualified, setMinQualified] = useState(0); // 0 = show all
 
-  // ── Analysis state ──────────────────────────────────────────────────────────
+  // ── Analysis state ───────────────────────────────────────────────────────────
   const [loading, setLoading] = useState(false);
-  const [results, setResults] = useState<DomainResult[] | null>(null);
-  const [cost, setCost] = useState<number | null>(null);
+  const [v1Results, setV1Results] = useState<DomainResult[] | null>(null);
+  const [v1Cost, setV1Cost] = useState<number | null>(null);
+  const [v2Results, setV2Results] = useState<AhrefsDomainResult[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // ── Sort & expand ────────────────────────────────────────────────────────────
-  const [sortKey, setSortKey] = useState<SortKey>("dbMatches");
-  const [sortDir, setSortDir] = useState<1 | -1>(-1);
+  // ── "Lưu vào DB" (Ahrefs mode) ───────────────────────────────────────────────
+  const [savingToDb, setSavingToDb] = useState(false);
+
+  // ── Sort & expand (V1) ───────────────────────────────────────────────────────
+  const [v1SortKey, setV1SortKey] = useState<V1SortKey>("dbMatches");
+  const [v1SortDir, setV1SortDir] = useState<1 | -1>(-1);
+
+  // ── Sort & expand (V2) ───────────────────────────────────────────────────────
+  const [v2SortKey, setV2SortKey] = useState<V2SortKey>("qualifiedCount");
+  const [v2SortDir, setV2SortDir] = useState<1 | -1>(-1);
+
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
 
   // ── Backlink DB ─────────────────────────────────────────────────────────────
@@ -78,6 +95,14 @@ export default function AgedDomainPage() {
     setToasts((p) => [...p, { id, message, isError }]);
     setTimeout(() => setToasts((p) => p.filter((t) => t.id !== id)), 3500);
   }, []);
+
+  // ─── Mode switch ──────────────────────────────────────────────────────────────
+
+  const switchMode = (m: Mode) => {
+    setMode(m);
+    setExpandedRows(new Set());
+    setError(null);
+  };
 
   // ─── Backlink DB ──────────────────────────────────────────────────────────────
 
@@ -117,16 +142,16 @@ export default function AgedDomainPage() {
     showToast("🗑️ Đã xóa toàn bộ Backlink DB");
   }, [dbEntries.length, loadDb, showToast]);
 
-  // ─── Analysis ─────────────────────────────────────────────────────────────────
+  // ─── Analyze (V1 — DataforSEO) ───────────────────────────────────────────────
 
-  const analyze = useCallback(async () => {
+  const analyzeV1 = useCallback(async () => {
     const domains = domainsText.split("\n").map((d) => d.trim()).filter(Boolean);
     if (!domains.length) return;
 
     setLoading(true);
     setError(null);
-    setResults(null);
-    setCost(null);
+    setV1Results(null);
+    setV1Cost(null);
     setExpandedRows(new Set());
 
     try {
@@ -137,8 +162,8 @@ export default function AgedDomainPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Phân tích thất bại");
-      setResults(data.results ?? []);
-      setCost(data.cost ?? null);
+      setV1Results(data.results ?? []);
+      setV1Cost(data.cost ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Lỗi không xác định");
     } finally {
@@ -146,25 +171,96 @@ export default function AgedDomainPage() {
     }
   }, [domainsText, minDr, limitPerDomain]);
 
+  // ─── Analyze (V2 — Ahrefs) ───────────────────────────────────────────────────
 
-  // ─── Sort & filter results ────────────────────────────────────────────────────
+  const analyzeV2 = useCallback(async () => {
+    const domains = domainsText.split("\n").map((d) => d.trim()).filter(Boolean);
+    if (!domains.length) return;
 
-  function handleSort(key: SortKey) {
-    if (sortKey === key) setSortDir((d) => (d === 1 ? -1 : 1));
-    else { setSortKey(key); setSortDir(-1); }
+    setLoading(true);
+    setError(null);
+    setV2Results(null);
+    setExpandedRows(new Set());
+
+    try {
+      const res = await fetch("/api/aged-domain/analyze-ahrefs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domains, minDr, limitPerDomain }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Phân tích thất bại");
+      setV2Results(data.results ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Lỗi không xác định");
+    } finally {
+      setLoading(false);
+    }
+  }, [domainsText, minDr, limitPerDomain]);
+
+  const handleAnalyze = mode === "ahrefs" ? analyzeV2 : analyzeV1;
+
+  // ─── Save Ahrefs results to DB ────────────────────────────────────────────────
+
+  const handleSaveToDb = useCallback(async () => {
+    if (!v2Results) return;
+    // Collect all qualified domains from all results
+    const entries: DbEntry[] = [];
+    for (const r of v2Results) {
+      for (const d of r.qualifiedDomains) {
+        entries.push({ domain: d.domain, dr: d.dr });
+      }
+    }
+    if (!entries.length) {
+      showToast("Không có domain nào để lưu", true);
+      return;
+    }
+    setSavingToDb(true);
+    try {
+      const data = await addToDb(entries);
+      showToast(`✅ Đã lưu ${data?.added ?? 0} domain mới vào DB (${entries.length} dòng)`);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    } finally {
+      setSavingToDb(false);
+    }
+  }, [v2Results, addToDb, showToast]);
+
+  // ─── Sort helpers ─────────────────────────────────────────────────────────────
+
+  function handleV1Sort(key: V1SortKey) {
+    if (v1SortKey === key) setV1SortDir((d) => (d === 1 ? -1 : 1));
+    else { setV1SortKey(key); setV1SortDir(-1); }
   }
 
-  const displayedResults = results
-    ? [...results]
-        .filter((r) => r.dbMatches >= minDbMatches)
+  function handleV2Sort(key: V2SortKey) {
+    if (v2SortKey === key) setV2SortDir((d) => (d === 1 ? -1 : 1));
+    else { setV2SortKey(key); setV2SortDir(-1); }
+  }
+
+  // ─── Filtered + sorted results ────────────────────────────────────────────────
+
+  const displayedV1 = v1Results
+    ? [...v1Results]
+        .filter((r) => r.dbMatches >= minQualified)
         .sort((a, b) => {
-          // Map SortKey to actual field (maxDbDr replaces maxDr)
           const getVal = (r: DomainResult) =>
-            sortKey === "maxDbDr" ? r.maxDbDr : (r[sortKey as keyof DomainResult] ?? 0);
+            v1SortKey === "maxDbDr" ? r.maxDbDr : (r[v1SortKey as keyof DomainResult] ?? 0);
           const av = getVal(a) as number | string;
           const bv = getVal(b) as number | string;
-          if (typeof av === "number" && typeof bv === "number") return (av - bv) * sortDir;
-          return String(av).localeCompare(String(bv)) * sortDir;
+          if (typeof av === "number" && typeof bv === "number") return (av - bv) * v1SortDir;
+          return String(av).localeCompare(String(bv)) * v1SortDir;
+        })
+    : [];
+
+  const displayedV2 = v2Results
+    ? [...v2Results]
+        .filter((r) => r.qualifiedCount >= minQualified)
+        .sort((a, b) => {
+          const av = a[v2SortKey as keyof AhrefsDomainResult] as number | string ?? 0;
+          const bv = b[v2SortKey as keyof AhrefsDomainResult] as number | string ?? 0;
+          if (typeof av === "number" && typeof bv === "number") return (av - bv) * v2SortDir;
+          return String(av).localeCompare(String(bv)) * v2SortDir;
         })
     : [];
 
@@ -192,7 +288,7 @@ export default function AgedDomainPage() {
     }
   }
 
-  // ─── Filtered DB list ─────────────────────────────────────────────────────────
+  // ─── Helpers ─────────────────────────────────────────────────────────────────
 
   const filteredDb = [...dbEntries]
     .filter((e) => !dbSearch || e.domain.includes(dbSearch.toLowerCase()))
@@ -209,26 +305,57 @@ export default function AgedDomainPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Aged Domain — Phân tích Backlink</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Paste domain → gọi DataforSEO lấy Referring Domains → so sánh với Backlink DB (Domain, DR) → lọc domain đạt điều kiện.
+          Paste domain → phân tích Referring Domains → lọc domain đạt điều kiện DR.
         </p>
       </div>
 
-      {/* ── DB empty warning ───────────────────────────────────────────────────── */}
-      {dbEntries.length === 0 && (
+      {/* ── DB empty warning (Option 1 only) ──────────────────────────────────── */}
+      {mode === "dataforseo" && dbEntries.length === 0 && (
         <div className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700 px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
           <Info className="h-4 w-4 mt-0.5 shrink-0" />
           <span>
-            <strong>Backlink DB đang trống.</strong> Hãy thêm domain tham chiếu (Domain + DR) vào DB trước.
-            Sau khi phân tích, dùng nút <strong>"Lưu vào DB"</strong> để lưu Referring Domains vào DB.
+            <strong>Backlink DB đang trống.</strong>{" "}
+            Option 1 cần DB để tra cứu DR. Hãy thêm domain tham chiếu (Domain + DR) vào DB,
+            hoặc chuyển sang <strong>Option 2: Ahrefs</strong> để lấy DR trực tiếp.
           </span>
         </div>
       )}
 
       {/* ── Config card ────────────────────────────────────────────────────────── */}
       <div className="rounded-xl border bg-card p-5 shadow-sm">
-        <h2 className="text-sm font-semibold mb-4 text-muted-foreground uppercase tracking-wider">
-          Cấu hình
-        </h2>
+
+        {/* Mode toggle */}
+        <div className="flex gap-1 p-1 bg-muted rounded-lg mb-5 w-fit">
+          <button
+            onClick={() => switchMode("dataforseo")}
+            className={cn(
+              "px-4 py-1.5 rounded-md text-sm font-medium transition-colors",
+              mode === "dataforseo"
+                ? "bg-background shadow-sm text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            Option 1: DataforSEO
+          </button>
+          <button
+            onClick={() => switchMode("ahrefs")}
+            className={cn(
+              "px-4 py-1.5 rounded-md text-sm font-medium transition-colors",
+              mode === "ahrefs"
+                ? "bg-background shadow-sm text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            Option 2: Ahrefs
+          </button>
+        </div>
+
+        {/* Mode description */}
+        <p className="text-xs text-muted-foreground mb-4 -mt-2">
+          {mode === "dataforseo"
+            ? "DataforSEO → danh sách Referring Domains → đối chiếu Backlink DB để lấy DR → lọc"
+            : "Ahrefs → Referring Domains kèm DR trực tiếp → lọc → có thể lưu vào Backlink DB"}
+        </p>
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
           <div>
@@ -240,24 +367,24 @@ export default function AgedDomainPage() {
           </div>
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">
-              Referring domains / target
+              Ref. domains / target
             </label>
             <Input type="number" min={1} max={1000} value={limitPerDomain}
               onChange={(e) => setLimitPerDomain(Number(e.target.value))} />
           </div>
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">
-              DB Matches tối thiểu
+              {mode === "dataforseo" ? "DB Matches" : "Qualified Refs"} tối thiểu
               <span className="ml-1 text-muted-foreground/60">(0 = tất cả)</span>
             </label>
-            <Input type="number" min={0} value={minDbMatches}
-              onChange={(e) => setMinDbMatches(Number(e.target.value))} />
+            <Input type="number" min={0} value={minQualified}
+              onChange={(e) => setMinQualified(Number(e.target.value))} />
           </div>
           <div className="flex flex-col justify-end">
             <p className="text-xs text-muted-foreground mb-1">
-              {domainCount} domain · DB: {dbEntries.length} entries
+              {domainCount} domain{mode === "dataforseo" && ` · DB: ${dbEntries.length} entries`}
             </p>
-            <Button onClick={analyze} disabled={loading || !domainCount} className="gap-2 w-full">
+            <Button onClick={handleAnalyze} disabled={loading || !domainCount} className="gap-2 w-full">
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
               {loading ? "Đang phân tích..." : "Phân tích"}
             </Button>
@@ -288,22 +415,22 @@ export default function AgedDomainPage() {
         </div>
       )}
 
-      {/* ── Results table ──────────────────────────────────────────────────────── */}
-      {results !== null && (
+      {/* ── Results: Option 1 (DataforSEO) ─────────────────────────────────────── */}
+      {mode === "dataforseo" && v1Results !== null && (
         <div className="rounded-xl border bg-card shadow-sm overflow-hidden">
           {/* Header bar */}
           <div className="flex items-center justify-between px-5 py-4 border-b flex-wrap gap-2">
             <div className="flex items-center gap-2">
               <CheckCircle2 className="h-4 w-4 text-green-500" />
               <span className="text-sm font-medium">
-                {displayedResults.length} / {results.length} domain
-                {minDbMatches > 0 && (
-                  <span className="text-muted-foreground"> (DB Matches ≥ {minDbMatches})</span>
+                {displayedV1.length} / {v1Results.length} domain
+                {minQualified > 0 && (
+                  <span className="text-muted-foreground"> (DB Matches ≥ {minQualified})</span>
                 )}
               </span>
-              {cost !== null && (
+              {v1Cost !== null && (
                 <Badge variant="secondary" className="text-xs">
-                  Cost: ${cost.toFixed(4)}
+                  Cost: ${v1Cost.toFixed(4)}
                 </Badge>
               )}
             </div>
@@ -319,25 +446,24 @@ export default function AgedDomainPage() {
               <thead className="bg-muted/40 border-b">
                 <tr>
                   <th className="px-4 py-3 w-8" />
-                  <SortTh label="Domain" col="domain" current={sortKey} dir={sortDir} onSort={() => handleSort("domain")} />
-                  <SortTh label="DB Matches" col="dbMatches" current={sortKey} dir={sortDir} onSort={() => handleSort("dbMatches")} />
-                  <SortTh label="Total Ref. Domains" col="totalRefDomains" current={sortKey} dir={sortDir} onSort={() => handleSort("totalRefDomains")} />
-                  <SortTh label="Max DR (DB)" col="maxDbDr" current={sortKey} dir={sortDir} onSort={() => handleSort("maxDbDr")} />
+                  <SortTh label="Domain" col="domain" current={v1SortKey} dir={v1SortDir} onSort={() => handleV1Sort("domain")} />
+                  <SortTh label="DB Matches" col="dbMatches" current={v1SortKey} dir={v1SortDir} onSort={() => handleV1Sort("dbMatches")} />
+                  <SortTh label="Total Ref. Domains" col="totalRefDomains" current={v1SortKey} dir={v1SortDir} onSort={() => handleV1Sort("totalRefDomains")} />
+                  <SortTh label="Max DR (DB)" col="maxDbDr" current={v1SortKey} dir={v1SortDir} onSort={() => handleV1Sort("maxDbDr")} />
                 </tr>
               </thead>
               <tbody>
-                {displayedResults.length === 0 ? (
+                {displayedV1.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="text-center py-12 text-muted-foreground text-sm">
-                      Không có domain nào đạt điều kiện DB Matches ≥ {minDbMatches}
+                    <td colSpan={5} className="text-center py-12 text-muted-foreground text-sm">
+                      Không có domain nào đạt điều kiện DB Matches ≥ {minQualified}
                     </td>
                   </tr>
                 ) : (
-                  displayedResults.map((item) => {
+                  displayedV1.map((item) => {
                     const expanded = expandedRows.has(item.domain);
                     return (
                       <Fragment key={item.domain}>
-                        {/* Main row */}
                         <tr
                           className={cn(
                             "border-b border-border/50 hover:bg-muted/20 transition-colors cursor-pointer",
@@ -351,51 +477,28 @@ export default function AgedDomainPage() {
                             })
                           }
                         >
-                          {/* Expand toggle */}
                           <td className="px-4 py-3 text-muted-foreground">
-                            {expanded
-                              ? <ChevronDown className="h-4 w-4" />
-                              : <ChevronRight className="h-4 w-4" />
-                            }
+                            {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                           </td>
-
-                          {/* Domain */}
                           <td className="px-4 py-3 font-mono font-medium">
                             {item.domain}
                             {item.error && (
                               <span className="ml-2 text-xs text-destructive">({item.error})</span>
                             )}
                           </td>
-
-                          {/* DB Matches — primary metric */}
                           <td className="px-4 py-3">
-                            <span className={cn(
-                              "inline-flex items-center justify-center min-w-[2.5rem] px-2.5 py-1 rounded-full text-sm font-bold",
-                              item.dbMatches >= 5
-                                ? "bg-blue-600 text-white"
-                                : item.dbMatches >= 1
-                                  ? "bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300"
-                                  : "bg-muted text-muted-foreground"
-                            )}>
-                              {item.dbMatches}
-                            </span>
+                            <QualifiedBadge count={item.dbMatches} />
                           </td>
-
-                          {/* Total referring domains */}
                           <td className="px-4 py-3 text-muted-foreground">
                             {item.totalRefDomains.toLocaleString()}
                           </td>
-
-                          {/* Max DR — from DB only */}
                           <td className="px-4 py-3">
                             <DrBadge dr={item.maxDbDr} />
                           </td>
                         </tr>
-
-                        {/* Expanded: top referring domains */}
                         {expanded && item.topDomains.length > 0 && (
                           <tr className="bg-muted/20 border-b border-border/30">
-                            <td colSpan={6} className="px-6 py-4">
+                            <td colSpan={5} className="px-6 py-4">
                               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">
                                 Top Referring Domains (DataforSEO)
                               </p>
@@ -410,15 +513,12 @@ export default function AgedDomainPage() {
                                         : "border-border bg-muted/30"
                                     )}
                                   >
-                                    {/* DR badge — only from DB, shows "?" if not in DB */}
                                     {td.dbDr !== null
                                       ? <DrBadge dr={td.dbDr} small />
                                       : <span className="inline-flex items-center font-bold rounded-full text-xs px-1.5 py-0.5 bg-muted text-muted-foreground">?</span>
                                     }
                                     <span className="font-mono">{td.domain}</span>
-                                    <span className="text-muted-foreground">
-                                      ({td.backlinks} links)
-                                    </span>
+                                    <span className="text-muted-foreground">({td.backlinks} links)</span>
                                     {td.inDb && (
                                       <span title="Có trong Backlink DB">
                                         <Database className="h-3 w-3 text-blue-500" />
@@ -435,6 +535,138 @@ export default function AgedDomainPage() {
                                     </a>
                                   </div>
                                 ))}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── Results: Option 2 (Ahrefs) ──────────────────────────────────────────── */}
+      {mode === "ahrefs" && v2Results !== null && (
+        <div className="rounded-xl border bg-card shadow-sm overflow-hidden">
+          {/* Header bar */}
+          <div className="flex items-center justify-between px-5 py-4 border-b flex-wrap gap-2">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="h-4 w-4 text-green-500" />
+              <span className="text-sm font-medium">
+                {displayedV2.length} / {v2Results.length} domain
+                {minQualified > 0 && (
+                  <span className="text-muted-foreground"> (Qualified ≥ {minQualified})</span>
+                )}
+              </span>
+              <Badge variant="secondary" className="text-xs bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300 border-orange-200 dark:border-orange-800">
+                Ahrefs
+              </Badge>
+            </div>
+
+            {/* Lưu vào DB button */}
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-2"
+              onClick={handleSaveToDb}
+              disabled={savingToDb || !v2Results.some((r) => r.qualifiedDomains.length > 0)}
+            >
+              {savingToDb
+                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                : <BookMarked className="h-3.5 w-3.5" />
+              }
+              {savingToDb ? "Đang lưu..." : "Lưu vào Backlink DB"}
+            </Button>
+          </div>
+
+          <p className="px-5 py-2 text-xs text-muted-foreground border-b bg-muted/20">
+            <span className="font-medium text-orange-600 dark:text-orange-400">Qualified Refs</span>
+            {" "}= Referring Domains có DR ≥ {minDr} (nguồn: Ahrefs). "Lưu vào DB" sẽ lưu toàn bộ vào Backlink DB.
+          </p>
+
+          {/* Table */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/40 border-b">
+                <tr>
+                  <th className="px-4 py-3 w-8" />
+                  <SortTh label="Domain" col="domain" current={v2SortKey} dir={v2SortDir} onSort={() => handleV2Sort("domain")} />
+                  <SortTh label={`Qualified Refs (DR≥${minDr})`} col="qualifiedCount" current={v2SortKey} dir={v2SortDir} onSort={() => handleV2Sort("qualifiedCount")} />
+                  <SortTh label="Max DR (Ahrefs)" col="maxDr" current={v2SortKey} dir={v2SortDir} onSort={() => handleV2Sort("maxDr")} />
+                </tr>
+              </thead>
+              <tbody>
+                {displayedV2.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="text-center py-12 text-muted-foreground text-sm">
+                      Không có domain nào đạt điều kiện Qualified ≥ {minQualified}
+                    </td>
+                  </tr>
+                ) : (
+                  displayedV2.map((item) => {
+                    const expanded = expandedRows.has(item.domain);
+                    return (
+                      <Fragment key={item.domain}>
+                        <tr
+                          className={cn(
+                            "border-b border-border/50 hover:bg-muted/20 transition-colors cursor-pointer",
+                            item.error && "opacity-60"
+                          )}
+                          onClick={() =>
+                            setExpandedRows((prev) => {
+                              const next = new Set(prev);
+                              expanded ? next.delete(item.domain) : next.add(item.domain);
+                              return next;
+                            })
+                          }
+                        >
+                          <td className="px-4 py-3 text-muted-foreground">
+                            {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                          </td>
+                          <td className="px-4 py-3 font-mono font-medium">
+                            {item.domain}
+                            {item.error && (
+                              <span className="ml-2 text-xs text-destructive">({item.error})</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-1.5">
+                              <QualifiedBadge count={item.qualifiedCount} />
+                              {item.limitReached && (
+                                <span title={`Đạt giới hạn ${limitPerDomain}, có thể còn nhiều hơn`}
+                                  className="text-xs text-amber-600 dark:text-amber-400">+</span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <DrBadge dr={item.maxDr} />
+                          </td>
+                        </tr>
+                        {expanded && item.qualifiedDomains.length > 0 && (
+                          <tr className="bg-muted/20 border-b border-border/30">
+                            <td colSpan={4} className="px-6 py-4">
+                              <div className="flex items-center justify-between mb-3">
+                                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                                  Qualified Referring Domains (Ahrefs · DR ≥ {minDr})
+                                </p>
+                                <span className="text-xs text-muted-foreground">
+                                  {item.qualifiedDomains.length} domains
+                                  {item.limitReached && " (giới hạn đạt)"}
+                                </span>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                {item.qualifiedDomains.slice(0, 30).map((d) => (
+                                  <AhrefsRefDomainChip key={d.domain} item={d} />
+                                ))}
+                                {item.qualifiedDomains.length > 30 && (
+                                  <span className="text-xs text-muted-foreground self-center">
+                                    ... và {item.qualifiedDomains.length - 30} domain khác
+                                  </span>
+                                )}
                               </div>
                             </td>
                           </tr>
@@ -469,13 +701,12 @@ export default function AgedDomainPage() {
           <div className="border-t px-6 pb-6">
             <p className="text-xs text-muted-foreground pt-4 pb-4 leading-relaxed">
               Cơ sở dữ liệu domain tham chiếu <strong>(Domain, DR)</strong>.
-              Khi phân tích, hệ thống kiểm tra từng Referring Domain của mỗi domain được phân tích
-              xem có khớp với DB và có DR ≥ ngưỡng yêu cầu không.
+              Option 1 tra cứu DR của Referring Domains tại đây.
+              Option 2 có thể <strong>tự động enrich</strong> DB sau mỗi lần phân tích.
             </p>
 
             {/* Action row */}
             <div className="flex flex-wrap items-end gap-2 mb-4">
-              {/* Manual add */}
               <div>
                 <label className="block text-xs text-muted-foreground mb-1">Domain</label>
                 <Input
@@ -483,7 +714,6 @@ export default function AgedDomainPage() {
                   value={dbManualDomain}
                   onChange={(e) => setDbManualDomain(e.target.value)}
                   className="w-44 text-sm font-mono"
-                  onKeyDown={(e) => e.key === "Enter" && e.currentTarget.nextElementSibling?.querySelector("input")?.focus()}
                 />
               </div>
               <div>
@@ -577,19 +807,16 @@ export default function AgedDomainPage() {
             {/* DB list */}
             {dbEntries.length === 0 ? (
               <p className="text-center py-8 text-sm text-muted-foreground">
-                DB trống — thêm domain tham chiếu để bắt đầu so sánh
+                DB trống — thêm domain tham chiếu để bắt đầu so sánh (Option 1),
+                hoặc dùng Option 2 để tự động enrich
               </p>
             ) : (
               <div className="rounded-lg border overflow-hidden">
                 <table className="w-full text-sm">
                   <thead className="bg-muted/50 border-b">
                     <tr>
-                      <th className="px-4 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                        Domain
-                      </th>
-                      <th className="px-4 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide w-24">
-                        DR
-                      </th>
+                      <th className="px-4 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">Domain</th>
+                      <th className="px-4 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide w-24">DR</th>
                       <th className="w-12" />
                     </tr>
                   </thead>
@@ -597,9 +824,7 @@ export default function AgedDomainPage() {
                     {filteredDb.slice(0, 200).map((entry) => (
                       <tr key={entry.domain} className="border-b border-border/30 hover:bg-muted/30 group">
                         <td className="px-4 py-2 font-mono text-xs">{entry.domain}</td>
-                        <td className="px-4 py-2">
-                          <DrBadge dr={entry.dr} small />
-                        </td>
+                        <td className="px-4 py-2"><DrBadge dr={entry.dr} small /></td>
                         <td className="px-4 py-2 text-right">
                           <button
                             onClick={() => removeFromDb(entry.domain)}
@@ -661,6 +886,21 @@ function SortTh({ label, col, current, dir, onSort }: {
   );
 }
 
+function QualifiedBadge({ count }: { count: number }) {
+  return (
+    <span className={cn(
+      "inline-flex items-center justify-center min-w-[2.5rem] px-2.5 py-1 rounded-full text-sm font-bold",
+      count >= 5
+        ? "bg-blue-600 text-white"
+        : count >= 1
+          ? "bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300"
+          : "bg-muted text-muted-foreground"
+    )}>
+      {count}
+    </span>
+  );
+}
+
 function DrBadge({ dr, small = false }: { dr: number; small?: boolean }) {
   const color =
     dr >= 70 ? "bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300"
@@ -675,5 +915,24 @@ function DrBadge({ dr, small = false }: { dr: number; small?: boolean }) {
     )}>
       {dr}
     </span>
+  );
+}
+
+function AhrefsRefDomainChip({ item }: { item: AhrefsRefDomain }) {
+  return (
+    <div className="flex items-center gap-1.5 rounded-lg border border-orange-200 dark:border-orange-800 bg-orange-50 dark:bg-orange-950/30 px-2.5 py-1.5 text-xs">
+      <DrBadge dr={item.dr} small />
+      <span className="font-mono">{item.domain}</span>
+      <span className="text-muted-foreground">({item.links} links)</span>
+      <a
+        href={`https://${item.domain}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => e.stopPropagation()}
+        className="text-muted-foreground hover:text-primary"
+      >
+        <ExternalLink className="h-3 w-3" />
+      </a>
+    </div>
   );
 }

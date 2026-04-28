@@ -1,17 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readSettings, writeSettings } from "@/lib/settings";
 
-// GET — return settings (password is NEVER sent to client)
+function maskSecret(s: string): string {
+  if (s.length === 0) return "";
+  if (s.length <= 4) return "••••••";
+  return s.slice(0, 2) + "••••••" + s.slice(-2);
+}
+
+// GET — return settings (secrets are NEVER sent to client)
 export async function GET() {
   try {
     const s = await readSettings();
     return NextResponse.json({
       dataforseoLogin: s.dataforseoLogin,
       hasPassword: s.dataforseoPassword.length > 0,
-      // Mask: first 2 chars + dots + last 2 chars
-      passwordHint: s.dataforseoPassword.length > 4
-        ? s.dataforseoPassword.slice(0, 2) + "••••••" + s.dataforseoPassword.slice(-2)
-        : s.dataforseoPassword.length > 0 ? "••••••" : "",
+      passwordHint: maskSecret(s.dataforseoPassword),
+      hasAhrefsKey: s.ahrefsApiKey.length > 0,
+      ahrefsKeyHint: maskSecret(s.ahrefsApiKey),
     });
   } catch (err) {
     return NextResponse.json(
@@ -22,13 +27,14 @@ export async function GET() {
 }
 
 // POST — save settings
-// body: { dataforseoLogin?: string; dataforseoPassword?: string }
+// body: { dataforseoLogin?: string; dataforseoPassword?: string; ahrefsApiKey?: string }
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     await writeSettings({
       dataforseoLogin: body.dataforseoLogin,
       dataforseoPassword: body.dataforseoPassword,
+      ahrefsApiKey: body.ahrefsApiKey,
     });
     return NextResponse.json({ ok: true });
   } catch (err) {
