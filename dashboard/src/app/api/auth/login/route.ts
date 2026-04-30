@@ -10,7 +10,7 @@ export async function POST(request: NextRequest) {
     if (!checkCredentials(username, password)) {
       return NextResponse.json({ error: "Sai username hoặc password" }, { status: 401 });
     }
-    const token = await makeSessionToken();
+    const token = await makeSessionToken(username);
     const res = NextResponse.json({ ok: true });
     res.cookies.set(SESSION_COOKIE, token, {
       httpOnly: true,
