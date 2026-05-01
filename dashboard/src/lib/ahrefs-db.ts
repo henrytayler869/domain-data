@@ -233,11 +233,13 @@ export async function upsertRows(rows: Omit<AhrefsResultRow, "checkedAt">[]): Pr
   const before = countBefore ?? 0;
 
   const BATCH = 500;
+  const now = new Date().toISOString();
   for (let i = 0; i < rows.length; i += BATCH) {
     const slice = rows.slice(i, i + BATCH).map((r) => ({
       target_domain: r.targetDomain.toLowerCase().trim(),
       ref_domain: r.refDomain.toLowerCase().trim(),
       domain_rating: Math.round(Number(r.domainRating) || 0),
+      checked_at: now, // bump so re-uploads reset visibility for "Xóa hiện tại" hide-filter
     }));
     const { error } = await sb
       .from(TABLE)

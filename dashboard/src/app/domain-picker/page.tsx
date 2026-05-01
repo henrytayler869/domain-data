@@ -103,6 +103,9 @@ export default function DomainPickerPage() {
 
   // ── Ahrefs Result DB ────────────────────────────────────────────────────────
   const [ahrefsSummary, setAhrefsSummary] = useState<TargetSummary[]>([]);
+  // UI-only hide cutoff (timestamp). When set, only show targets with checkedAt > this.
+  // Persisted in localStorage. Does NOT touch DB.
+  const [viewClearedAt, setViewClearedAt] = useState<number | null>(null);
   const [checkedTargets, setCheckedTargets] = useState<Set<string>>(new Set());
   const [ahrefsOpen, setAhrefsOpen] = useState(false);
   const [ahrefsSearch, setAhrefsSearch] = useState("");
@@ -210,6 +213,21 @@ export default function DomainPickerPage() {
   );
 
   useEffect(() => { loadDb(); loadAhrefs(); loadUserBlacklist(); loadInventory(); }, [loadDb, loadAhrefs, loadUserBlacklist, loadInventory]);
+
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem("ahrefs.viewClearedAt");
+      if (v) setViewClearedAt(parseInt(v, 10) || null);
+    } catch { /* ignore */ }
+  }, []);
+
+  const updateViewClearedAt = useCallback((ts: number | null) => {
+    setViewClearedAt(ts);
+    try {
+      if (ts == null) localStorage.removeItem("ahrefs.viewClearedAt");
+      else localStorage.setItem("ahrefs.viewClearedAt", String(ts));
+    } catch { /* ignore */ }
+  }, []);
 
   const saveAllToDb = useCallback(async () => {
     if (!scoredRows.length) return;
@@ -363,6 +381,11 @@ export default function DomainPickerPage() {
 
   const filteredAhrefs = useMemo(() => {
     const bySearch = ahrefsSummary.filter((t) => {
+      // UI-only hide: skip entries last-checked at-or-before viewClearedAt
+      if (viewClearedAt != null) {
+        const t0 = new Date(t.checkedAt).getTime();
+        if (t0 <= viewClearedAt) return false;
+      }
       if (ahrefsSearch && !t.targetDomain.includes(ahrefsSearch.toLowerCase())) return false;
       if (filterRating !== "all") {
         if (filterRating === "none") {
@@ -412,7 +435,7 @@ export default function DomainPickerPage() {
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * ahrefsSortDir;
       return String(av).localeCompare(String(bv)) * ahrefsSortDir;
     });
-  }, [ahrefsSummary, ahrefsSearch, applyRefBlacklist, effectiveBlacklist, sourceMap, ahrefsSortKey, ahrefsSortDir, filterRating, filterSource, filterPurchased, purchasedSet]);
+  }, [ahrefsSummary, ahrefsSearch, applyRefBlacklist, effectiveBlacklist, sourceMap, ahrefsSortKey, ahrefsSortDir, filterRating, filterSource, filterPurchased, purchasedSet, viewClearedAt]);
 
   const handleAhrefsSort = (key: typeof ahrefsSortKey) => {
     if (ahrefsSortKey === key) setAhrefsSortDir((d) => (d === 1 ? -1 : 1));
@@ -617,13 +640,18 @@ export default function DomainPickerPage() {
     showToast(`✅ Export ${rows.length} target → ${a.download}`);
   }, [exportableAhrefs, showToast]);
 
-  const clearAhrefs = useCallback(async () => {
+  // UI-only hide: set cutoff timestamp; entries checked at-or-before this are hidden
+  // from the Ahrefs panel display (DB intact, new uploads will reappear automatically).
+  const clearAhrefs = useCallback(() => {
     if (!ahrefsSummary.length) return;
-    if (!confirm(`Xóa toàn bộ ${ahrefsSummary.length} target khỏi Ahrefs Result DB?`)) return;
-    await fetch("/api/ahrefs-results/db", { method: "DELETE" });
-    await loadAhrefs();
-    showToast("🗑️ Đã xóa toàn bộ Ahrefs Result DB");
-  }, [ahrefsSummary.length, loadAhrefs, showToast]);
+    updateViewClearedAt(Date.now());
+    showToast(`👁️ Đã ẩn ${ahrefsSummary.length} target khỏi view (DB vẫn còn)`);
+  }, [ahrefsSummary.length, updateViewClearedAt, showToast]);
+
+  const restoreAhrefsView = useCallback(() => {
+    updateViewClearedAt(null);
+    showToast("👁️ Đã hiện lại toàn bộ");
+  }, [updateViewClearedAt, showToast]);
 
   // ─── File upload ────────────────────────────────────────────────────────────
 
@@ -1166,13 +1194,28 @@ export default function DomainPickerPage() {
                   </Button>
                 </>
               )}
+              {viewClearedAt != null && (
+                <Button
+                  size="sm" variant="outline"
+                  className="gap-1.5 ml-auto"
+                  onClick={restoreAhrefsView}
+                  title="Hiện lại các target đã ẩn"
+                >
+                  <Search className="h-3.5 w-3.5" />
+                  Hiện toàn bộ
+                </Button>
+              )}
               <Button
                 size="sm" variant="outline"
-                className="gap-1.5 text-destructive border-destructive/40 hover:bg-destructive/10 ml-auto"
+                className={cn(
+                  "gap-1.5 text-amber-700 border-amber-400/60 hover:bg-amber-50 dark:hover:bg-amber-950",
+                  viewClearedAt == null && "ml-auto"
+                )}
                 onClick={clearAhrefs}
+                title="Ẩn dữ liệu hiện tại khỏi view (DB vẫn còn — upload mới sẽ tự hiện)"
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                Xóa tất cả
+                Xóa hiện tại
               </Button>
             </div>
 
