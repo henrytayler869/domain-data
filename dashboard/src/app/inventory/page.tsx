@@ -34,6 +34,9 @@ export default function InventoryPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "holding" | "sold">("all");
+  const [filterExpected, setFilterExpected] = useState<"all" | "yes" | "no">("all");
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState<number>(25);
   const [datePreset, setDatePreset] = useState<"all" | "7d" | "30d" | "month" | "year" | "custom">("all");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
@@ -178,6 +181,8 @@ export default function InventoryPage() {
       if (search && !e.domain.includes(search.toLowerCase())) return false;
       if (filterStatus === "holding" && e.sellPrice != null) return false;
       if (filterStatus === "sold" && e.sellPrice == null) return false;
+      if (filterExpected === "yes" && e.expectedSellPrice == null) return false;
+      if (filterExpected === "no" && e.expectedSellPrice != null) return false;
       return true;
     });
     return [...list].sort((a, b) => {
@@ -205,7 +210,20 @@ export default function InventoryPage() {
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * sortDir;
       return String(av).localeCompare(String(bv)) * sortDir;
     });
-  }, [dateFiltered, search, filterStatus, sortKey, sortDir]);
+  }, [dateFiltered, search, filterStatus, filterExpected, sortKey, sortDir]);
+
+  // Pagination — applied on top of `filtered`
+  const totalPages = pageSize > 0 ? Math.max(1, Math.ceil(filtered.length / pageSize)) : 1;
+  const safePage = Math.min(page, totalPages - 1);
+  const pagedRows = useMemo(
+    () => (pageSize > 0 ? filtered.slice(safePage * pageSize, (safePage + 1) * pageSize) : filtered),
+    [filtered, safePage, pageSize]
+  );
+
+  // Reset to first page when filters/sort/search change
+  useEffect(() => {
+    setPage(0);
+  }, [search, filterStatus, filterExpected, datePreset, customFrom, customTo, sortKey, sortDir, pageSize]);
 
   const toggleSelect = (domain: string) => {
     setSelected((prev) => {
@@ -218,7 +236,8 @@ export default function InventoryPage() {
 
   const toggleSelectAll = () => {
     setSelected((prev) => {
-      const visible = filtered.map((e) => e.domain);
+      // Operate on current page only — typical Gmail-style "select visible"
+      const visible = pagedRows.map((e) => e.domain);
       const allSelected = visible.length > 0 && visible.every((d) => prev.has(d));
       if (allSelected) {
         const next = new Set(prev);
@@ -586,10 +605,21 @@ export default function InventoryPage() {
           value={filterStatus}
           onChange={(e) => setFilterStatus(e.target.value as "all" | "holding" | "sold")}
           className="h-8 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
+          title="Filter Status"
         >
           <option value="all">Tất cả</option>
           <option value="holding">Đang giữ</option>
           <option value="sold">Đã bán</option>
+        </select>
+        <select
+          value={filterExpected}
+          onChange={(e) => setFilterExpected(e.target.value as "all" | "yes" | "no")}
+          className="h-8 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
+          title="Filter Giá dự kiến"
+        >
+          <option value="all">Tất cả giá</option>
+          <option value="yes">Đã có giá dự kiến</option>
+          <option value="no">Chưa có giá dự kiến</option>
         </select>
         <Button
           size="sm"
@@ -761,11 +791,11 @@ export default function InventoryPage() {
                       type="checkbox"
                       className="rounded cursor-pointer"
                       aria-label="Select all"
-                      checked={filtered.length > 0 && filtered.every((e) => selected.has(e.domain))}
+                      checked={pagedRows.length > 0 && pagedRows.every((e) => selected.has(e.domain))}
                       ref={(el) => {
                         if (!el) return;
-                        const sCount = filtered.filter((e) => selected.has(e.domain)).length;
-                        el.indeterminate = sCount > 0 && sCount < filtered.length;
+                        const sCount = pagedRows.filter((e) => selected.has(e.domain)).length;
+                        el.indeterminate = sCount > 0 && sCount < pagedRows.length;
                       }}
                       onChange={toggleSelectAll}
                     />
@@ -784,7 +814,7 @@ export default function InventoryPage() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((e) => {
+                {pagedRows.map((e) => {
                   const isEditing = editingDomain === e.domain;
                   const isSold = e.sellPrice != null;
                   const profit = profitOf(e);
@@ -991,6 +1021,75 @@ export default function InventoryPage() {
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {/* Pagination footer */}
+        {!loading && filtered.length > 0 && (
+          <div className="flex items-center justify-between gap-2 border-t px-4 py-2 text-xs flex-wrap">
+            <div className="text-muted-foreground">
+              {pageSize > 0 ? (
+                <>
+                  Hiển thị <strong>{safePage * pageSize + 1}-{Math.min((safePage + 1) * pageSize, filtered.length)}</strong>
+                  {" "}/ {filtered.length.toLocaleString()} domain
+                </>
+              ) : (
+                <>Hiển thị tất cả <strong>{filtered.length.toLocaleString()}</strong> domain</>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground">Trang:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => setPageSize(Number(e.target.value))}
+                className="h-7 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
+              >
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="200">200</option>
+                <option value="0">Tất cả</option>
+              </select>
+              {pageSize > 0 && totalPages > 1 && (
+                <>
+                  <button
+                    onClick={() => setPage(0)}
+                    disabled={safePage === 0}
+                    className="h-7 px-2 rounded-md border border-input hover:bg-muted disabled:opacity-40 disabled:pointer-events-none"
+                    title="Trang đầu"
+                  >
+                    «
+                  </button>
+                  <button
+                    onClick={() => setPage((p) => Math.max(0, p - 1))}
+                    disabled={safePage === 0}
+                    className="h-7 px-2 rounded-md border border-input hover:bg-muted disabled:opacity-40 disabled:pointer-events-none"
+                    title="Trang trước"
+                  >
+                    ‹
+                  </button>
+                  <span className="px-1 tabular-nums">
+                    <strong>{safePage + 1}</strong> / {totalPages}
+                  </span>
+                  <button
+                    onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                    disabled={safePage >= totalPages - 1}
+                    className="h-7 px-2 rounded-md border border-input hover:bg-muted disabled:opacity-40 disabled:pointer-events-none"
+                    title="Trang sau"
+                  >
+                    ›
+                  </button>
+                  <button
+                    onClick={() => setPage(totalPages - 1)}
+                    disabled={safePage >= totalPages - 1}
+                    className="h-7 px-2 rounded-md border border-input hover:bg-muted disabled:opacity-40 disabled:pointer-events-none"
+                    title="Trang cuối"
+                  >
+                    »
+                  </button>
+                </>
+              )}
+            </div>
           </div>
         )}
       </div>
