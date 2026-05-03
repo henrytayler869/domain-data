@@ -77,42 +77,34 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
-
-        <SidebarGroup>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {otherItems.map((item) => (
-                <SidebarMenuItem key={item.href}>
-                  <SidebarMenuButton
-                    isActive={pathname.startsWith(item.href)}
-                    className={cn(
-                      "transition-colors",
-                      pathname.startsWith(item.href) && "font-medium"
-                    )}
-                    render={<Link href={item.href} />}
-                  >
-                    <item.icon className="h-4 w-4" />
-                    <span>{item.title}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
       </SidebarContent>
 
-      {/* Footer */}
+      {/* Footer: Settings + Logout */}
       <SidebarFooter className="border-t border-sidebar-border">
+        <SidebarMenu>
+          {otherItems.map((item) => (
+            <SidebarMenuItem key={item.href}>
+              <SidebarMenuButton
+                isActive={pathname.startsWith(item.href)}
+                className={cn(
+                  "transition-colors",
+                  pathname.startsWith(item.href) && "font-medium"
+                )}
+                render={<Link href={item.href} />}
+              >
+                <item.icon className="h-4 w-4" />
+                <span>{item.title}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          ))}
+        </SidebarMenu>
         <button
           onClick={handleLogout}
-          className="mx-2 mt-1 flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition-colors"
+          className="mx-2 mb-1 flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition-colors"
         >
           <LogOut className="h-4 w-4" />
           <span>Đăng xuất</span>
         </button>
-        <p className="px-3 py-2 text-xs text-muted-foreground">
-          Data from Namecheap · updates hourly
-        </p>
       </SidebarFooter>
     </Sidebar>
   );
