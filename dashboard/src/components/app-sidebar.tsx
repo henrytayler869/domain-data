@@ -24,6 +24,9 @@ const catcherItems = [
   { title: "Trend Domain", href: "/trend-domain/pipeline", icon: TrendingUp },
 ];
 
+// To be populated later
+const osServiceItems: { title: string; href: string; icon: typeof Boxes }[] = [];
+
 const otherItems = [
   { title: "Cài đặt", href: "/settings", icon: Settings },
 ];
@@ -46,10 +49,7 @@ export function AppSidebar() {
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <LayoutDashboard className="h-4 w-4" />
           </div>
-          <div className="flex flex-col leading-tight">
-            <span className="text-sm font-semibold">DomainRadar</span>
-            <span className="text-xs text-muted-foreground">Namecheap Tools</span>
-          </div>
+          <span className="text-base font-semibold tracking-tight">PG889</span>
         </div>
       </SidebarHeader>
 
@@ -75,6 +75,35 @@ export function AppSidebar() {
                 </SidebarMenuItem>
               ))}
             </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
+        <SidebarGroup>
+          <SidebarGroupLabel>OS Service</SidebarGroupLabel>
+          <SidebarGroupContent>
+            {osServiceItems.length === 0 ? (
+              <p className="px-2 py-1 text-xs text-muted-foreground italic">
+                Sắp ra mắt...
+              </p>
+            ) : (
+              <SidebarMenu>
+                {osServiceItems.map((item) => (
+                  <SidebarMenuItem key={item.href}>
+                    <SidebarMenuButton
+                      isActive={pathname.startsWith(item.href)}
+                      className={cn(
+                        "transition-colors",
+                        pathname.startsWith(item.href) && "font-medium"
+                      )}
+                      render={<Link href={item.href} />}
+                    >
+                      <item.icon className="h-4 w-4" />
+                      <span>{item.title}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            )}
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
