@@ -80,6 +80,7 @@ export default function InventoryPage() {
   const [withdrawalFormOpen, setWithdrawalFormOpen] = useState(false);
   const [withdrawalListOpen, setWithdrawalListOpen] = useState(false);
   const [savingWithdrawal, setSavingWithdrawal] = useState(false);
+  const [editingWithdrawalId, setEditingWithdrawalId] = useState<string | null>(null);
   const [wDate, setWDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [wAmount, setWAmount] = useState("");
   const [wCurrency, setWCurrency] = useState("USD");
@@ -480,11 +481,22 @@ export default function InventoryPage() {
   // ─── Withdrawals ────────────────────────────────────────────────────────────
 
   const openWithdrawalForm = useCallback(() => {
+    setEditingWithdrawalId(null);
     setWDate(new Date().toISOString().slice(0, 10));
     setWAmount("");
     setWCurrency("USD");
     setWStatus("paid");
     setWNotes("");
+    setWithdrawalFormOpen(true);
+  }, []);
+
+  const openEditWithdrawal = useCallback((w: Withdrawal) => {
+    setEditingWithdrawalId(w.id);
+    setWDate(new Date(w.withdrawnAt).toISOString().slice(0, 10));
+    setWAmount(String(w.amount));
+    setWCurrency(w.currency);
+    setWStatus(w.status);
+    setWNotes(w.notes ?? "");
     setWithdrawalFormOpen(true);
   }, []);
 
@@ -496,28 +508,53 @@ export default function InventoryPage() {
     }
     setSavingWithdrawal(true);
     try {
-      const res = await fetch("/api/withdrawals", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          withdrawnAt: new Date(wDate + "T00:00:00").toISOString(),
-          amount,
-          currency: wCurrency.trim() || "USD",
-          status: wStatus,
-          notes: wNotes.trim() || null,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Lỗi");
-      setWithdrawals((prev) => [data.entry, ...prev]);
-      setWithdrawalFormOpen(false);
-      showToast(`✅ Đã rút $${amount.toFixed(2)} ${wCurrency}`);
+      const payload = {
+        withdrawnAt: new Date(wDate + "T00:00:00").toISOString(),
+        amount,
+        currency: wCurrency.trim() || "USD",
+        status: wStatus,
+        notes: wNotes.trim() || null,
+      };
+      if (editingWithdrawalId) {
+        // EDIT mode
+        const res = await fetch(`/api/withdrawals/${editingWithdrawalId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "Lỗi");
+        const id = editingWithdrawalId;
+        setWithdrawals((prev) => prev.map((w) => (w.id === id ? {
+          ...w,
+          withdrawnAt: payload.withdrawnAt,
+          amount: payload.amount,
+          currency: payload.currency,
+          status: payload.status,
+          notes: payload.notes,
+        } : w)));
+        setWithdrawalFormOpen(false);
+        setEditingWithdrawalId(null);
+        showToast(`✅ Đã cập nhật`);
+      } else {
+        // CREATE mode
+        const res = await fetch("/api/withdrawals", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "Lỗi");
+        setWithdrawals((prev) => [data.entry, ...prev]);
+        setWithdrawalFormOpen(false);
+        showToast(`✅ Đã rút $${amount.toFixed(2)} ${wCurrency}`);
+      }
     } catch (err) {
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
     } finally {
       setSavingWithdrawal(false);
     }
-  }, [wDate, wAmount, wCurrency, wStatus, wNotes, showToast]);
+  }, [wDate, wAmount, wCurrency, wStatus, wNotes, editingWithdrawalId, showToast]);
 
   const deleteWithdrawal = useCallback(async (id: string) => {
     if (!confirm("Xóa lần rút này?")) return;
@@ -805,9 +842,14 @@ export default function InventoryPage() {
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
               <Wallet className="h-4 w-4 text-purple-600" />
-              <h3 className="text-sm font-semibold">Ghi nhận lần rút tiền</h3>
+              <h3 className="text-sm font-semibold">
+                {editingWithdrawalId ? "Sửa lần rút tiền" : "Ghi nhận lần rút tiền"}
+              </h3>
             </div>
-            <button onClick={() => setWithdrawalFormOpen(false)} className="text-muted-foreground hover:text-foreground">
+            <button
+              onClick={() => { setWithdrawalFormOpen(false); setEditingWithdrawalId(null); }}
+              className="text-muted-foreground hover:text-foreground"
+            >
               <X className="h-4 w-4" />
             </button>
           </div>
@@ -878,9 +920,12 @@ export default function InventoryPage() {
               className="gap-1.5 bg-purple-600 hover:bg-purple-700 text-white"
             >
               {savingWithdrawal ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <SaveIcon className="h-3.5 w-3.5" />}
-              {savingWithdrawal ? "Đang lưu..." : "Lưu"}
+              {savingWithdrawal ? "Đang lưu..." : (editingWithdrawalId ? "Cập nhật" : "Lưu")}
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setWithdrawalFormOpen(false)}>
+            <Button
+              size="sm" variant="ghost"
+              onClick={() => { setWithdrawalFormOpen(false); setEditingWithdrawalId(null); }}
+            >
               Hủy
             </Button>
           </div>
@@ -1372,12 +1417,22 @@ export default function InventoryPage() {
                           {w.notes || <span className="opacity-40">—</span>}
                         </td>
                         <td className="px-3 py-2 text-right">
-                          <button
-                            onClick={() => deleteWithdrawal(w.id)}
-                            className="opacity-0 group-hover:opacity-100 transition text-destructive hover:opacity-80"
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </button>
+                          <div className="flex items-center justify-end gap-1.5 opacity-0 group-hover:opacity-100 transition">
+                            <button
+                              onClick={() => openEditWithdrawal(w)}
+                              className="text-muted-foreground hover:text-primary"
+                              title="Sửa"
+                            >
+                              <Edit2 className="h-3 w-3" />
+                            </button>
+                            <button
+                              onClick={() => deleteWithdrawal(w.id)}
+                              className="text-destructive hover:opacity-80"
+                              title="Xóa"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
