@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { TrendingUp, LayoutDashboard, Archive, Filter, Boxes, Settings, LogOut, Users, ShoppingCart } from "lucide-react";
+import { TrendingUp, LayoutDashboard, Archive, Filter, Boxes, Settings, LogOut, Users, ShoppingCart, PieChart } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -16,6 +16,10 @@ import {
   SidebarGroupContent,
 } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
+
+const dashboardItems = [
+  { title: "Tổng quan", href: "/dashboard", icon: PieChart },
+];
 
 const catcherItems = [
   { title: "Kho Domain", href: "/inventory", icon: Boxes },
@@ -57,6 +61,29 @@ export function AppSidebar() {
 
       {/* Content */}
       <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupLabel>Dashboard</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {dashboardItems.map((item) => (
+                <SidebarMenuItem key={item.href}>
+                  <SidebarMenuButton
+                    isActive={pathname.startsWith(item.href)}
+                    className={cn(
+                      "transition-colors",
+                      pathname.startsWith(item.href) && "font-medium"
+                    )}
+                    render={<Link href={item.href} />}
+                  >
+                    <item.icon className="h-4 w-4" />
+                    <span>{item.title}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
         <SidebarGroup>
           <SidebarGroupLabel>Domain Catcher</SidebarGroupLabel>
           <SidebarGroupContent>

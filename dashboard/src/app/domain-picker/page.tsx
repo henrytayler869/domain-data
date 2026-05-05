@@ -19,6 +19,7 @@ import {
   Check,
   Download,
   Plus,
+  Ban,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -124,6 +125,7 @@ export default function DomainPickerPage() {
   const [purchaseRows, setPurchaseRows] = useState<Record<string, string>>({}); // domain → price string
   const [purchaseBulkPrice, setPurchaseBulkPrice] = useState("");
   const [savingPurchase, setSavingPurchase] = useState(false);
+  const [excludingTargets, setExcludingTargets] = useState(false);
   const [inventory, setInventory] = useState<{ domain: string; purchasePrice: number | null }[]>([]);
   const [userBlacklist, setUserBlacklist] = useState<RefBlacklistEntry[]>([]);
   const [bulkAddText, setBulkAddText] = useState("");
@@ -501,6 +503,32 @@ export default function DomainPickerPage() {
     setPurchaseRows(next);
   }, [purchaseBulkPrice, purchaseRows]);
 
+  // Loại trừ — đánh dấu domain đã bị mua bởi người khác (không sở hữu được).
+  // Thêm marker row vào ahrefs_results → vào checkedTargets set → bị filter bởi
+  // toggle "Loại domain đã check Ahrefs". KHÔNG thêm vào kho/inventory.
+  const excludeSelectedTargets = useCallback(async () => {
+    if (selectedTargets.size === 0) return;
+    const targets = Array.from(selectedTargets);
+    if (!confirm(`Loại trừ ${targets.length} domain? Chúng sẽ bị ẩn khỏi danh sách (đã có người mua, không sở hữu được).`)) return;
+    setExcludingTargets(true);
+    try {
+      const res = await fetch("/api/ahrefs-results/db/exclude", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targets }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Lỗi");
+      await loadAhrefs();
+      setSelectedTargets(new Set());
+      showToast(`✅ Đã loại trừ ${targets.length} domain`);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    } finally {
+      setExcludingTargets(false);
+    }
+  }, [selectedTargets, loadAhrefs, showToast]);
+
   const savePurchases = useCallback(async () => {
     setSavingPurchase(true);
     try {
@@ -523,7 +551,20 @@ export default function DomainPickerPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Lỗi");
-      await loadInventory();
+
+      // Cũng đánh dấu đã check Ahrefs để các domain này không hiện lại trong picker.
+      const targets = entries.map((e) => e.domain);
+      if (targets.length > 0) {
+        try {
+          await fetch("/api/ahrefs-results/db/exclude", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ targets }),
+          });
+        } catch { /* non-fatal — kho vẫn save thành công */ }
+      }
+
+      await Promise.all([loadInventory(), loadAhrefs()]);
       setPurchaseFormOpen(false);
       setSelectedTargets(new Set());
       showToast(`✅ Đã lưu ${entries.length} domain vào kho · tổng ${data.total}`);
@@ -532,7 +573,7 @@ export default function DomainPickerPage() {
     } finally {
       setSavingPurchase(false);
     }
-  }, [purchaseRows, ahrefsSummary, sourceMap, loadInventory, showToast]);
+  }, [purchaseRows, ahrefsSummary, sourceMap, loadInventory, loadAhrefs, showToast]);
 
   // Effective list for copy/export: selection if any, else all filtered
   const exportableAhrefs = useMemo(() => {
@@ -1290,6 +1331,16 @@ export default function DomainPickerPage() {
                   >
                     <Check className="h-3.5 w-3.5" />
                     Đã mua ({selectedTargets.size})
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="gap-1.5 bg-rose-600 hover:bg-rose-700 text-white"
+                    onClick={excludeSelectedTargets}
+                    disabled={excludingTargets}
+                    title="Domain đã bị người khác mua — loại trừ khỏi danh sách"
+                  >
+                    {excludingTargets ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Ban className="h-3.5 w-3.5" />}
+                    Loại trừ ({selectedTargets.size})
                   </Button>
                   <Button
                     size="sm" variant="ghost"
