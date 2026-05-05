@@ -556,9 +556,9 @@ export default function OrdersPage() {
           {totalEntries.length === 0 ? (
             <p className="text-2xl font-bold">—</p>
           ) : (
-            <div className="space-y-0.5">
+            <div className="space-y-1.5 mt-1">
               {totalEntries.map(([cur, t]) => (
-                <p key={cur} className="text-lg font-bold leading-tight">{formatMoney(t.price, cur)}</p>
+                <p key={cur} className="text-lg font-bold leading-snug">{formatMoney(t.price, cur)}</p>
               ))}
             </div>
           )}
@@ -568,9 +568,9 @@ export default function OrdersPage() {
           {totalEntries.length === 0 ? (
             <p className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">—</p>
           ) : (
-            <div className="space-y-0.5">
+            <div className="space-y-1.5 mt-1">
               {totalEntries.map(([cur, t]) => (
-                <p key={cur} className="text-lg font-bold leading-tight text-emerald-600 dark:text-emerald-400">
+                <p key={cur} className="text-lg font-bold leading-snug text-emerald-600 dark:text-emerald-400">
                   {formatMoney(t.revenue, cur)}
                 </p>
               ))}
@@ -582,9 +582,9 @@ export default function OrdersPage() {
           {totalEntries.length === 0 || totalEntries.every(([, t]) => t.withdrawn === 0) ? (
             <p className="text-2xl font-bold text-purple-600 dark:text-purple-400">—</p>
           ) : (
-            <div className="space-y-0.5">
+            <div className="space-y-1.5 mt-1">
               {totalEntries.filter(([, t]) => t.withdrawn > 0).map(([cur, t]) => (
-                <p key={cur} className="text-lg font-bold leading-tight text-purple-600 dark:text-purple-400">
+                <p key={cur} className="text-lg font-bold leading-snug text-purple-600 dark:text-purple-400">
                   {formatMoney(t.withdrawn, cur)}
                 </p>
               ))}
@@ -596,10 +596,10 @@ export default function OrdersPage() {
           {totalEntries.length === 0 ? (
             <p className="text-2xl font-bold">—</p>
           ) : (
-            <div className="space-y-0.5">
+            <div className="space-y-1.5 mt-1">
               {totalEntries.map(([cur, t]) => (
                 <p key={cur} className={cn(
-                  "text-lg font-bold leading-tight",
+                  "text-lg font-bold leading-snug",
                   t.remaining > 0 ? "text-blue-600 dark:text-blue-400"
                   : t.remaining < 0 ? "text-rose-600 dark:text-rose-400"
                   : "text-muted-foreground"
