@@ -8,6 +8,7 @@ import { supabase } from "./supabase";
 const TABLE = "withdrawals";
 
 export type WithdrawalStatus = "paid" | "progressing" | "under_review";
+export type WithdrawalWallet = "evault" | "gname" | null;
 
 export interface Withdrawal {
   id: string;
@@ -16,6 +17,7 @@ export interface Withdrawal {
   currency: string;
   status: WithdrawalStatus;
   notes: string | null;
+  wallet: WithdrawalWallet;
   createdAt: string;
 }
 
@@ -26,6 +28,7 @@ interface DbRow {
   currency: string;
   status: WithdrawalStatus;
   notes: string | null;
+  wallet: WithdrawalWallet;
   created_at: string;
 }
 
@@ -37,6 +40,7 @@ function rowToEntry(r: DbRow): Withdrawal {
     currency: r.currency,
     status: r.status,
     notes: r.notes,
+    wallet: r.wallet ?? null,
     createdAt: r.created_at,
   };
 }
@@ -57,6 +61,7 @@ export interface AddInput {
   currency?: string;
   status: WithdrawalStatus;
   notes?: string | null;
+  wallet?: WithdrawalWallet;
 }
 
 export async function addEntry(input: AddInput): Promise<Withdrawal> {
@@ -67,6 +72,7 @@ export async function addEntry(input: AddInput): Promise<Withdrawal> {
     currency: (input.currency ?? "USD").toUpperCase().trim(),
     status: input.status,
     notes: input.notes ?? null,
+    wallet: input.wallet ?? null,
   }).select().single();
   if (error) throw new Error(error.message);
   return rowToEntry(data as DbRow);
@@ -78,6 +84,7 @@ export interface UpdateInput {
   currency?: string;
   status?: WithdrawalStatus;
   notes?: string | null;
+  wallet?: WithdrawalWallet;
 }
 
 export async function updateEntry(id: string, patch: UpdateInput): Promise<void> {
@@ -88,6 +95,7 @@ export async function updateEntry(id: string, patch: UpdateInput): Promise<void>
   if (patch.currency !== undefined) updates.currency = patch.currency.toUpperCase().trim();
   if (patch.status !== undefined) updates.status = patch.status;
   if (patch.notes !== undefined) updates.notes = patch.notes;
+  if (patch.wallet !== undefined) updates.wallet = patch.wallet;
   if (Object.keys(updates).length === 0) return;
   const { error } = await sb.from(TABLE).update(updates).eq("id", id);
   if (error) throw new Error(error.message);

@@ -99,8 +99,11 @@ create table if not exists withdrawals (
   currency      text not null default 'USD',
   status        text not null check (status in ('paid', 'progressing', 'under_review')),
   notes         text,
+  wallet        text,
   created_at    timestamptz default now()
 );
+
+alter table withdrawals add column if not exists wallet text;
 
 create index if not exists withdrawals_date_idx on withdrawals (withdrawn_at desc);
 
