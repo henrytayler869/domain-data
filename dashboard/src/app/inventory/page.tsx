@@ -26,7 +26,7 @@ import { cn } from "@/lib/utils";
 import type { InventoryEntry } from "@/lib/inventory-db";
 import type { TargetSummary } from "@/lib/ahrefs-db";
 import type { RefBlacklistEntry } from "@/lib/ref-blacklist-db";
-import type { Withdrawal, WithdrawalStatus } from "@/lib/withdrawal-db";
+import type { Withdrawal, WithdrawalStatus, WithdrawalWallet } from "@/lib/withdrawal-db";
 
 type SortKey = "domain" | "purchasePrice" | "sellPrice" | "expectedSellPrice" | "profit" | "rating" | "category" | "purchasedAt" | "soldAt" | "status";
 
@@ -85,6 +85,7 @@ export default function InventoryPage() {
   const [wAmount, setWAmount] = useState("");
   const [wCurrency, setWCurrency] = useState("USD");
   const [wStatus, setWStatus] = useState<WithdrawalStatus>("paid");
+  const [wWallet, setWWallet] = useState<WithdrawalWallet>(null);
   const [wNotes, setWNotes] = useState("");
 
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -495,6 +496,7 @@ export default function InventoryPage() {
     setWAmount("");
     setWCurrency("USD");
     setWStatus("paid");
+    setWWallet(null);
     setWNotes("");
     setWithdrawalFormOpen(true);
   }, []);
@@ -505,6 +507,7 @@ export default function InventoryPage() {
     setWAmount(String(w.amount));
     setWCurrency(w.currency);
     setWStatus(w.status);
+    setWWallet(w.wallet ?? null);
     setWNotes(w.notes ?? "");
     setWithdrawalFormOpen(true);
   }, []);
@@ -522,6 +525,7 @@ export default function InventoryPage() {
         amount,
         currency: wCurrency.trim() || "USD",
         status: wStatus,
+        wallet: wWallet,
         notes: wNotes.trim() || null,
       };
       if (editingWithdrawalId) {
@@ -540,6 +544,7 @@ export default function InventoryPage() {
           amount: payload.amount,
           currency: payload.currency,
           status: payload.status,
+          wallet: payload.wallet,
           notes: payload.notes,
         } : w)));
         setWithdrawalFormOpen(false);
@@ -563,7 +568,7 @@ export default function InventoryPage() {
     } finally {
       setSavingWithdrawal(false);
     }
-  }, [wDate, wAmount, wCurrency, wStatus, wNotes, editingWithdrawalId, showToast]);
+  }, [wDate, wAmount, wCurrency, wStatus, wWallet, wNotes, editingWithdrawalId, showToast]);
 
   const deleteWithdrawal = useCallback(async (id: string) => {
     if (!confirm("Xóa lần rút này?")) return;
@@ -595,13 +600,23 @@ export default function InventoryPage() {
   const withdrawalStats = useMemo(() => {
     let totalUsdPaid = 0;
     let totalUsdPending = 0; // progressing + under_review
+    const byWallet: Record<"evault" | "gname" | "none", { paid: number; pending: number }> = {
+      evault: { paid: 0, pending: 0 },
+      gname:  { paid: 0, pending: 0 },
+      none:   { paid: 0, pending: 0 },
+    };
     for (const w of withdrawals) {
-      if (w.currency === "USD") {
-        if (w.status === "paid") totalUsdPaid += w.amount;
-        else totalUsdPending += w.amount;
+      if (w.currency !== "USD") continue;
+      const key = w.wallet ?? "none";
+      if (w.status === "paid") {
+        totalUsdPaid += w.amount;
+        byWallet[key].paid += w.amount;
+      } else {
+        totalUsdPending += w.amount;
+        byWallet[key].pending += w.amount;
       }
     }
-    return { totalUsdPaid, totalUsdPending };
+    return { totalUsdPaid, totalUsdPending, byWallet };
   }, [withdrawals]);
 
   const removeEntry = useCallback(async (domain: string) => {
@@ -760,6 +775,31 @@ export default function InventoryPage() {
               + ${withdrawalStats.totalUsdPending.toFixed(2)} đang chờ
             </p>
           )}
+          {(() => {
+            const rows: { label: string; paid: number; pending: number }[] = [
+              { label: "Ví điện tử", ...withdrawalStats.byWallet.evault },
+              { label: "Gname",      ...withdrawalStats.byWallet.gname },
+              { label: "Trống",      ...withdrawalStats.byWallet.none },
+            ].filter((r) => r.paid > 0 || r.pending > 0);
+            if (rows.length === 0) return null;
+            return (
+              <div className="mt-2 pt-2 border-t border-border/50 space-y-0.5">
+                {rows.map((r) => (
+                  <div key={r.label} className="flex items-center justify-between text-[11px]">
+                    <span className="text-muted-foreground">{r.label}</span>
+                    <span className="font-medium tabular-nums">
+                      ${r.paid.toFixed(2)}
+                      {r.pending > 0 && (
+                        <span className="text-amber-600 dark:text-amber-400 ml-1">
+                          +${r.pending.toFixed(2)}
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
         </div>
       </div>
 
@@ -881,7 +921,7 @@ export default function InventoryPage() {
             </button>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-3">
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Ngày</label>
               <Input
@@ -924,6 +964,18 @@ export default function InventoryPage() {
                 <option value="paid">Đã nhận</option>
                 <option value="progressing">Progressing</option>
                 <option value="under_review">Under Review</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">Ví nhận tiền</label>
+              <select
+                value={wWallet ?? ""}
+                onChange={(e) => setWWallet(e.target.value === "" ? null : (e.target.value as WithdrawalWallet))}
+                className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm cursor-pointer"
+              >
+                <option value="">Trống</option>
+                <option value="evault">Ví điện tử</option>
+                <option value="gname">Gname</option>
               </select>
             </div>
           </div>
@@ -1408,6 +1460,7 @@ export default function InventoryPage() {
                       <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Ngày</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Số tiền</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Trạng thái</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Ví nhận tiền</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Ghi chú</th>
                       <th className="w-12" />
                     </tr>
@@ -1439,6 +1492,15 @@ export default function InventoryPage() {
                             <option value="progressing">Progressing</option>
                             <option value="under_review">Under Review</option>
                           </select>
+                        </td>
+                        <td className="px-3 py-2 text-xs whitespace-nowrap">
+                          {w.wallet === "evault" ? (
+                            <span className="text-foreground">Ví điện tử</span>
+                          ) : w.wallet === "gname" ? (
+                            <span className="text-foreground">Gname</span>
+                          ) : (
+                            <span className="text-muted-foreground opacity-40">—</span>
+                          )}
                         </td>
                         <td className="px-3 py-2 text-xs text-muted-foreground italic max-w-[300px] truncate" title={w.notes ?? ""}>
                           {w.notes || <span className="opacity-40">—</span>}
