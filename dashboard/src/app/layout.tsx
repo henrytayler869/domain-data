@@ -1,8 +1,7 @@
 import type { Metadata } from "next";
 import { Be_Vietnam_Pro, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
-import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
-import { AppSidebar } from "@/components/app-sidebar";
+import { AppShell } from "@/components/app-shell";
 
 const beVietnamPro = Be_Vietnam_Pro({
   variable: "--font-sans",
@@ -32,20 +31,7 @@ export default function RootLayout({
       className={`${beVietnamPro.variable} ${jetbrainsMono.variable} h-full antialiased`}
     >
       <body className="flex h-full min-h-screen bg-background">
-        <SidebarProvider>
-          <AppSidebar />
-          <div className="flex flex-1 flex-col overflow-hidden">
-            {/* Top bar with sidebar toggle */}
-            <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-              <SidebarTrigger className="-ml-1" />
-              <div className="h-4 w-px bg-border" />
-              <span className="text-sm text-muted-foreground">
-                Namecheap Market Tools
-              </span>
-            </header>
-            <main className="flex-1 overflow-auto">{children}</main>
-          </div>
-        </SidebarProvider>
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );
