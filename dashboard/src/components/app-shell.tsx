@@ -9,7 +9,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isAuthRoute = pathname === "/login";
 
   if (isAuthRoute) {
-    return <>{children}</>;
+    return <div className="w-full">{children}</div>;
   }
 
   return (
