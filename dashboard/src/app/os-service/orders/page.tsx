@@ -476,6 +476,48 @@ export default function OrdersPage() {
     [totals]
   );
 
+  // Per-installment breakdown: for each installment number (1, 2, 3...) and currency,
+  // compute revenue (= order.revenue × split%), withdrawn (sum of installment-tagged
+  // withdrawals), remaining. Ad-hoc withdrawals (installment === null) are surfaced
+  // separately so totals stay reconcilable with the overall "Đã rút" card.
+  const installmentBreakdown = useMemo(() => {
+    let maxI = 0;
+    const byInstallment: Record<number, Record<string, { revenue: number; withdrawn: number; remaining: number }>> = {};
+    const adhocByCurrency: Record<string, number> = {};
+
+    const ensure = (i: number, cur: string) => {
+      if (!byInstallment[i]) byInstallment[i] = {};
+      if (!byInstallment[i][cur]) byInstallment[i][cur] = { revenue: 0, withdrawn: 0, remaining: 0 };
+      return byInstallment[i][cur];
+    };
+
+    for (const o of ordersInRange) {
+      if (o.paymentCount > maxI) maxI = o.paymentCount;
+      const totalRev = revenueByOrder.get(o.id) ?? o.revenue;
+      for (let idx = 0; idx < o.paymentSplits.length; idx++) {
+        const pct = o.paymentSplits[idx] ?? 0;
+        ensure(idx + 1, o.currency).revenue += +(totalRev * pct / 100);
+      }
+    }
+    for (const w of withdrawalsInRange) {
+      if (w.installment == null) {
+        adhocByCurrency[w.currency] = (adhocByCurrency[w.currency] ?? 0) + w.amount;
+        continue;
+      }
+      if (w.installment > maxI) maxI = w.installment;
+      ensure(w.installment, w.currency).withdrawn += w.amount;
+    }
+    for (const i of Object.keys(byInstallment).map(Number)) {
+      for (const cur of Object.keys(byInstallment[i])) {
+        const t = byInstallment[i][cur];
+        t.remaining = +(t.revenue - t.withdrawn).toFixed(2);
+        t.revenue = +t.revenue.toFixed(2);
+        t.withdrawn = +t.withdrawn.toFixed(2);
+      }
+    }
+    return { byInstallment, maxInstallment: maxI, adhocByCurrency };
+  }, [ordersInRange, withdrawalsInRange, revenueByOrder]);
+
   return (
     <div className="flex flex-col gap-6 p-6">
       <div className="flex items-end justify-between gap-4 flex-wrap">
@@ -611,6 +653,76 @@ export default function OrdersPage() {
           )}
         </div>
       </div>
+
+      {/* Per-installment breakdown */}
+      {installmentBreakdown.maxInstallment > 0 && totalEntries.length > 0 && (
+        <div className="rounded-lg border bg-card p-4">
+          <p className="text-xs font-semibold text-muted-foreground uppercase mb-3">
+            Phân tích theo đợt thanh toán
+          </p>
+          <div className="space-y-4">
+            {totalEntries.map(([cur]) => {
+              const rows: { i: number; revenue: number; withdrawn: number; remaining: number }[] = [];
+              for (let i = 1; i <= installmentBreakdown.maxInstallment; i++) {
+                const t = installmentBreakdown.byInstallment[i]?.[cur];
+                if (!t) continue;
+                if (t.revenue === 0 && t.withdrawn === 0) continue;
+                rows.push({ i, ...t });
+              }
+              const adhoc = installmentBreakdown.adhocByCurrency[cur] ?? 0;
+              if (rows.length === 0 && adhoc === 0) return null;
+              return (
+                <div key={cur}>
+                  <p className="text-[11px] font-semibold text-muted-foreground mb-1.5">{cur}</p>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-left text-[11px] uppercase text-muted-foreground">
+                          <th className="font-medium py-1 pr-3">Đợt</th>
+                          <th className="font-medium py-1 pr-3 text-right">Doanh thu</th>
+                          <th className="font-medium py-1 pr-3 text-right">Đã rút</th>
+                          <th className="font-medium py-1 text-right">Còn lại</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((r) => (
+                          <tr key={r.i} className="border-t border-border/40">
+                            <td className="py-1.5 pr-3 font-medium">Đợt {r.i}</td>
+                            <td className="py-1.5 pr-3 text-right tabular-nums text-emerald-600 dark:text-emerald-400">
+                              {formatMoney(r.revenue, cur as OrderCurrency)}
+                            </td>
+                            <td className="py-1.5 pr-3 text-right tabular-nums text-purple-600 dark:text-purple-400">
+                              {r.withdrawn > 0 ? formatMoney(r.withdrawn, cur as OrderCurrency) : "—"}
+                            </td>
+                            <td className={cn(
+                              "py-1.5 text-right tabular-nums font-medium",
+                              r.remaining > 0 ? "text-blue-600 dark:text-blue-400"
+                              : r.remaining < 0 ? "text-rose-600 dark:text-rose-400"
+                              : "text-muted-foreground"
+                            )}>
+                              {formatMoney(r.remaining, cur as OrderCurrency)}
+                            </td>
+                          </tr>
+                        ))}
+                        {adhoc > 0 && (
+                          <tr className="border-t border-border/40">
+                            <td className="py-1.5 pr-3 text-muted-foreground italic">Không gắn đợt</td>
+                            <td className="py-1.5 pr-3 text-right text-muted-foreground">—</td>
+                            <td className="py-1.5 pr-3 text-right tabular-nums text-purple-600 dark:text-purple-400">
+                              {formatMoney(adhoc, cur as OrderCurrency)}
+                            </td>
+                            <td className="py-1.5 text-right text-muted-foreground">—</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {partners.length === 0 && (
         <div className="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700 px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
