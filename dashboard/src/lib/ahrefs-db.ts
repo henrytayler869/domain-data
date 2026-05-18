@@ -8,14 +8,6 @@ import { supabase } from "./supabase";
 const TABLE = "ahrefs_results";
 const ASSESS_TABLE = "target_assessment";
 
-/**
- * Sentinel ref_domain inserted by the "Loại trừ" action when a target has
- * been bought by someone else (not acquirable). Stored in ahrefs_results so
- * the existing checkedTargets set already picks it up, but readTargetSummary
- * treats it as metadata — not a real ref — and surfaces an `excluded` flag.
- */
-export const MANUAL_EXCLUDE_MARKER = "__manually_excluded__";
-
 export interface AhrefsResultRow {
   targetDomain: string;
   refDomain: string;
@@ -28,6 +20,7 @@ export interface AssessmentRow {
   rating: string | null;
   category: string | null;
   detail: string | null;
+  excludedAt: string | null;
   updatedAt: string;
 }
 
@@ -36,6 +29,7 @@ interface AssessmentDbRow {
   rating: string | null;
   category: string | null;
   detail: string | null;
+  excluded_at: string | null;
   updated_at: string;
 }
 
@@ -91,7 +85,7 @@ export interface TargetSummary {
   rating: string | null;
   category: string | null;
   detail: string | null;
-  /** True if a "Loại trừ" marker row exists — domain bought by someone else. */
+  /** True if target_assessment.excluded_at is set — bought by someone else or already in our inventory. */
   excluded: boolean;
 }
 
@@ -137,26 +131,25 @@ export async function readTargetSummary(): Promise<TargetSummary[]> {
     return cur;
   };
   for (const r of all) {
-    // Manual-exclude marker is metadata, not a real ref — flag and skip aggregation
-    if (r.refDomain === MANUAL_EXCLUDE_MARKER) {
-      const cur = ensure(r.targetDomain, r.checkedAt);
-      cur.excluded = true;
-      if (r.checkedAt > cur.checkedAt) cur.checkedAt = r.checkedAt;
-      continue;
-    }
     const cur = ensure(r.targetDomain, r.checkedAt);
     cur.refsCount += 1;
     if (r.domainRating > cur.maxDr) cur.maxDr = r.domainRating;
     if (r.checkedAt > cur.checkedAt) cur.checkedAt = r.checkedAt;
     cur.refs.push({ domain: r.refDomain, dr: r.domainRating });
   }
-  // Attach assessments
+  // Attach assessments — also surface excluded targets that have no ref rows yet
+  for (const [domain, a] of assessMap.entries()) {
+    if (a.excluded_at && !map.has(domain)) {
+      ensure(domain, a.updated_at);
+    }
+  }
   for (const [domain, summary] of map.entries()) {
     const a = assessMap.get(domain);
     if (a) {
       summary.rating = a.rating;
       summary.category = a.category;
       summary.detail = a.detail;
+      summary.excluded = !!a.excluded_at;
     }
   }
   // Sort each target's refs by DR desc
@@ -199,8 +192,9 @@ export async function listCheckedTargets(): Promise<string[]> {
   const sb = supabase();
   const all = new Set<string>();
   const PAGE = 1000;
-  let offset = 0;
 
+  // 1) Every target with any Ahrefs ref row.
+  let offset = 0;
   while (true) {
     const { data, error } = await sb
       .from(TABLE)
@@ -212,7 +206,51 @@ export async function listCheckedTargets(): Promise<string[]> {
     if (data.length < PAGE) break;
     offset += PAGE;
   }
+
+  // 2) Manually-excluded targets that may have no ref rows at all.
+  offset = 0;
+  while (true) {
+    const { data, error } = await sb
+      .from(ASSESS_TABLE)
+      .select("target_domain")
+      .not("excluded_at", "is", null)
+      .range(offset, offset + PAGE - 1);
+    if (error) throw new Error(error.message);
+    if (!data || data.length === 0) break;
+    for (const r of data) all.add((r as { target_domain: string }).target_domain);
+    if (data.length < PAGE) break;
+    offset += PAGE;
+  }
+
   return Array.from(all);
+}
+
+/**
+ * Flag targets as manually excluded by setting target_assessment.excluded_at.
+ * Used by the "Loại trừ" action and as a piggyback from "Đã mua" so purchased
+ * domains stop appearing in the picker.
+ */
+export async function markExcluded(targets: string[]): Promise<{ count: number }> {
+  const sb = supabase();
+  const normalized = Array.from(
+    new Set(targets.map((t) => t.toLowerCase().trim()).filter(Boolean))
+  );
+  if (!normalized.length) return { count: 0 };
+
+  const now = new Date().toISOString();
+  const BATCH = 500;
+  for (let i = 0; i < normalized.length; i += BATCH) {
+    const slice = normalized.slice(i, i + BATCH).map((t) => ({
+      target_domain: t,
+      excluded_at: now,
+      updated_at: now,
+    }));
+    const { error } = await sb
+      .from(ASSESS_TABLE)
+      .upsert(slice, { onConflict: "target_domain" });
+    if (error) throw new Error(error.message);
+  }
+  return { count: normalized.length };
 }
 
 export async function clearAll(): Promise<void> {

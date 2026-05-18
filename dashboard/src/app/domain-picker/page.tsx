@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo, useReducer } from "react";
 import {
   Upload,
   Search,
@@ -24,6 +24,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Stepper } from "@/components/ui/stepper";
 import { cn } from "@/lib/utils";
 import {
   parseCsv,
@@ -33,15 +34,22 @@ import {
   parseAhrefsCsv,
   parseUnifiedCsv,
   REF_BLACKLIST,
-  DEFAULT_THRESHOLDS,
-  DEFAULT_WEIGHTS,
+  THRESHOLD_PRESETS,
+  PRESET_LABELS,
+  detectPreset,
   type PickerRow,
-  type PickerThresholds,
-  type PickerWeights,
 } from "@/lib/picker-csv";
 import type { PickerEntry } from "@/lib/picker-db";
 import type { TargetSummary } from "@/lib/ahrefs-db";
 import type { RefBlacklistEntry } from "@/lib/ref-blacklist-db";
+import {
+  wizardReducer,
+  initialWizardState,
+  saveSnapshot,
+  loadSnapshot,
+  WIZARD_STEPS,
+  type WizardStep,
+} from "./wizard-state";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -62,35 +70,24 @@ export default function DomainPickerPage() {
   const [parseError, setParseError] = useState<string | null>(null);
   const [parsing, setParsing] = useState(false);
 
-  // ── Config ──────────────────────────────────────────────────────────────────
-  // Applied = currently driving filter/score. Draft = bound to inputs.
-  const [thresholds, setThresholds] = useState<PickerThresholds>(DEFAULT_THRESHOLDS);
-  const [weights, setWeights] = useState<PickerWeights>(DEFAULT_WEIGHTS);
-  const [topN, setTopN] = useState<number>(50);
-  const [draftThresholds, setDraftThresholds] = useState<PickerThresholds>(DEFAULT_THRESHOLDS);
-  const [draftWeights, setDraftWeights] = useState<PickerWeights>(DEFAULT_WEIGHTS);
-  const [draftTopN, setDraftTopN] = useState<number>(50);
-  const [configOpen, setConfigOpen] = useState(false);
+  // ── Wizard state (step + completed + presets + thresholds + weights + topN) ──
+  const [wizard, dispatchWizard] = useReducer(wizardReducer, undefined, initialWizardState);
+  const { thresholds, weights, topN, presetName } = wizard;
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
-  const isDirty =
-    JSON.stringify(draftThresholds) !== JSON.stringify(thresholds) ||
-    JSON.stringify(draftWeights) !== JSON.stringify(weights) ||
-    draftTopN !== topN;
+  // Hydrate from localStorage on mount, persist on every wizard change.
+  useEffect(() => {
+    const snap = loadSnapshot();
+    if (snap) dispatchWizard({ type: "hydrate", snapshot: snap });
+  }, []);
 
-  const applyConfig = () => {
-    setThresholds(draftThresholds);
-    setWeights(draftWeights);
-    setTopN(draftTopN);
-  };
+  useEffect(() => {
+    saveSnapshot(wizard);
+  }, [wizard]);
 
-  const resetConfig = () => {
-    setDraftThresholds(DEFAULT_THRESHOLDS);
-    setDraftWeights(DEFAULT_WEIGHTS);
-    setDraftTopN(50);
-    setThresholds(DEFAULT_THRESHOLDS);
-    setWeights(DEFAULT_WEIGHTS);
-    setTopN(50);
-  };
+  const resetConfig = useCallback(() => {
+    dispatchWizard({ type: "resetConfig" });
+  }, []);
 
   // ── Sort ────────────────────────────────────────────────────────────────────
   const [sortKey, setSortKey] = useState<SortKey>("score");
@@ -108,7 +105,6 @@ export default function DomainPickerPage() {
   // Persisted in localStorage. Does NOT touch DB.
   const [viewClearedAt, setViewClearedAt] = useState<number | null>(null);
   const [checkedTargets, setCheckedTargets] = useState<Set<string>>(new Set());
-  const [ahrefsOpen, setAhrefsOpen] = useState(false);
   const [ahrefsSearch, setAhrefsSearch] = useState("");
   const [ahrefsUploading, setAhrefsUploading] = useState(false);
   const [excludeChecked, setExcludeChecked] = useState(true);
@@ -358,6 +354,8 @@ export default function DomainPickerPage() {
       if (refStat?.uniqueTargets) parts.push(`${refStat.uniqueTargets} target · ${refStat.total} ref rows`);
       if (assessStat?.total) parts.push(`${assessStat.total} assessment`);
       showToast(`✅ Upload OK · ${parts.join(" · ") || "no data"}`);
+      // Auto-advance to step 4 — user is now reviewing & deciding.
+      dispatchWizard({ type: "advance", from: 3 });
     } catch (err) {
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
     } finally {
@@ -715,6 +713,8 @@ export default function DomainPickerPage() {
       if (!mapped.length) throw new Error("Không có dòng dữ liệu hợp lệ");
       setRawRows(mapped);
       showToast(`✅ Parse: ${mapped.length.toLocaleString()} domain từ ${file.name}`);
+      // Auto-advance to step 2 once we have parsed rows.
+      dispatchWizard({ type: "advance", from: 1 });
     } catch (err) {
       setParseError(err instanceof Error ? err.message : "Lỗi parse CSV");
       setRawRows([]);
@@ -789,6 +789,8 @@ export default function DomainPickerPage() {
     setCopiedAhrefsPrompt(true);
     setTimeout(() => setCopiedAhrefsPrompt(false), 2000);
     showToast(`✅ Đã copy prompt cho ${domains.length} domain (DR≥${dr}, limit ${limit})`);
+    // Mark step 2 complete + advance to step 3 — user has the prompt, next they'll upload Ahrefs CSV.
+    dispatchWizard({ type: "advance", from: 2 });
   }, [displayedRows, ahrefsPromptDr, ahrefsPromptLimit, showToast]);
 
   const exportCsv = useCallback(() => {
@@ -842,13 +844,22 @@ export default function DomainPickerPage() {
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Domain Picker — CSV Filter</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Domain Picker — Wizard</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Upload CSV (SpamZilla / ExpiredDomains export) → lọc domain tốt nhất theo threshold + score → lưu vào Picker DB.
+          Spamzilla → lọc + sinh prompt Ahrefs → upload kết quả → đánh dấu Đã mua / Loại trừ.
         </p>
       </div>
 
-      {/* ── Upload card ───────────────────────────────────────────────────── */}
+      {/* ── Wizard stepper ──────────────────────────────────────────────────── */}
+      <Stepper
+        steps={WIZARD_STEPS}
+        current={wizard.step}
+        completed={wizard.completed}
+        onSelect={(s) => dispatchWizard({ type: "goto", step: s as WizardStep })}
+      />
+
+      {/* ── Step 1: Upload Spamzilla CSV ──────────────────────────────────── */}
+      {wizard.step === 1 && (
       <div className="rounded-xl border bg-card p-5 shadow-sm">
         <div className="flex items-center justify-between mb-4 gap-4 flex-wrap">
           <div className="flex items-center gap-2">
@@ -901,76 +912,116 @@ export default function DomainPickerPage() {
               Lưu toàn bộ {rawRows.length.toLocaleString()} domain vào DB
             </Button>
             <Button
-              variant="outline"
-              onClick={() => setConfigOpen((o) => !o)}
+              onClick={() => dispatchWizard({ type: "advance", from: 1 })}
               className="gap-2"
             >
-              <FilterIcon className="h-4 w-4" />
-              Threshold & Weights
-              <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", configOpen && "rotate-180")} />
+              Tiếp: Lọc & sinh prompt →
             </Button>
           </div>
         )}
       </div>
+      )}
 
-      {/* ── Threshold + Weights config ─────────────────────────────────────── */}
-      {rawRows.length > 0 && configOpen && (
-        <div className="rounded-xl border bg-card p-5 shadow-sm space-y-5">
-          <div>
-            <h3 className="text-sm font-semibold mb-3">Thresholds (lọc qualified)</h3>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <NumField label="TF ≥" value={draftThresholds.tfMin} onChange={(v) => setDraftThresholds({ ...draftThresholds, tfMin: v })} />
-              <NumField label="CF ≥" value={draftThresholds.cfMin} onChange={(v) => setDraftThresholds({ ...draftThresholds, cfMin: v })} />
-              <NumField label="Maj. RD ≥" value={draftThresholds.rdMin} onChange={(v) => setDraftThresholds({ ...draftThresholds, rdMin: v })} />
-              <NumField label="Moz DA ≥" value={draftThresholds.daMin} onChange={(v) => setDraftThresholds({ ...draftThresholds, daMin: v })} />
-              <NumField label="Age ≥ (năm)" value={draftThresholds.ageMin} onChange={(v) => setDraftThresholds({ ...draftThresholds, ageMin: v })} />
-              <NumField label="SZ Score ≥" value={draftThresholds.szScoreMin} onChange={(v) => setDraftThresholds({ ...draftThresholds, szScoreMin: v })} />
-              <NumField label="SZ Drops ≤" value={draftThresholds.szDropsMax} onChange={(v) => setDraftThresholds({ ...draftThresholds, szDropsMax: v })} />
-              <NumField label="Top N (0=all)" value={draftTopN} onChange={setDraftTopN} />
-            </div>
-          </div>
-
-          <div>
-            <h3 className="text-sm font-semibold mb-3">Score weights</h3>
-            <p className="text-xs text-muted-foreground mb-3 font-mono">
-              score = TF×{draftWeights.tf} + CF×{draftWeights.cf} + log10(RD+1)×{draftWeights.rd} + DA×{draftWeights.da} + Age×{draftWeights.age} + SZ_Score×{draftWeights.szScore} − SZ_Drops×{draftWeights.szDrops}
-            </p>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <NumField label="w(TF)" value={draftWeights.tf} step={0.5} onChange={(v) => setDraftWeights({ ...draftWeights, tf: v })} />
-              <NumField label="w(CF)" value={draftWeights.cf} step={0.5} onChange={(v) => setDraftWeights({ ...draftWeights, cf: v })} />
-              <NumField label="w(log RD)" value={draftWeights.rd} step={0.5} onChange={(v) => setDraftWeights({ ...draftWeights, rd: v })} />
-              <NumField label="w(DA)" value={draftWeights.da} step={0.5} onChange={(v) => setDraftWeights({ ...draftWeights, da: v })} />
-              <NumField label="w(Age)" value={draftWeights.age} step={0.5} onChange={(v) => setDraftWeights({ ...draftWeights, age: v })} />
-              <NumField label="w(SZ Score)" value={draftWeights.szScore} step={0.5} onChange={(v) => setDraftWeights({ ...draftWeights, szScore: v })} />
-              <NumField label="w(SZ Drops penalty)" value={draftWeights.szDrops} step={0.5} onChange={(v) => setDraftWeights({ ...draftWeights, szDrops: v })} />
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              onClick={applyConfig}
-              disabled={!isDirty}
-              className="gap-2"
-            >
-              <FilterIcon className="h-3.5 w-3.5" />
-              Apply
-              {isDirty && <span className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-400" />}
-            </Button>
-            <Button size="sm" variant="outline" onClick={resetConfig}>
-              Reset defaults
-            </Button>
-            {isDirty && (
-              <span className="text-xs text-amber-600 dark:text-amber-400">
-                Có thay đổi chưa apply
-              </span>
-            )}
-          </div>
+      {/* ── Step 2: Filter & generate Ahrefs prompt ───────────────────────── */}
+      {wizard.step === 2 && rawRows.length === 0 && (
+        <div className="rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50/60 dark:bg-amber-950/30 p-4 text-sm flex items-center gap-3">
+          <AlertCircle className="h-4 w-4 text-amber-600 shrink-0" />
+          <span className="flex-1">CSV Spamzilla đã được clear (refresh tab). Quay lại bước 1 để upload lại.</span>
+          <Button size="sm" variant="outline" onClick={() => dispatchWizard({ type: "goto", step: 1 })}>
+            ← Quay lại bước 1
+          </Button>
         </div>
       )}
 
-      {/* ── Results table ───────────────────────────────────────────────────── */}
-      {rawRows.length > 0 && (
+      {wizard.step === 2 && rawRows.length > 0 && (
+        <div className="rounded-xl border bg-card p-5 shadow-sm space-y-5">
+          <div>
+            <h3 className="text-sm font-semibold mb-3">Preset lọc</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {(Object.keys(THRESHOLD_PRESETS) as Array<keyof typeof THRESHOLD_PRESETS>).map((name) => {
+                const active = presetName === name;
+                const p = THRESHOLD_PRESETS[name];
+                return (
+                  <button
+                    key={name}
+                    type="button"
+                    onClick={() => dispatchWizard({ type: "applyPreset", name })}
+                    className={cn(
+                      "rounded-lg border px-4 py-3 text-left transition-colors",
+                      active
+                        ? "border-primary bg-primary/10 ring-2 ring-primary/30"
+                        : "border-border bg-background hover:bg-muted",
+                    )}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-sm font-semibold">{PRESET_LABELS[name]}</span>
+                      {active && <Check className="h-4 w-4 text-primary" />}
+                    </div>
+                    <p className="text-[11px] text-muted-foreground font-mono leading-snug">
+                      TF≥{p.tfMin} · CF≥{p.cfMin} · RD≥{p.rdMin} · DA≥{p.daMin} · Age≥{p.ageMin} · SZ≥{p.szScoreMin} · Drops≤{p.szDropsMax}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+            {presetName === "custom" && (
+              <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
+                Đang dùng cấu hình tự chỉnh — click một preset để reset.
+              </p>
+            )}
+          </div>
+
+          <details
+            open={advancedOpen}
+            onToggle={(e) => setAdvancedOpen((e.target as HTMLDetailsElement).open)}
+            className="rounded-lg border border-border bg-muted/20 p-4"
+          >
+            <summary className="cursor-pointer select-none text-sm font-medium flex items-center gap-2">
+              <FilterIcon className="h-4 w-4" />
+              Tinh chỉnh thủ công
+              <ChevronDown className={cn("h-3.5 w-3.5 transition-transform ml-auto", advancedOpen && "rotate-180")} />
+            </summary>
+            <div className="mt-4 space-y-5">
+              <div>
+                <h4 className="text-xs font-semibold mb-2 uppercase tracking-wide text-muted-foreground">Thresholds</h4>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <NumField label="TF ≥" value={thresholds.tfMin} onChange={(v) => dispatchWizard({ type: "setThresholds", thresholds: { ...thresholds, tfMin: v }, presetName: detectPreset({ ...thresholds, tfMin: v }) })} />
+                  <NumField label="CF ≥" value={thresholds.cfMin} onChange={(v) => dispatchWizard({ type: "setThresholds", thresholds: { ...thresholds, cfMin: v }, presetName: detectPreset({ ...thresholds, cfMin: v }) })} />
+                  <NumField label="Maj. RD ≥" value={thresholds.rdMin} onChange={(v) => dispatchWizard({ type: "setThresholds", thresholds: { ...thresholds, rdMin: v }, presetName: detectPreset({ ...thresholds, rdMin: v }) })} />
+                  <NumField label="Moz DA ≥" value={thresholds.daMin} onChange={(v) => dispatchWizard({ type: "setThresholds", thresholds: { ...thresholds, daMin: v }, presetName: detectPreset({ ...thresholds, daMin: v }) })} />
+                  <NumField label="Age ≥ (năm)" value={thresholds.ageMin} onChange={(v) => dispatchWizard({ type: "setThresholds", thresholds: { ...thresholds, ageMin: v }, presetName: detectPreset({ ...thresholds, ageMin: v }) })} />
+                  <NumField label="SZ Score ≥" value={thresholds.szScoreMin} onChange={(v) => dispatchWizard({ type: "setThresholds", thresholds: { ...thresholds, szScoreMin: v }, presetName: detectPreset({ ...thresholds, szScoreMin: v }) })} />
+                  <NumField label="SZ Drops ≤" value={thresholds.szDropsMax} onChange={(v) => dispatchWizard({ type: "setThresholds", thresholds: { ...thresholds, szDropsMax: v }, presetName: detectPreset({ ...thresholds, szDropsMax: v }) })} />
+                  <NumField label="Top N (0=all)" value={topN} onChange={(v) => dispatchWizard({ type: "setTopN", topN: v })} />
+                </div>
+              </div>
+
+              <div>
+                <h4 className="text-xs font-semibold mb-2 uppercase tracking-wide text-muted-foreground">Score weights</h4>
+                <p className="text-[11px] text-muted-foreground mb-3 font-mono">
+                  score = TF×{weights.tf} + CF×{weights.cf} + log10(RD+1)×{weights.rd} + DA×{weights.da} + Age×{weights.age} + SZ_Score×{weights.szScore} − SZ_Drops×{weights.szDrops}
+                </p>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <NumField label="w(TF)" value={weights.tf} step={0.5} onChange={(v) => dispatchWizard({ type: "setWeights", weights: { ...weights, tf: v } })} />
+                  <NumField label="w(CF)" value={weights.cf} step={0.5} onChange={(v) => dispatchWizard({ type: "setWeights", weights: { ...weights, cf: v } })} />
+                  <NumField label="w(log RD)" value={weights.rd} step={0.5} onChange={(v) => dispatchWizard({ type: "setWeights", weights: { ...weights, rd: v } })} />
+                  <NumField label="w(DA)" value={weights.da} step={0.5} onChange={(v) => dispatchWizard({ type: "setWeights", weights: { ...weights, da: v } })} />
+                  <NumField label="w(Age)" value={weights.age} step={0.5} onChange={(v) => dispatchWizard({ type: "setWeights", weights: { ...weights, age: v } })} />
+                  <NumField label="w(SZ Score)" value={weights.szScore} step={0.5} onChange={(v) => dispatchWizard({ type: "setWeights", weights: { ...weights, szScore: v } })} />
+                  <NumField label="w(SZ Drops penalty)" value={weights.szDrops} step={0.5} onChange={(v) => dispatchWizard({ type: "setWeights", weights: { ...weights, szDrops: v } })} />
+                </div>
+              </div>
+
+              <Button size="sm" variant="outline" onClick={resetConfig}>
+                Reset về Cân bằng
+              </Button>
+            </div>
+          </details>
+        </div>
+      )}
+
+      {/* ── Step 2: Results table + Ahrefs prompt panel ────────────────────── */}
+      {wizard.step === 2 && rawRows.length > 0 && (
         <div className="rounded-xl border bg-card shadow-sm overflow-hidden">
           <div className="px-5 py-4 border-b flex items-center justify-between flex-wrap gap-2">
             <div className="flex items-center gap-2 flex-wrap">
@@ -1140,15 +1191,15 @@ export default function DomainPickerPage() {
         </div>
       )}
 
-      {/* ── Ahrefs Result DB Panel ──────────────────────────────────────────── */}
+      {/* ── Steps 3 & 4: Ahrefs Result Panel ───────────────────────────────── */}
+      {(wizard.step === 3 || wizard.step === 4) && (
       <div className="rounded-xl border bg-card shadow-sm">
-        <button
-          onClick={() => setAhrefsOpen((o) => !o)}
-          className="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-muted/30 transition rounded-xl"
-        >
+        <div className="flex items-center justify-between px-6 py-4">
           <div className="flex items-center gap-2">
             <Database className="h-4 w-4 text-orange-500" />
-            <h2 className="text-sm font-semibold uppercase tracking-wide">Ahrefs Result DB</h2>
+            <h2 className="text-sm font-semibold uppercase tracking-wide">
+              {wizard.step === 3 ? "Upload kết quả Ahrefs" : "Quyết định & lưu"}
+            </h2>
             <span className="bg-orange-100 dark:bg-orange-950 text-orange-700 dark:text-orange-300 text-xs font-bold px-2 py-0.5 rounded-full">
               {ahrefsSummary.length.toLocaleString()} target
             </span>
@@ -1158,15 +1209,19 @@ export default function DomainPickerPage() {
               </span>
             )}
           </div>
-          <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", ahrefsOpen && "rotate-180")} />
-        </button>
+        </div>
 
-        {ahrefsOpen && (
-          <div className="border-t px-6 pb-6">
+        <div className="border-t px-6 pb-6">
             <p className="text-xs text-muted-foreground pt-4 pb-4 leading-relaxed">
-              Lưu kết quả check Ahrefs (target_domain, ref_domain, DR). Khi filter ở Domain Picker,
-              các target đã có trong DB này sẽ được <strong>loại bỏ</strong> để tránh check lại.
-              Format CSV cần đủ 3 cột: <code className="font-mono bg-muted px-1.5 py-0.5 rounded">target_domain,ref_domain,domain_rating</code>.
+              {wizard.step === 3 ? (
+                <>
+                  Sau khi chạy prompt Ahrefs (bước 2) và nhận lại CSV, upload tại đây. Format chấp nhận:
+                  unified 6 cột (<code className="font-mono bg-muted px-1.5 py-0.5 rounded">target_domain,checked_at,refs,rating,category,detail</code>)
+                  hoặc legacy 3 cột (<code className="font-mono bg-muted px-1.5 py-0.5 rounded">target_domain,ref_domain,domain_rating</code>).
+                </>
+              ) : (
+                <>Chọn target để đánh dấu <strong>Đã mua</strong> (lưu kho + ẩn khỏi picker) hoặc <strong>Loại trừ</strong> (người khác đã mua — ẩn khỏi picker, không lưu kho).</>
+              )}
             </p>
 
             {/* ── Ref Domain Blacklist controls ─────────────────────────── */}
@@ -1609,7 +1664,29 @@ export default function DomainPickerPage() {
               </div>
             )}
           </div>
-        )}
+      </div>
+      )}
+
+      {/* ── Wizard nav footer ───────────────────────────────────────────────── */}
+      <div className="flex items-center justify-between gap-2 pt-2 border-t border-border/40">
+        <Button
+          variant="outline"
+          onClick={() => dispatchWizard({ type: "goto", step: Math.max(1, wizard.step - 1) as WizardStep })}
+          disabled={wizard.step === 1}
+          className="gap-2"
+        >
+          ← Quay lại
+        </Button>
+        <span className="text-xs text-muted-foreground">
+          Bước {wizard.step}/{WIZARD_STEPS.length} · {WIZARD_STEPS[wizard.step - 1].label}
+        </span>
+        <Button
+          onClick={() => dispatchWizard({ type: "advance", from: wizard.step })}
+          disabled={wizard.step === 4}
+          className="gap-2"
+        >
+          Tiếp →
+        </Button>
       </div>
 
       {/* ── Picker DB Panel ─────────────────────────────────────────────────── */}

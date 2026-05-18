@@ -58,7 +58,7 @@ create table if not exists ref_blacklist (
 create index if not exists ref_blacklist_added_idx
   on ref_blacklist (added_at desc);
 
--- ─── Target Assessment (rating + category + detail per target) ──────────────
+-- ─── Target Assessment (rating + category + detail + excluded per target) ──
 create table if not exists target_assessment (
   target_domain text primary key,
   rating        text,
@@ -69,6 +69,23 @@ create table if not exists target_assessment (
 
 create index if not exists target_assessment_rating_idx
   on target_assessment (rating);
+
+-- Manual-exclude flag. Set when user clicks "Loại trừ" (target acquired by someone
+-- else) or when a target is marked "Đã mua" so it stops appearing in the picker.
+alter table target_assessment add column if not exists excluded_at timestamptz;
+create index if not exists target_assessment_excluded_idx
+  on target_assessment (excluded_at) where excluded_at is not null;
+
+-- One-shot backfill from the old ahrefs_results sentinel rows, then drop them.
+-- Idempotent: rerunning is a no-op once the markers are gone.
+insert into target_assessment (target_domain, excluded_at, updated_at)
+select target_domain, checked_at, now()
+  from ahrefs_results
+ where ref_domain = '__manually_excluded__'
+on conflict (target_domain) do update
+  set excluded_at = coalesce(target_assessment.excluded_at, excluded.excluded_at);
+
+delete from ahrefs_results where ref_domain = '__manually_excluded__';
 
 -- ─── Domain Inventory (kho domain đã mua) ────────────────────────────────────
 create table if not exists domain_inventory (

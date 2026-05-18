@@ -33,6 +33,55 @@ export const DEFAULT_THRESHOLDS: PickerThresholds = {
   szDropsMax: 3,
 };
 
+export type PresetName = "conservative" | "balanced" | "aggressive" | "custom";
+
+export const THRESHOLD_PRESETS: Record<Exclude<PresetName, "custom">, PickerThresholds> = {
+  conservative: {
+    tfMin: 25,
+    cfMin: 18,
+    rdMin: 60,
+    daMin: 25,
+    ageMin: 8,
+    szScoreMin: 35,
+    szDropsMax: 2,
+  },
+  balanced: DEFAULT_THRESHOLDS,
+  aggressive: {
+    tfMin: 8,
+    cfMin: 5,
+    rdMin: 15,
+    daMin: 8,
+    ageMin: 3,
+    szScoreMin: 10,
+    szDropsMax: 5,
+  },
+};
+
+export const PRESET_LABELS: Record<Exclude<PresetName, "custom">, string> = {
+  conservative: "Bảo thủ",
+  balanced: "Cân bằng",
+  aggressive: "Hung hăng",
+};
+
+/** Reverse-lookup: given a threshold object, find a matching preset (or 'custom'). */
+export function detectPreset(t: PickerThresholds): PresetName {
+  for (const name of Object.keys(THRESHOLD_PRESETS) as (keyof typeof THRESHOLD_PRESETS)[]) {
+    const p = THRESHOLD_PRESETS[name];
+    if (
+      p.tfMin === t.tfMin &&
+      p.cfMin === t.cfMin &&
+      p.rdMin === t.rdMin &&
+      p.daMin === t.daMin &&
+      p.ageMin === t.ageMin &&
+      p.szScoreMin === t.szScoreMin &&
+      p.szDropsMax === t.szDropsMax
+    ) {
+      return name;
+    }
+  }
+  return "custom";
+}
+
 export const DEFAULT_WEIGHTS: PickerWeights = {
   tf: 2,
   cf: 1,
