@@ -116,6 +116,8 @@ export default function DomainPickerPage() {
   const [selectedTargets, setSelectedTargets] = useState<Set<string>>(new Set());
   const [filterRating, setFilterRating] = useState<string>("all");
   const [filterSource, setFilterSource] = useState<string>("all");
+  // Separate filter for step 2 (Spamzilla picker) — sourced from scoredRows directly.
+  const [step2FilterSource, setStep2FilterSource] = useState<string>("all");
   const [filterPurchased, setFilterPurchased] = useState<"all" | "yes" | "no">("all");
   const [purchaseFormOpen, setPurchaseFormOpen] = useState(false);
   const [purchaseRows, setPurchaseRows] = useState<Record<string, string>>({}); // domain → price string
@@ -155,12 +157,27 @@ export default function DomainPickerPage() {
     [scoredRows, thresholds]
   );
 
-  const qualifiedRows = useMemo(() => {
+  // Step 1: drop Ahrefs-checked targets (drives the "Excluded N đã check Ahrefs" badge).
+  const qualifiedAfterChecked = useMemo(() => {
     if (!excludeChecked || checkedTargets.size === 0) return thresholdQualified;
     return thresholdQualified.filter((r) => !checkedTargets.has(r.domain));
   }, [thresholdQualified, excludeChecked, checkedTargets]);
 
-  const excludedCount = thresholdQualified.length - qualifiedRows.length;
+  // Step 2: apply source filter on top. Final list feeds the table + count.
+  const qualifiedRows = useMemo(() => {
+    if (step2FilterSource === "all") return qualifiedAfterChecked;
+    if (step2FilterSource === "none") return qualifiedAfterChecked.filter((r) => !r.source);
+    return qualifiedAfterChecked.filter((r) => r.source === step2FilterSource);
+  }, [qualifiedAfterChecked, step2FilterSource]);
+
+  // Only counts Ahrefs-checked exclusions; source filter is shown separately.
+  const excludedCount = thresholdQualified.length - qualifiedAfterChecked.length;
+
+  const step2AvailableSources = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of scoredRows) if (r.source) set.add(r.source);
+    return Array.from(set).sort();
+  }, [scoredRows]);
 
   const displayedRows = useMemo(() => {
     const sorted = [...qualifiedRows].sort((a, b) => {
@@ -1070,6 +1087,31 @@ export default function DomainPickerPage() {
                 />
                 <span className="text-muted-foreground">Loại domain đã check Ahrefs</span>
               </label>
+              {step2AvailableSources.length > 0 && (
+                <select
+                  value={step2FilterSource}
+                  onChange={(e) => setStep2FilterSource(e.target.value)}
+                  className="h-7 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
+                  title="Lọc theo Source (Pending Delete / Expired Domains - Register Now! ...)"
+                >
+                  <option value="all">Tất cả source</option>
+                  {step2AvailableSources.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                  <option value="none">(không có source)</option>
+                </select>
+              )}
+              {step2FilterSource !== "all" && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setStep2FilterSource("all")}
+                  className="h-6 px-2 text-xs text-muted-foreground"
+                  title="Reset source filter"
+                >
+                  <X className="h-3 w-3" />
+                </Button>
+              )}
               <Badge variant="secondary" className="text-xs">
                 Click cột để sort
               </Badge>
