@@ -118,6 +118,7 @@ export default function DomainPickerPage() {
   const [filterSource, setFilterSource] = useState<string>("all");
   // Separate filter for step 2 (Spamzilla picker) — sourced from scoredRows directly.
   const [step2FilterSource, setStep2FilterSource] = useState<string>("all");
+  const [currentPage, setCurrentPage] = useState<number>(1);
   const [filterPurchased, setFilterPurchased] = useState<"all" | "yes" | "no">("all");
   const [purchaseFormOpen, setPurchaseFormOpen] = useState(false);
   const [purchaseRows, setPurchaseRows] = useState<Record<string, string>>({}); // domain → price string
@@ -179,15 +180,30 @@ export default function DomainPickerPage() {
     return Array.from(set).sort();
   }, [scoredRows]);
 
-  const displayedRows = useMemo(() => {
-    const sorted = [...qualifiedRows].sort((a, b) => {
+  // Reset to page 1 when the filter set or page size changes.
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [step2FilterSource, excludeChecked, topN, presetName, thresholds]);
+
+  // Stable sorted list; pagination slices below.
+  const sortedRows = useMemo(() => {
+    return [...qualifiedRows].sort((a, b) => {
       const av = a[sortKey] as number | string;
       const bv = b[sortKey] as number | string;
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * sortDir;
       return String(av).localeCompare(String(bv)) * sortDir;
     });
-    return topN > 0 ? sorted.slice(0, topN) : sorted;
-  }, [qualifiedRows, sortKey, sortDir, topN]);
+  }, [qualifiedRows, sortKey, sortDir]);
+
+  // topN is the page size; topN === 0 means "no pagination, show all".
+  const totalPages = topN > 0 ? Math.max(1, Math.ceil(sortedRows.length / topN)) : 1;
+  const safePage = Math.min(Math.max(1, currentPage), totalPages);
+
+  const displayedRows = useMemo(() => {
+    if (topN === 0) return sortedRows;
+    const start = (safePage - 1) * topN;
+    return sortedRows.slice(start, start + topN);
+  }, [sortedRows, topN, safePage]);
 
   // ─── DB ─────────────────────────────────────────────────────────────────────
 
@@ -1046,30 +1062,22 @@ export default function DomainPickerPage() {
             <div className="flex items-center gap-2 flex-wrap">
               <FilterIcon className="h-4 w-4 text-primary" />
               <span className="text-sm font-medium">
-                Top picks: {displayedRows.length.toLocaleString()} / {qualifiedRows.length.toLocaleString()} qualified
+                {topN > 0
+                  ? `${qualifiedRows.length.toLocaleString()} qualified · trang ${safePage}/${totalPages}`
+                  : `Tất cả ${qualifiedRows.length.toLocaleString()} qualified`}
               </span>
-              {topN > 0 && qualifiedRows.length > topN && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => dispatchWizard({ type: "setTopN", topN: 0 })}
-                  className="h-6 px-2 text-xs text-primary hover:text-primary"
-                  title={`Đang giới hạn Top ${topN}. Click để hiện toàn bộ ${qualifiedRows.length.toLocaleString()} domain.`}
-                >
-                  Hiện tất cả ({qualifiedRows.length.toLocaleString()})
-                </Button>
-              )}
-              {topN === 0 && qualifiedRows.length > 50 && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => dispatchWizard({ type: "setTopN", topN: 50 })}
-                  className="h-6 px-2 text-xs text-muted-foreground"
-                  title="Quay lại chỉ hiện top 50 (theo score)"
-                >
-                  Chỉ top 50
-                </Button>
-              )}
+              <select
+                value={String(topN)}
+                onChange={(e) => dispatchWizard({ type: "setTopN", topN: parseInt(e.target.value, 10) })}
+                className="h-7 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
+                title="Số dòng mỗi trang"
+              >
+                <option value="20">20 / trang</option>
+                <option value="50">50 / trang</option>
+                <option value="100">100 / trang</option>
+                <option value="200">200 / trang</option>
+                <option value="0">Tất cả</option>
+              </select>
               {excludeChecked && excludedCount > 0 && (
                 <Badge
                   variant="secondary"
@@ -1254,6 +1262,64 @@ export default function DomainPickerPage() {
               </tbody>
             </table>
           </div>
+          {topN > 0 && qualifiedRows.length > topN && (
+            <div className="border-t px-5 py-3 flex items-center justify-between gap-3 flex-wrap text-xs">
+              <span className="text-muted-foreground">
+                Hiển thị{" "}
+                <span className="text-foreground font-medium">
+                  {((safePage - 1) * topN + 1).toLocaleString()}
+                  {"–"}
+                  {Math.min(safePage * topN, qualifiedRows.length).toLocaleString()}
+                </span>
+                {" "}/ {qualifiedRows.length.toLocaleString()}
+              </span>
+              <div className="flex items-center gap-1">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-xs"
+                  disabled={safePage === 1}
+                  onClick={() => setCurrentPage(1)}
+                  title="Trang đầu"
+                >
+                  ‹‹
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-xs"
+                  disabled={safePage === 1}
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  title="Trang trước"
+                >
+                  ‹
+                </Button>
+                <span className="px-2 text-foreground font-medium tabular-nums">
+                  {safePage} / {totalPages}
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-xs"
+                  disabled={safePage === totalPages}
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  title="Trang sau"
+                >
+                  ›
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-xs"
+                  disabled={safePage === totalPages}
+                  onClick={() => setCurrentPage(totalPages)}
+                  title="Trang cuối"
+                >
+                  ››
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
