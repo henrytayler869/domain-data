@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Boxes,
   Search,
@@ -55,6 +55,36 @@ export default function InventoryPage() {
   const [ahrefsSummary, setAhrefsSummary] = useState<TargetSummary[]>([]);
   const [userBlacklist, setUserBlacklist] = useState<RefBlacklistEntry[]>([]);
 
+  // Wayback Machine (Apify actor)
+  type WaybackRow = {
+    targetDomain: string;
+    snapshotCount: number | null;
+    firstYear: string | null;
+    lastYear: string | null;
+    domainAge: number | null;
+    hasBetting: boolean;
+    hasAdult: boolean;
+    contentHistory: Array<{ year: string; timestamp: string; summary: string; hasBetting: boolean; hasAdult: boolean; confidence: string; keywords: string[] }>;
+    problematicSnapshots: Array<{ timestamp: string; url: string; title: string; summary: string; hasBetting: boolean; hasAdult: boolean; confidence: string; keywords: string[] }>;
+    errorReason: string | null;
+    checkedAt: string;
+  };
+  type WaybackRunT = {
+    runId: string;
+    status: "READY" | "RUNNING" | "SUCCEEDED" | "FAILED" | "TIMING-OUT" | "TIMED-OUT" | "ABORTING" | "ABORTED";
+    targets: string[];
+    datasetId: string | null;
+    startedAt: string;
+    finishedAt: string | null;
+    ingestedAt: string | null;
+    error: string | null;
+  };
+  const [waybackResults, setWaybackResults] = useState<WaybackRow[]>([]);
+  const [waybackRuns, setWaybackRuns] = useState<WaybackRunT[]>([]);
+  const [waybackStarting, setWaybackStarting] = useState(false);
+  const [expandedWayback, setExpandedWayback] = useState<Set<string>>(new Set());
+  const [filterWayback, setFilterWayback] = useState<"all" | "flagged" | "unchecked" | "checked">("all");
+
   const blacklistSet = useMemo(
     () => new Set(userBlacklist.map((e) => e.domain.toLowerCase())),
     [userBlacklist]
@@ -99,25 +129,87 @@ export default function InventoryPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [invRes, ahrefsRes, blRes, wRes] = await Promise.all([
+      const [invRes, ahrefsRes, blRes, wRes, wbResRes, wbRunsRes] = await Promise.all([
         fetch("/api/inventory"),
         fetch("/api/ahrefs-results/db"),
         fetch("/api/ref-blacklist"),
         fetch("/api/withdrawals"),
+        fetch("/api/wayback/results"),
+        fetch("/api/wayback/runs"),
       ]);
       const invData = await invRes.json();
       const ahrefsData = await ahrefsRes.json();
       const blData = await blRes.json();
       const wData = await wRes.json();
+      const wbResData = await wbResRes.json();
+      const wbRunsData = await wbRunsRes.json();
       setEntries(Array.isArray(invData) ? invData : []);
       setAhrefsSummary(Array.isArray(ahrefsData) ? ahrefsData : []);
       setUserBlacklist(Array.isArray(blData) ? blData : []);
       setWithdrawals(Array.isArray(wData) ? wData : []);
+      setWaybackResults(wbResData.rows ?? []);
+      setWaybackRuns(wbRunsData.runs ?? []);
     } catch { /* ignore */ }
     setLoading(false);
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // ── Wayback (light reload to refresh only wayback state without blocking the page) ──
+  const reloadWayback = useCallback(async () => {
+    try {
+      const [r, ru] = await Promise.all([
+        fetch("/api/wayback/results"),
+        fetch("/api/wayback/runs"),
+      ]);
+      const d = await r.json();
+      const dr = await ru.json();
+      setWaybackResults(d.rows ?? []);
+      setWaybackRuns(dr.runs ?? []);
+    } catch { /* ignore */ }
+  }, []);
+
+  const startWaybackCheck = useCallback(async (targets: string[]) => {
+    if (!targets.length) return;
+    setWaybackStarting(true);
+    try {
+      const res = await fetch("/api/wayback/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targets }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Start run thất bại");
+      showToast(`✅ Trigger Wayback · ${targets.length} domain · runId ${data.run.runId.slice(0, 8)}…`);
+      await reloadWayback();
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    } finally {
+      setWaybackStarting(false);
+    }
+  }, [reloadWayback, showToast]);
+
+  const pollWaybackRun = useCallback(async (runId: string) => {
+    try {
+      const res = await fetch(`/api/wayback/runs/${encodeURIComponent(runId)}`);
+      const data = await res.json();
+      if (!res.ok) return;
+      if (data.ingested?.count) {
+        showToast(`✅ Wayback ingested ${data.ingested.count} kết quả`);
+      }
+      await reloadWayback();
+    } catch { /* ignore */ }
+  }, [reloadWayback, showToast]);
+
+  // Auto-poll any RUNNING runs every 10s.
+  useEffect(() => {
+    const running = waybackRuns.filter((r) => r.status === "READY" || r.status === "RUNNING");
+    if (running.length === 0) return;
+    const id = setInterval(() => {
+      for (const r of running) pollWaybackRun(r.runId);
+    }, 10000);
+    return () => clearInterval(id);
+  }, [waybackRuns, pollWaybackRun]);
 
   const profitOf = (e: InventoryEntry) =>
     e.sellPrice != null && e.purchasePrice != null ? e.sellPrice - e.purchasePrice : null;
@@ -204,6 +296,23 @@ export default function InventoryPage() {
     };
   }, [entries, datePreset, inRange]);
 
+  // Quick lookup: domain → wayback row.
+  const waybackByDomain = useMemo(() => {
+    const m = new Map<string, WaybackRow>();
+    for (const r of waybackResults) m.set(r.targetDomain, r);
+    return m;
+  }, [waybackResults]);
+
+  const inFlightWaybackTargets = useMemo(() => {
+    const s = new Set<string>();
+    for (const r of waybackRuns) {
+      if (r.status === "READY" || r.status === "RUNNING") {
+        for (const d of r.targets) s.add(d);
+      }
+    }
+    return s;
+  }, [waybackRuns]);
+
   const filtered = useMemo(() => {
     const list = dateFiltered.filter((e) => {
       if (search && !e.domain.includes(search.toLowerCase())) return false;
@@ -211,6 +320,12 @@ export default function InventoryPage() {
       if (filterStatus === "sold" && e.sellPrice == null) return false;
       if (filterExpected === "yes" && e.expectedSellPrice == null) return false;
       if (filterExpected === "no" && e.expectedSellPrice != null) return false;
+      if (filterWayback !== "all") {
+        const wb = waybackByDomain.get(e.domain);
+        if (filterWayback === "flagged" && !(wb && (wb.hasBetting || wb.hasAdult))) return false;
+        if (filterWayback === "unchecked" && wb) return false;
+        if (filterWayback === "checked" && !wb) return false;
+      }
       return true;
     });
     return [...list].sort((a, b) => {
@@ -238,7 +353,7 @@ export default function InventoryPage() {
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * sortDir;
       return String(av).localeCompare(String(bv)) * sortDir;
     });
-  }, [dateFiltered, search, filterStatus, filterExpected, sortKey, sortDir]);
+  }, [dateFiltered, search, filterStatus, filterExpected, filterWayback, waybackByDomain, sortKey, sortDir]);
 
   // Pagination — applied on top of `filtered`
   const totalPages = pageSize > 0 ? Math.max(1, Math.ceil(filtered.length / pageSize)) : 1;
@@ -251,7 +366,7 @@ export default function InventoryPage() {
   // Reset to first page when filters/sort/search change
   useEffect(() => {
     setPage(0);
-  }, [search, filterStatus, filterExpected, datePreset, customFrom, customTo, sortKey, sortDir, pageSize]);
+  }, [search, filterStatus, filterExpected, filterWayback, datePreset, customFrom, customTo, sortKey, sortDir, pageSize]);
 
   const toggleSelect = (domain: string) => {
     setSelected((prev) => {
@@ -835,6 +950,43 @@ export default function InventoryPage() {
           <option value="yes">Đã có giá dự kiến</option>
           <option value="no">Chưa có giá dự kiến</option>
         </select>
+        <select
+          value={filterWayback}
+          onChange={(e) => setFilterWayback(e.target.value as "all" | "flagged" | "unchecked" | "checked")}
+          className="h-8 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
+          title="Filter Wayback status"
+        >
+          <option value="all">Tất cả Wayback</option>
+          <option value="flagged">🚨 Flagged</option>
+          <option value="checked">✓ Đã check</option>
+          <option value="unchecked">— Chưa check</option>
+        </select>
+        {(() => {
+          // Trigger Wayback for holding + currently-filtered + unchecked domains.
+          const candidates = filtered
+            .filter((e) => e.sellPrice == null) // holding only
+            .map((e) => e.domain)
+            .filter((d) => !waybackByDomain.has(d) && !inFlightWaybackTargets.has(d));
+          if (candidates.length === 0) return null;
+          return (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={waybackStarting}
+              onClick={() => startWaybackCheck(candidates)}
+              className="gap-1.5 text-purple-700 border-purple-400/60 hover:bg-purple-50 dark:hover:bg-purple-950"
+              title={`Trigger Apify Wayback actor cho ${candidates.length} domain đang giữ chưa check`}
+            >
+              {waybackStarting ? "Đang trigger…" : `🕰️ Check Wayback (${candidates.length})`}
+            </Button>
+          );
+        })()}
+        {inFlightWaybackTargets.size > 0 && (
+          <span className="inline-flex items-center gap-1 rounded-md bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300 px-2 py-1 text-[11px] font-medium">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            {inFlightWaybackTargets.size} đang chạy
+          </span>
+        )}
         <Button
           size="sm"
           variant="outline"
@@ -1139,6 +1291,7 @@ export default function InventoryPage() {
                   <SortTh label="Đánh giá" col="rating" current={sortKey} dir={sortDir} onSort={() => handleSort("rating")} />
                   <SortTh label="Phân loại" col="category" current={sortKey} dir={sortDir} onSort={() => handleSort("category")} />
                   <th className="px-3 py-3 text-left text-xs font-semibold text-muted-foreground uppercase whitespace-nowrap">Refs</th>
+                  <th className="px-3 py-3 text-left text-xs font-semibold text-muted-foreground uppercase whitespace-nowrap" title="Wayback Machine: snapshot history + AI flagged content">Wayback</th>
                   <SortTh label="Ngày mua" col="purchasedAt" current={sortKey} dir={sortDir} onSort={() => handleSort("purchasedAt")} />
                   <th className="w-20" />
                 </tr>
@@ -1148,8 +1301,11 @@ export default function InventoryPage() {
                   const isEditing = editingDomain === e.domain;
                   const isSold = e.sellPrice != null;
                   const profit = profitOf(e);
+                  const wb = waybackByDomain.get(e.domain);
+                  const wbExpanded = expandedWayback.has(e.domain);
                   return (
-                    <tr key={e.domain} className={cn(
+                    <React.Fragment key={e.domain}>
+                    <tr className={cn(
                       "border-b border-border/50 hover:bg-muted/20 group align-top",
                       selected.has(e.domain) && "bg-blue-50/50 dark:bg-blue-950/30"
                     )}>
@@ -1304,6 +1460,21 @@ export default function InventoryPage() {
                       <td className="px-3 py-2">
                         <RefList refs={refsByDomain.get(e.domain) ?? []} />
                       </td>
+                      <td className="px-3 py-2">
+                        <WaybackCell
+                          domain={e.domain}
+                          row={waybackByDomain.get(e.domain) ?? null}
+                          inFlight={inFlightWaybackTargets.has(e.domain)}
+                          expanded={expandedWayback.has(e.domain)}
+                          onToggleExpand={() => {
+                            const next = new Set(expandedWayback);
+                            if (next.has(e.domain)) next.delete(e.domain); else next.add(e.domain);
+                            setExpandedWayback(next);
+                          }}
+                          onCheck={() => startWaybackCheck([e.domain])}
+                          starting={waybackStarting}
+                        />
+                      </td>
                       <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap">
                         {new Date(e.purchasedAt).toLocaleDateString()}
                       </td>
@@ -1347,6 +1518,14 @@ export default function InventoryPage() {
                         </div>
                       </td>
                     </tr>
+                    {wb && wbExpanded && (
+                      <tr className="bg-muted/20 border-b border-border/50">
+                        <td colSpan={12} className="px-6 py-4">
+                          <WaybackDetail row={wb} />
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
@@ -1662,5 +1841,135 @@ function RatingBadge({ rating }: { rating: string | null }) {
     )} title={rating}>
       {rating}
     </span>
+  );
+}
+
+// ─── Wayback cell / detail (re-used by inventory) ──────────────────────────
+
+type WaybackRowT = {
+  targetDomain: string;
+  snapshotCount: number | null;
+  firstYear: string | null;
+  lastYear: string | null;
+  domainAge: number | null;
+  hasBetting: boolean;
+  hasAdult: boolean;
+  contentHistory: Array<{ year: string; timestamp: string; summary: string; hasBetting: boolean; hasAdult: boolean; confidence: string; keywords: string[] }>;
+  problematicSnapshots: Array<{ timestamp: string; url: string; title: string; summary: string; hasBetting: boolean; hasAdult: boolean; confidence: string; keywords: string[] }>;
+  errorReason: string | null;
+  checkedAt: string;
+};
+
+function WaybackCell({
+  domain, row, inFlight, expanded, onToggleExpand, onCheck, starting,
+}: {
+  domain: string;
+  row: WaybackRowT | null;
+  inFlight: boolean;
+  expanded: boolean;
+  onToggleExpand: () => void;
+  onCheck: () => void;
+  starting: boolean;
+}) {
+  if (!row && !inFlight) {
+    return (
+      <button
+        onClick={onCheck}
+        disabled={starting}
+        className="text-[11px] text-purple-700 hover:text-purple-900 dark:text-purple-300 dark:hover:text-purple-100 hover:underline disabled:opacity-50 whitespace-nowrap"
+        title={`Check Wayback cho ${domain}`}
+      >
+        🕰️ Check
+      </button>
+    );
+  }
+  if (inFlight && !row) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] text-blue-700 dark:text-blue-300 whitespace-nowrap">
+        <Loader2 className="h-3 w-3 animate-spin" />
+        Đang chạy
+      </span>
+    );
+  }
+  if (!row) return null;
+  if (row.errorReason) {
+    return (
+      <span className="text-[11px] text-amber-700 dark:text-amber-300 whitespace-nowrap" title={row.errorReason}>
+        ⚠️ {row.errorReason.slice(0, 18)}
+      </span>
+    );
+  }
+  const flagged = row.hasBetting || row.hasAdult;
+  return (
+    <button
+      onClick={onToggleExpand}
+      className={cn(
+        "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap hover:opacity-80 cursor-pointer",
+        flagged
+          ? "bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-300 border border-red-300"
+          : "bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border border-emerald-300"
+      )}
+      title={`${row.snapshotCount} snapshots · age ${row.domainAge}y · ${flagged ? "flagged" : "clean"} · click để xem chi tiết`}
+    >
+      {flagged ? (
+        <>{row.hasBetting && "🎰"}{row.hasAdult && "🔞"} Flagged</>
+      ) : (
+        <>✓ {row.snapshotCount} · {row.domainAge}y</>
+      )}
+      <ChevronDown className={cn("h-3 w-3 transition-transform", expanded && "rotate-180")} />
+    </button>
+  );
+}
+
+function WaybackDetail({ row }: { row: WaybackRowT }) {
+  return (
+    <div className="space-y-3 text-xs">
+      <div className="flex flex-wrap gap-3 items-center">
+        <span className="font-semibold">🕰️ {row.targetDomain}</span>
+        <span className="text-muted-foreground">{row.snapshotCount} snapshots · {row.firstYear}–{row.lastYear} · age {row.domainAge}y</span>
+        <span className="text-muted-foreground">checked {new Date(row.checkedAt).toLocaleString()}</span>
+      </div>
+      {row.problematicSnapshots.length > 0 && (
+        <div>
+          <h4 className="font-semibold text-red-700 dark:text-red-300 mb-2">🚨 Problematic snapshots ({row.problematicSnapshots.length})</h4>
+          <div className="space-y-2">
+            {row.problematicSnapshots.map((s, i) => (
+              <div key={i} className="rounded border border-red-200 dark:border-red-900 bg-red-50/50 dark:bg-red-950/30 p-2">
+                <div className="flex gap-2 items-center mb-1 flex-wrap">
+                  <span className="font-mono">{s.timestamp?.slice(0, 8)}</span>
+                  <span className="font-medium">{s.title}</span>
+                  <a href={s.url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">↗</a>
+                </div>
+                <div className="text-muted-foreground">{s.summary}</div>
+                {s.keywords?.length > 0 && (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {s.keywords.map((k, j) => (
+                      <span key={j} className="px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900 text-[10px]">{k}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {row.contentHistory.length > 0 && (
+        <div>
+          <h4 className="font-semibold mb-2">📜 Content history ({row.contentHistory.length} snapshots)</h4>
+          <div className="space-y-1">
+            {row.contentHistory.map((h, i) => (
+              <div key={i} className="flex gap-2 items-start">
+                <span className="font-mono text-muted-foreground w-12 shrink-0">{h.year}</span>
+                <span className={cn("w-2 h-2 rounded-full mt-1.5 shrink-0", (h.hasBetting || h.hasAdult) ? "bg-red-500" : "bg-emerald-500")} />
+                <span className="flex-1">{h.summary}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {row.contentHistory.length === 0 && row.problematicSnapshots.length === 0 && !row.errorReason && (
+        <p className="text-muted-foreground italic">Không có content history.</p>
+      )}
+    </div>
   );
 }
