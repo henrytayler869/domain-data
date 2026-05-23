@@ -83,7 +83,7 @@ export default function InventoryPage() {
   const [waybackRuns, setWaybackRuns] = useState<WaybackRunT[]>([]);
   const [waybackStarting, setWaybackStarting] = useState(false);
   const [expandedWayback, setExpandedWayback] = useState<Set<string>>(new Set());
-  const [filterWayback, setFilterWayback] = useState<"all" | "flagged" | "unchecked" | "checked">("all");
+  const [filterWayback, setFilterWayback] = useState<"all" | "flagged" | "clean" | "unchecked" | "checked">("all");
 
   const blacklistSet = useMemo(
     () => new Set(userBlacklist.map((e) => e.domain.toLowerCase())),
@@ -322,7 +322,9 @@ export default function InventoryPage() {
       if (filterExpected === "no" && e.expectedSellPrice != null) return false;
       if (filterWayback !== "all") {
         const wb = waybackByDomain.get(e.domain);
-        if (filterWayback === "flagged" && !(wb && (wb.hasBetting || wb.hasAdult))) return false;
+        const isFlagged = !!(wb && (wb.hasBetting || wb.hasAdult));
+        if (filterWayback === "flagged" && !isFlagged) return false;
+        if (filterWayback === "clean" && !(wb && !isFlagged && !wb.errorReason)) return false;
         if (filterWayback === "unchecked" && wb) return false;
         if (filterWayback === "checked" && !wb) return false;
       }
@@ -952,13 +954,14 @@ export default function InventoryPage() {
         </select>
         <select
           value={filterWayback}
-          onChange={(e) => setFilterWayback(e.target.value as "all" | "flagged" | "unchecked" | "checked")}
+          onChange={(e) => setFilterWayback(e.target.value as "all" | "flagged" | "clean" | "unchecked" | "checked")}
           className="h-8 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
           title="Filter Wayback status"
         >
           <option value="all">Tất cả Wayback</option>
           <option value="flagged">🚨 Flagged</option>
-          <option value="checked">✓ Đã check</option>
+          <option value="clean">🟢 Clean (đã check, không flagged)</option>
+          <option value="checked">✓ Đã check (mọi loại)</option>
           <option value="unchecked">— Chưa check</option>
         </select>
         {(() => {
