@@ -961,8 +961,8 @@ export default function InventoryPage() {
         >
           <option value="all">Tất cả Wayback</option>
           <option value="flagged">🚨 Flagged</option>
-          <option value="clean">🟢 Clean (đã check, không flagged — bao gồm no snapshots)</option>
-          <option value="checked">✓ Đã check (mọi loại)</option>
+          <option value="clean">🟢 Clean</option>
+          <option value="checked">✓ Đã check</option>
           <option value="unchecked">— Chưa check</option>
         </select>
         {(() => {
