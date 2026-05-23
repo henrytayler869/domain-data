@@ -87,6 +87,40 @@ on conflict (target_domain) do update
 
 delete from ahrefs_results where ref_domain = '__manually_excluded__';
 
+-- ─── Wayback Machine check (Apify actor results) ───────────────────────────
+-- Per-target Wayback history + AI risk flags. One row per target_domain.
+create table if not exists wayback_results (
+  target_domain         text primary key,
+  snapshot_count        integer,
+  first_year            text,
+  last_year             text,
+  domain_age            integer,
+  has_betting           boolean default false,
+  has_adult             boolean default false,
+  content_history       jsonb,    -- [{year, timestamp, summary, hasBetting, hasAdult, confidence, keywords}]
+  problematic_snapshots jsonb,    -- [{timestamp, url, title, summary, hasBetting, hasAdult, confidence, keywords}]
+  error_reason          text,
+  checked_at            timestamptz default now()
+);
+create index if not exists wayback_results_flagged_idx
+  on wayback_results (has_betting, has_adult);
+create index if not exists wayback_results_checked_idx
+  on wayback_results (checked_at desc);
+
+-- Track in-flight Apify runs so the UI can resume polling after refresh.
+create table if not exists wayback_runs (
+  run_id        text primary key,
+  status        text not null,                -- READY / RUNNING / SUCCEEDED / FAILED / TIMED-OUT / ABORTED
+  targets       text[] not null,              -- domains submitted in this run
+  dataset_id    text,
+  started_at    timestamptz default now(),
+  finished_at   timestamptz,
+  ingested_at   timestamptz,                  -- when we pulled the dataset into wayback_results
+  error         text
+);
+create index if not exists wayback_runs_started_idx on wayback_runs (started_at desc);
+create index if not exists wayback_runs_status_idx  on wayback_runs (status);
+
 -- ─── Domain Inventory (kho domain đã mua) ────────────────────────────────────
 create table if not exists domain_inventory (
   domain          text primary key,

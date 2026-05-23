@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef, useMemo, useReducer } from "react";
+import React, { useState, useCallback, useEffect, useRef, useMemo, useReducer } from "react";
 import {
   Upload,
   Search,
@@ -112,6 +112,35 @@ export default function DomainPickerPage() {
   const [applyRefBlacklist, setApplyRefBlacklist] = useState(true);
   const [refBlacklistOpen, setRefBlacklistOpen] = useState(false);
   const [ahrefsSortKey, setAhrefsSortKey] = useState<"targetDomain" | "source" | "rating" | "category" | "checkedAt" | "refsCount">("refsCount");
+
+  // ── Wayback Machine (step 4) ──────────────────────────────────────────────
+  type WaybackRow = {
+    targetDomain: string;
+    snapshotCount: number | null;
+    firstYear: string | null;
+    lastYear: string | null;
+    domainAge: number | null;
+    hasBetting: boolean;
+    hasAdult: boolean;
+    contentHistory: Array<{ year: string; timestamp: string; summary: string; hasBetting: boolean; hasAdult: boolean; confidence: string; keywords: string[] }>;
+    problematicSnapshots: Array<{ timestamp: string; url: string; title: string; summary: string; hasBetting: boolean; hasAdult: boolean; confidence: string; keywords: string[] }>;
+    errorReason: string | null;
+    checkedAt: string;
+  };
+  type WaybackRun = {
+    runId: string;
+    status: "READY" | "RUNNING" | "SUCCEEDED" | "FAILED" | "TIMING-OUT" | "TIMED-OUT" | "ABORTING" | "ABORTED";
+    targets: string[];
+    datasetId: string | null;
+    startedAt: string;
+    finishedAt: string | null;
+    ingestedAt: string | null;
+    error: string | null;
+  };
+  const [waybackResults, setWaybackResults] = useState<WaybackRow[]>([]);
+  const [waybackRuns, setWaybackRuns] = useState<WaybackRun[]>([]);
+  const [waybackStarting, setWaybackStarting] = useState(false);
+  const [waybackExpanded, setWaybackExpanded] = useState<Set<string>>(new Set());
   const [ahrefsSortDir, setAhrefsSortDir] = useState<1 | -1>(-1);
   const [selectedTargets, setSelectedTargets] = useState<Set<string>>(new Set());
   const [filterRating, setFilterRating] = useState<string>("all");
@@ -228,6 +257,63 @@ export default function DomainPickerPage() {
     } catch { /* ignore */ }
   }, []);
 
+  const loadWayback = useCallback(async () => {
+    try {
+      const [resultsRes, runsRes] = await Promise.all([
+        fetch("/api/wayback/results"),
+        fetch("/api/wayback/runs"),
+      ]);
+      const resultsData = await resultsRes.json();
+      const runsData = await runsRes.json();
+      setWaybackResults(resultsData.rows ?? []);
+      setWaybackRuns(runsData.runs ?? []);
+    } catch { /* ignore */ }
+  }, []);
+
+  const startWaybackCheck = useCallback(async (targets: string[]) => {
+    if (!targets.length) return;
+    setWaybackStarting(true);
+    try {
+      const res = await fetch("/api/wayback/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targets }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Start run thất bại");
+      showToast(`✅ Đã trigger Wayback run · ${targets.length} target · runId ${data.run.runId.slice(0, 8)}…`);
+      await loadWayback();
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    } finally {
+      setWaybackStarting(false);
+    }
+  }, [loadWayback, showToast]);
+
+  const pollWaybackRun = useCallback(async (runId: string) => {
+    try {
+      const res = await fetch(`/api/wayback/runs/${encodeURIComponent(runId)}`);
+      const data = await res.json();
+      if (!res.ok) return;
+      // Refresh both lists so newly ingested results show up.
+      if (data.ingested?.count) {
+        showToast(`✅ Wayback ingested ${data.ingested.count} kết quả`);
+      }
+      await loadWayback();
+    } catch { /* ignore */ }
+  }, [loadWayback, showToast]);
+
+  // Auto-poll any RUNNING runs every 10s while user is on step 4.
+  useEffect(() => {
+    if (wizard.step !== 4) return;
+    const running = waybackRuns.filter((r) => r.status === "READY" || r.status === "RUNNING");
+    if (running.length === 0) return;
+    const id = setInterval(() => {
+      for (const r of running) pollWaybackRun(r.runId);
+    }, 10000);
+    return () => clearInterval(id);
+  }, [wizard.step, waybackRuns, pollWaybackRun]);
+
   const loadUserBlacklist = useCallback(async () => {
     try {
       const res = await fetch("/api/ref-blacklist");
@@ -249,7 +335,7 @@ export default function DomainPickerPage() {
     [inventory]
   );
 
-  useEffect(() => { loadDb(); loadAhrefs(); loadUserBlacklist(); loadInventory(); }, [loadDb, loadAhrefs, loadUserBlacklist, loadInventory]);
+  useEffect(() => { loadDb(); loadAhrefs(); loadUserBlacklist(); loadInventory(); loadWayback(); }, [loadDb, loadAhrefs, loadUserBlacklist, loadInventory, loadWayback]);
 
   useEffect(() => {
     try {
@@ -1323,14 +1409,31 @@ export default function DomainPickerPage() {
         </div>
       )}
 
-      {/* ── Steps 3 & 4: Ahrefs Result Panel ───────────────────────────────── */}
-      {(wizard.step === 3 || wizard.step === 4) && (
+      {/* ── Step 4: Wayback Machine check ─────────────────────────────────── */}
+      {wizard.step === 4 && (
+        <WaybackPanel
+          ahrefsTargets={filteredAhrefs.map((t) => t.targetDomain)}
+          waybackResults={waybackResults}
+          waybackRuns={waybackRuns}
+          waybackStarting={waybackStarting}
+          waybackExpanded={waybackExpanded}
+          setWaybackExpanded={setWaybackExpanded}
+          startWaybackCheck={startWaybackCheck}
+        />
+      )}
+
+      {/* ── Steps 3 / 4 / 5: Ahrefs Result Panel (always visible after upload) ── */}
+      {(wizard.step === 3 || wizard.step === 4 || wizard.step === 5) && (
       <div className="rounded-xl border bg-card shadow-sm">
         <div className="flex items-center justify-between px-6 py-4">
           <div className="flex items-center gap-2">
             <Database className="h-4 w-4 text-orange-500" />
             <h2 className="text-sm font-semibold uppercase tracking-wide">
-              {wizard.step === 3 ? "Upload kết quả Ahrefs" : "Quyết định & lưu"}
+              {wizard.step === 3
+                ? "Upload kết quả Ahrefs"
+                : wizard.step === 4
+                ? "Wayback context"
+                : "Quyết định & lưu"}
             </h2>
             <span className="bg-orange-100 dark:bg-orange-950 text-orange-700 dark:text-orange-300 text-xs font-bold px-2 py-0.5 rounded-full">
               {ahrefsSummary.length.toLocaleString()} target
@@ -1351,6 +1454,8 @@ export default function DomainPickerPage() {
                   unified 6 cột (<code className="font-mono bg-muted px-1.5 py-0.5 rounded">target_domain,checked_at,refs,rating,category,detail</code>)
                   hoặc legacy 3 cột (<code className="font-mono bg-muted px-1.5 py-0.5 rounded">target_domain,ref_domain,domain_rating</code>).
                 </>
+              ) : wizard.step === 4 ? (
+                <>Đây là bảng Ahrefs cho ngữ cảnh. Panel <strong>Wayback Machine check</strong> ở trên cho phép chạy actor để xem lịch sử content (betting/adult).</>
               ) : (
                 <>Chọn target để đánh dấu <strong>Đã mua</strong> (lưu kho + ẩn khỏi picker) hoặc <strong>Loại trừ</strong> (người khác đã mua — ẩn khỏi picker, không lưu kho).</>
               )}
@@ -1814,7 +1919,7 @@ export default function DomainPickerPage() {
         </span>
         <Button
           onClick={() => dispatchWizard({ type: "advance", from: wizard.step })}
-          disabled={wizard.step === 4}
+          disabled={wizard.step === 5}
           className="gap-2"
         >
           Tiếp →
@@ -2168,4 +2273,274 @@ function Metric({ value, good, mid, reverse = false }: {
     : isMid ? "text-blue-600 dark:text-blue-400"
     : "text-muted-foreground";
   return <span className={color}>{value}</span>;
+}
+
+// ─── Wayback Panel (step 4) ──────────────────────────────────────────────────
+
+type WaybackRowT = {
+  targetDomain: string;
+  snapshotCount: number | null;
+  firstYear: string | null;
+  lastYear: string | null;
+  domainAge: number | null;
+  hasBetting: boolean;
+  hasAdult: boolean;
+  contentHistory: Array<{ year: string; timestamp: string; summary: string; hasBetting: boolean; hasAdult: boolean; confidence: string; keywords: string[] }>;
+  problematicSnapshots: Array<{ timestamp: string; url: string; title: string; summary: string; hasBetting: boolean; hasAdult: boolean; confidence: string; keywords: string[] }>;
+  errorReason: string | null;
+  checkedAt: string;
+};
+type WaybackRunT = {
+  runId: string;
+  status: "READY" | "RUNNING" | "SUCCEEDED" | "FAILED" | "TIMING-OUT" | "TIMED-OUT" | "ABORTING" | "ABORTED";
+  targets: string[];
+  datasetId: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  ingestedAt: string | null;
+  error: string | null;
+};
+
+function WaybackPanel({
+  ahrefsTargets,
+  waybackResults,
+  waybackRuns,
+  waybackStarting,
+  waybackExpanded,
+  setWaybackExpanded,
+  startWaybackCheck,
+}: {
+  ahrefsTargets: string[];
+  waybackResults: WaybackRowT[];
+  waybackRuns: WaybackRunT[];
+  waybackStarting: boolean;
+  waybackExpanded: Set<string>;
+  setWaybackExpanded: (s: Set<string>) => void;
+  startWaybackCheck: (targets: string[]) => void;
+}) {
+  const checkedMap = new Map(waybackResults.map((r) => [r.targetDomain, r]));
+  const unchecked = ahrefsTargets.filter((d) => !checkedMap.has(d));
+  const activeRuns = waybackRuns.filter((r) => r.status === "READY" || r.status === "RUNNING");
+  const inFlightTargets = new Set(activeRuns.flatMap((r) => r.targets));
+  const pendingNow = unchecked.filter((d) => inFlightTargets.has(d)).length;
+
+  // Targets visible in Ahrefs table, sorted: flagged first, then unchecked, then clean.
+  const rows = ahrefsTargets.map((d) => {
+    const row = checkedMap.get(d);
+    const inFlight = inFlightTargets.has(d);
+    return { domain: d, row, inFlight };
+  }).sort((a, b) => {
+    const aPri = a.row ? (a.row.hasBetting || a.row.hasAdult ? 0 : 2) : (a.inFlight ? 1 : 3);
+    const bPri = b.row ? (b.row.hasBetting || b.row.hasAdult ? 0 : 2) : (b.inFlight ? 1 : 3);
+    if (aPri !== bPri) return aPri - bPri;
+    return a.domain.localeCompare(b.domain);
+  });
+
+  const toggleExpanded = (d: string) => {
+    const next = new Set(waybackExpanded);
+    if (next.has(d)) next.delete(d);
+    else next.add(d);
+    setWaybackExpanded(next);
+  };
+
+  const flaggedCount = waybackResults.filter((r) => (checkedMap.has(r.targetDomain) && ahrefsTargets.includes(r.targetDomain)) && (r.hasBetting || r.hasAdult)).length;
+
+  return (
+    <div className="rounded-xl border bg-card shadow-sm">
+      <div className="flex items-center justify-between px-6 py-4 border-b">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Database className="h-4 w-4 text-purple-500" />
+          <h2 className="text-sm font-semibold uppercase tracking-wide">Wayback Machine check</h2>
+          <Badge variant="secondary" className="text-xs">{ahrefsTargets.length} target</Badge>
+          {checkedMap.size > 0 && (
+            <Badge variant="secondary" className="text-xs bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+              {ahrefsTargets.filter((d) => checkedMap.has(d)).length} đã check
+            </Badge>
+          )}
+          {flaggedCount > 0 && (
+            <Badge variant="secondary" className="text-xs bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300">
+              🚨 {flaggedCount} flagged
+            </Badge>
+          )}
+          {activeRuns.length > 0 && (
+            <Badge variant="secondary" className="text-xs bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+              ⏳ {activeRuns.length} run · {pendingNow} target đang chạy
+            </Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            disabled={waybackStarting || unchecked.length === 0}
+            onClick={() => startWaybackCheck(unchecked)}
+            className="gap-1.5 bg-purple-600 hover:bg-purple-700 text-white"
+            title={unchecked.length === 0 ? "Tất cả target đã check rồi" : `Trigger Apify actor cho ${unchecked.length} target chưa check`}
+          >
+            {waybackStarting ? "Đang trigger…" : `Check Wayback (${unchecked.length})`}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={waybackStarting || ahrefsTargets.length === 0}
+            onClick={() => startWaybackCheck(ahrefsTargets)}
+            title="Re-check tất cả target (upsert đè dữ liệu cũ)"
+            className="gap-1.5"
+          >
+            Re-check tất cả
+          </Button>
+        </div>
+      </div>
+
+      {activeRuns.length > 0 && (
+        <div className="border-b bg-blue-50/30 dark:bg-blue-950/20 px-6 py-3 text-xs space-y-1">
+          {activeRuns.map((r) => (
+            <div key={r.runId} className="flex items-center gap-2">
+              <span className="text-blue-700 dark:text-blue-300">⏳ {r.status}</span>
+              <span className="font-mono text-muted-foreground">{r.runId}</span>
+              <span className="text-muted-foreground">· {r.targets.length} target · bắt đầu {new Date(r.startedAt).toLocaleTimeString()}</span>
+              <a
+                href={`https://console.apify.com/actors/runs/${r.runId}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary hover:underline"
+              >
+                xem trên Apify ↗
+              </a>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/40 border-b sticky top-0">
+            <tr>
+              <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide w-8"></th>
+              <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide">Target domain</th>
+              <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide">Status</th>
+              <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide">Snapshots</th>
+              <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide">Age</th>
+              <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide">Flags</th>
+              <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide">Checked</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="text-center py-12 text-muted-foreground text-sm">
+                  Chưa có target. Upload Ahrefs result ở bước 3 trước.
+                </td>
+              </tr>
+            ) : (
+              rows.map(({ domain, row, inFlight }) => {
+                const expanded = waybackExpanded.has(domain);
+                const flagged = row && (row.hasBetting || row.hasAdult);
+                return (
+                  <React.Fragment key={domain}>
+                    <tr
+                      className={cn(
+                        "border-b border-border/50 hover:bg-muted/20 transition-colors cursor-pointer",
+                        flagged && "bg-red-50/40 dark:bg-red-950/20"
+                      )}
+                      onClick={() => row && toggleExpanded(domain)}
+                    >
+                      <td className="px-3 py-2">
+                        {row && (
+                          <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground transition-transform", expanded && "rotate-180")} />
+                        )}
+                      </td>
+                      <td className="px-3 py-2 font-mono font-medium">{domain}</td>
+                      <td className="px-3 py-2 text-xs">
+                        {row ? (
+                          row.errorReason ? (
+                            <span className="text-amber-700 dark:text-amber-300">⚠️ {row.errorReason}</span>
+                          ) : (
+                            <span className="text-emerald-700 dark:text-emerald-300">✓ Đã check</span>
+                          )
+                        ) : inFlight ? (
+                          <span className="text-blue-700 dark:text-blue-300">⏳ Đang chạy</span>
+                        ) : (
+                          <span className="text-muted-foreground">— Chưa check</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-muted-foreground">
+                        {row?.snapshotCount != null ? row.snapshotCount.toLocaleString() : "—"}
+                        {row?.firstYear && row?.lastYear && (
+                          <span className="text-[11px] ml-1">({row.firstYear}–{row.lastYear})</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-muted-foreground">{row?.domainAge != null ? `${row.domainAge}y` : "—"}</td>
+                      <td className="px-3 py-2">
+                        <div className="flex gap-1 flex-wrap">
+                          {row?.hasBetting && (
+                            <Badge variant="secondary" className="text-[10px] bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300">🎰 Betting</Badge>
+                          )}
+                          {row?.hasAdult && (
+                            <Badge variant="secondary" className="text-[10px] bg-pink-100 text-pink-700 dark:bg-pink-950 dark:text-pink-300">🔞 Adult</Badge>
+                          )}
+                          {row && !row.hasBetting && !row.hasAdult && !row.errorReason && (
+                            <Badge variant="secondary" className="text-[10px] bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">✓ Clean</Badge>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-muted-foreground text-xs">
+                        {row?.checkedAt ? new Date(row.checkedAt).toLocaleString() : "—"}
+                      </td>
+                    </tr>
+                    {expanded && row && (
+                      <tr className="bg-muted/10">
+                        <td colSpan={7} className="px-6 py-4 text-xs space-y-3">
+                          {row.problematicSnapshots.length > 0 && (
+                            <div>
+                              <h4 className="font-semibold text-red-700 dark:text-red-300 mb-2">🚨 Problematic snapshots ({row.problematicSnapshots.length})</h4>
+                              <div className="space-y-2">
+                                {row.problematicSnapshots.map((s, i) => (
+                                  <div key={i} className="rounded border border-red-200 dark:border-red-900 bg-red-50/50 dark:bg-red-950/30 p-2">
+                                    <div className="flex gap-2 items-center mb-1">
+                                      <span className="font-mono">{s.timestamp.slice(0, 8)}</span>
+                                      <span className="font-medium">{s.title}</span>
+                                      <a href={s.url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">↗</a>
+                                    </div>
+                                    <div className="text-muted-foreground">{s.summary}</div>
+                                    {s.keywords?.length > 0 && (
+                                      <div className="mt-1 flex flex-wrap gap-1">
+                                        {s.keywords.map((k, j) => (
+                                          <span key={j} className="px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900 text-[10px]">{k}</span>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {row.contentHistory.length > 0 && (
+                            <div>
+                              <h4 className="font-semibold mb-2">📜 Content history ({row.contentHistory.length} snapshots)</h4>
+                              <div className="space-y-1">
+                                {row.contentHistory.map((h, i) => (
+                                  <div key={i} className="flex gap-2 items-start">
+                                    <span className="font-mono text-muted-foreground w-12 shrink-0">{h.year}</span>
+                                    <span className={cn("w-2 h-2 rounded-full mt-1.5 shrink-0", (h.hasBetting || h.hasAdult) ? "bg-red-500" : "bg-emerald-500")} />
+                                    <span className="flex-1">{h.summary}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {row.contentHistory.length === 0 && row.problematicSnapshots.length === 0 && (
+                            <p className="text-muted-foreground italic">Không có content history (actor chạy ở fast mode hoặc không có snapshot).</p>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
