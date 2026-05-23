@@ -324,7 +324,8 @@ export default function InventoryPage() {
         const wb = waybackByDomain.get(e.domain);
         const isFlagged = !!(wb && (wb.hasBetting || wb.hasAdult));
         if (filterWayback === "flagged" && !isFlagged) return false;
-        if (filterWayback === "clean" && !(wb && !isFlagged && !wb.errorReason)) return false;
+        // Clean = đã check + không flagged (bao gồm cả case "no snapshots / error" — vẫn coi là an toàn).
+        if (filterWayback === "clean" && !(wb && !isFlagged)) return false;
         if (filterWayback === "unchecked" && wb) return false;
         if (filterWayback === "checked" && !wb) return false;
       }
@@ -960,7 +961,7 @@ export default function InventoryPage() {
         >
           <option value="all">Tất cả Wayback</option>
           <option value="flagged">🚨 Flagged</option>
-          <option value="clean">🟢 Clean (đã check, không flagged)</option>
+          <option value="clean">🟢 Clean (đã check, không flagged — bao gồm no snapshots)</option>
           <option value="checked">✓ Đã check (mọi loại)</option>
           <option value="unchecked">— Chưa check</option>
         </select>
