@@ -67,6 +67,7 @@ export default function AgedDomainPage() {
   const [dbCsvText, setDbCsvText] = useState("");
   const [dbImportOpen, setDbImportOpen] = useState(false);
   const [dbSearch, setDbSearch] = useState("");
+  const [backfilling, setBackfilling] = useState(false);
 
   // ── Toasts ──────────────────────────────────────────────────────────────────
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -499,6 +500,33 @@ export default function AgedDomainPage() {
               >
                 <Upload className="h-3.5 w-3.5" />
                 Import CSV
+              </Button>
+
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5 text-purple-700 border-purple-400/60 hover:bg-purple-50 dark:hover:bg-purple-950"
+                disabled={backfilling}
+                onClick={async () => {
+                  setBackfilling(true);
+                  try {
+                    const res = await fetch("/api/aged-domain/db/backfill", { method: "POST" });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error ?? "Backfill thất bại");
+                    await loadDb();
+                    showToast(
+                      `✅ Backfill xong: ${data.upserted} upsert · ${data.skippedUnchanged} unchanged · total ${data.totalAfter} (từ ${data.ahrefsRowsScanned} ahrefs rows)`
+                    );
+                  } catch (err) {
+                    showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+                  } finally {
+                    setBackfilling(false);
+                  }
+                }}
+                title="Quét toàn bộ ahrefs_results, lấy MAX(DR) cho mỗi ref_domain, upsert vào backlink_db. Idempotent."
+              >
+                <Database className="h-3.5 w-3.5" />
+                {backfilling ? "Đang backfill…" : "Backfill từ Ahrefs"}
               </Button>
 
               <Button
