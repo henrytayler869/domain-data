@@ -105,6 +105,11 @@ export default function DomainPickerPage() {
   // UI-only hide cutoff (timestamp). When set, only show targets with checkedAt > this.
   // Persisted in localStorage. Does NOT touch DB.
   const [viewClearedAt, setViewClearedAt] = useState<number | null>(null);
+  // Targets from the most recent Ahrefs upload — always shown even if
+  // their checked_at happens to be ≤ viewClearedAt due to clock skew
+  // between client (sets viewClearedAt with Date.now()) and server
+  // (writes checked_at with its own now()).
+  const [justUploadedTargets, setJustUploadedTargets] = useState<Set<string>>(new Set());
   const [checkedTargets, setCheckedTargets] = useState<Set<string>>(new Set());
   const [ahrefsSearch, setAhrefsSearch] = useState("");
   const [ahrefsUploading, setAhrefsUploading] = useState(false);
@@ -474,6 +479,13 @@ export default function DomainPickerPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Upload thất bại");
+      // Remember which targets just landed so the viewClearedAt filter
+      // doesn't accidentally hide them (clock skew between client/server).
+      const uploadedTargets = new Set<string>([
+        ...refsRows.map((r) => r.targetDomain),
+        ...assessments.map((a) => a.targetDomain),
+      ]);
+      setJustUploadedTargets(uploadedTargets);
       await loadAhrefs();
       const refStat = data.refs;
       const assessStat = data.assessments;
@@ -516,8 +528,12 @@ export default function DomainPickerPage() {
     const bySearch = ahrefsSummary.filter((t) => {
       // Manually excluded — domain already bought by someone else, hide entirely
       if (t.excluded) return false;
-      // UI-only hide: skip entries last-checked at-or-before viewClearedAt
-      if (viewClearedAt != null) {
+      // UI-only hide: skip entries last-checked at-or-before viewClearedAt.
+      // Targets from the most recent upload always bypass this filter so a
+      // re-upload of an already-existing domain is guaranteed to be visible
+      // (clock skew between client Date.now() and server now() makes the
+      // timestamp comparison alone unreliable).
+      if (viewClearedAt != null && !justUploadedTargets.has(t.targetDomain)) {
         const t0 = new Date(t.checkedAt).getTime();
         if (t0 <= viewClearedAt) return false;
       }
@@ -570,7 +586,7 @@ export default function DomainPickerPage() {
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * ahrefsSortDir;
       return String(av).localeCompare(String(bv)) * ahrefsSortDir;
     });
-  }, [ahrefsSummary, ahrefsSearch, applyRefBlacklist, effectiveBlacklist, sourceMap, ahrefsSortKey, ahrefsSortDir, filterRating, filterSource, filterPurchased, purchasedSet, viewClearedAt]);
+  }, [ahrefsSummary, ahrefsSearch, applyRefBlacklist, effectiveBlacklist, sourceMap, ahrefsSortKey, ahrefsSortDir, filterRating, filterSource, filterPurchased, purchasedSet, viewClearedAt, justUploadedTargets]);
 
   const handleAhrefsSort = (key: typeof ahrefsSortKey) => {
     if (ahrefsSortKey === key) setAhrefsSortDir((d) => (d === 1 ? -1 : 1));
@@ -832,6 +848,7 @@ export default function DomainPickerPage() {
   // from the Ahrefs panel display (DB intact, new uploads will reappear automatically).
   const clearAhrefs = useCallback(() => {
     if (!ahrefsSummary.length) return;
+    setJustUploadedTargets(new Set()); // forget last upload — user wants a clean slate
     updateViewClearedAt(Date.now());
     showToast(`👁️ Đã ẩn ${ahrefsSummary.length} target khỏi view (DB vẫn còn)`);
   }, [ahrefsSummary.length, updateViewClearedAt, showToast]);
