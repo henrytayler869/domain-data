@@ -20,6 +20,7 @@ import {
   Download,
   Plus,
   Ban,
+  DollarSign,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -151,6 +152,8 @@ export default function DomainPickerPage() {
   const [filterPurchased, setFilterPurchased] = useState<"all" | "yes" | "no">("all");
   const [purchaseFormOpen, setPurchaseFormOpen] = useState(false);
   const [purchaseRows, setPurchaseRows] = useState<Record<string, string>>({}); // domain → price string
+  // Multi-select trong card Picker DB panel (độc lập với selectedTargets ở step 4).
+  const [selectedDbDomains, setSelectedDbDomains] = useState<Set<string>>(new Set());
   const [purchaseBulkPrice, setPurchaseBulkPrice] = useState("");
   const [savingPurchase, setSavingPurchase] = useState(false);
   const [excludingTargets, setExcludingTargets] = useState(false);
@@ -614,6 +617,19 @@ export default function DomainPickerPage() {
     setPurchaseFormOpen(true);
   }, [selectedTargets, inventory]);
 
+  // Same flow but sourced from the Picker DB checkbox column.
+  const openPurchaseFormForDbDomains = useCallback(() => {
+    if (selectedDbDomains.size === 0) return;
+    const init: Record<string, string> = {};
+    for (const d of selectedDbDomains) {
+      const inv = inventory.find((e) => e.domain === d);
+      init[d] = inv?.purchasePrice != null ? String(inv.purchasePrice) : "";
+    }
+    setPurchaseRows(init);
+    setPurchaseBulkPrice("");
+    setPurchaseFormOpen(true);
+  }, [selectedDbDomains, inventory]);
+
   const applyBulkPrice = useCallback(() => {
     const v = purchaseBulkPrice.trim();
     if (!v) return;
@@ -686,6 +702,7 @@ export default function DomainPickerPage() {
       await Promise.all([loadInventory(), loadAhrefs()]);
       setPurchaseFormOpen(false);
       setSelectedTargets(new Set());
+      setSelectedDbDomains(new Set());
       showToast(`✅ Đã lưu ${entries.length} domain vào kho · tổng ${data.total}`);
     } catch (err) {
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
@@ -1732,68 +1749,6 @@ export default function DomainPickerPage() {
               </div>
             )}
 
-            {/* Purchase form (inline) */}
-            {purchaseFormOpen && (
-              <div className="mb-4 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-emerald-50/50 dark:bg-emerald-950/30 p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <Check className="h-4 w-4 text-emerald-600" />
-                    <h3 className="text-sm font-semibold">Đánh dấu đã mua — {Object.keys(purchaseRows).length} domain</h3>
-                  </div>
-                  <button onClick={() => setPurchaseFormOpen(false)} className="text-muted-foreground hover:text-foreground">
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-2 mb-3 pb-3 border-b border-emerald-200 dark:border-emerald-800">
-                  <span className="text-xs text-muted-foreground">Áp giá đồng loạt:</span>
-                  <Input
-                    type="number"
-                    placeholder="vd: 10.99"
-                    value={purchaseBulkPrice}
-                    onChange={(e) => setPurchaseBulkPrice(e.target.value)}
-                    className="h-7 w-32 text-xs"
-                    step="0.01"
-                  />
-                  <Button size="sm" variant="outline" className="h-7 text-xs" onClick={applyBulkPrice}>
-                    Apply all
-                  </Button>
-                </div>
-
-                <div className="max-h-64 overflow-y-auto space-y-1 mb-3">
-                  {Object.keys(purchaseRows).map((domain) => (
-                    <div key={domain} className="flex items-center gap-2 text-xs">
-                      <span className="font-mono flex-1 truncate">{domain}</span>
-                      <span className="text-muted-foreground">$</span>
-                      <Input
-                        type="number"
-                        placeholder="0.00"
-                        value={purchaseRows[domain]}
-                        onChange={(e) => setPurchaseRows({ ...purchaseRows, [domain]: e.target.value })}
-                        className="h-6 w-24 text-xs"
-                        step="0.01"
-                      />
-                    </div>
-                  ))}
-                </div>
-
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    onClick={savePurchases}
-                    disabled={savingPurchase}
-                    className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"
-                  >
-                    {savingPurchase ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-                    {savingPurchase ? "Đang lưu..." : "Lưu vào kho"}
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setPurchaseFormOpen(false)}>
-                    Hủy
-                  </Button>
-                </div>
-              </div>
-            )}
-
             {ahrefsSummary.length === 0 ? (
               <p className="text-center py-8 text-sm text-muted-foreground">
                 DB trống — upload CSV kết quả Ahrefs để bắt đầu loại trừ
@@ -1926,6 +1881,68 @@ export default function DomainPickerPage() {
         </Button>
       </div>
 
+      {/* ── Purchase form (shared by step 4 selection + Picker DB selection) ── */}
+      {purchaseFormOpen && (
+        <div className="rounded-xl border border-emerald-300 dark:border-emerald-700 bg-emerald-50/50 dark:bg-emerald-950/30 p-4 shadow-sm">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Check className="h-4 w-4 text-emerald-600" />
+              <h3 className="text-sm font-semibold">Đánh dấu đã mua — {Object.keys(purchaseRows).length} domain</h3>
+            </div>
+            <button onClick={() => setPurchaseFormOpen(false)} className="text-muted-foreground hover:text-foreground">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2 mb-3 pb-3 border-b border-emerald-200 dark:border-emerald-800">
+            <span className="text-xs text-muted-foreground">Áp giá đồng loạt:</span>
+            <Input
+              type="number"
+              placeholder="vd: 10.99"
+              value={purchaseBulkPrice}
+              onChange={(e) => setPurchaseBulkPrice(e.target.value)}
+              className="h-7 w-32 text-xs"
+              step="0.01"
+            />
+            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={applyBulkPrice}>
+              Apply all
+            </Button>
+          </div>
+
+          <div className="max-h-64 overflow-y-auto space-y-1 mb-3">
+            {Object.keys(purchaseRows).map((domain) => (
+              <div key={domain} className="flex items-center gap-2 text-xs">
+                <span className="font-mono flex-1 truncate">{domain}</span>
+                <span className="text-muted-foreground">$</span>
+                <Input
+                  type="number"
+                  placeholder="0.00"
+                  value={purchaseRows[domain]}
+                  onChange={(e) => setPurchaseRows({ ...purchaseRows, [domain]: e.target.value })}
+                  className="h-6 w-24 text-xs"
+                  step="0.01"
+                />
+              </div>
+            ))}
+          </div>
+
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              onClick={savePurchases}
+              disabled={savingPurchase}
+              className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"
+            >
+              {savingPurchase ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+              {savingPurchase ? "Đang lưu..." : "Lưu vào kho"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setPurchaseFormOpen(false)}>
+              Hủy
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* ── Picker DB Panel ─────────────────────────────────────────────────── */}
       <div className="rounded-xl border bg-card shadow-sm">
         <button
@@ -1950,6 +1967,27 @@ export default function DomainPickerPage() {
             </p>
 
             <div className="flex flex-wrap items-end gap-2 mb-4">
+              {selectedDbDomains.size > 0 && (
+                <>
+                  <Button
+                    size="sm"
+                    className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"
+                    onClick={openPurchaseFormForDbDomains}
+                  >
+                    <DollarSign className="h-3.5 w-3.5" />
+                    Đã mua ({selectedDbDomains.size})
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="gap-1.5 text-muted-foreground"
+                    onClick={() => setSelectedDbDomains(new Set())}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                    Bỏ chọn
+                  </Button>
+                </>
+              )}
               <Button
                 size="sm"
                 variant="outline"
@@ -1982,6 +2020,36 @@ export default function DomainPickerPage() {
                 <table className="w-full text-sm">
                   <thead className="bg-muted/50 border-b">
                     <tr>
+                      <th className="px-3 py-2 w-8">
+                        {(() => {
+                          const visible = filteredDb.slice(0, 200);
+                          const allChecked = visible.length > 0 && visible.every((e) => selectedDbDomains.has(e.domain));
+                          const someChecked = visible.some((e) => selectedDbDomains.has(e.domain));
+                          return (
+                            <input
+                              type="checkbox"
+                              className="rounded cursor-pointer"
+                              aria-label="Select all visible"
+                              checked={allChecked}
+                              ref={(el) => {
+                                if (!el) return;
+                                el.indeterminate = someChecked && !allChecked;
+                              }}
+                              onChange={() => {
+                                setSelectedDbDomains((prev) => {
+                                  const next = new Set(prev);
+                                  if (allChecked) {
+                                    for (const e of visible) next.delete(e.domain);
+                                  } else {
+                                    for (const e of visible) next.add(e.domain);
+                                  }
+                                  return next;
+                                });
+                              }}
+                            />
+                          );
+                        })()}
+                      </th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">Domain</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Score</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">TF/CF</th>
@@ -1993,8 +2061,31 @@ export default function DomainPickerPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredDb.slice(0, 200).map((e) => (
-                      <tr key={e.domain} className="border-b border-border/30 hover:bg-muted/30 group">
+                    {filteredDb.slice(0, 200).map((e) => {
+                      const isChecked = selectedDbDomains.has(e.domain);
+                      return (
+                      <tr
+                        key={e.domain}
+                        className={cn(
+                          "border-b border-border/30 hover:bg-muted/30 group",
+                          isChecked && "bg-blue-50/50 dark:bg-blue-950/30"
+                        )}
+                      >
+                        <td className="px-3 py-2">
+                          <input
+                            type="checkbox"
+                            className="rounded cursor-pointer"
+                            checked={isChecked}
+                            onChange={() => {
+                              setSelectedDbDomains((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(e.domain)) next.delete(e.domain);
+                                else next.add(e.domain);
+                                return next;
+                              });
+                            }}
+                          />
+                        </td>
                         <td className="px-3 py-2 font-mono text-xs">{e.domain}</td>
                         <td className="px-3 py-2"><ScoreBadge value={e.score} small /></td>
                         <td className="px-3 py-2 text-xs">{e.tf}/{e.cf}</td>
@@ -2011,7 +2102,8 @@ export default function DomainPickerPage() {
                           </button>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
                 {filteredDb.length > 200 && (
