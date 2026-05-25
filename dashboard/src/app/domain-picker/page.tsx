@@ -170,6 +170,11 @@ export default function DomainPickerPage() {
   const [ahrefsPromptOpen, setAhrefsPromptOpen] = useState(false);
   const [ahrefsPromptDr, setAhrefsPromptDr] = useState(90);
   const [ahrefsPromptLimit, setAhrefsPromptLimit] = useState(100);
+  // Paste-domain shortcut: bypass CSV/filter, paste a manual list, generate prompt.
+  const [pasteFormOpen, setPasteFormOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [pasteDr, setPasteDr] = useState(90);
+  const [pasteLimit, setPasteLimit] = useState(100);
   const [copiedAhrefsPrompt, setCopiedAhrefsPrompt] = useState(false);
 
   // ── Toasts ──────────────────────────────────────────────────────────────────
@@ -880,12 +885,10 @@ export default function DomainPickerPage() {
     showToast(`✅ Đã copy ${displayedRows.length} domain`);
   }, [displayedRows, showToast]);
 
-  const copyAhrefsPrompt = useCallback(async () => {
-    const domains = displayedRows.map((r) => r.domain);
-    if (!domains.length) return;
-    const dr = ahrefsPromptDr;
-    const limit = ahrefsPromptLimit;
-    const prompt =
+  // Pure prompt template — shared by both the filtered-table flow and the
+  // manual paste-list flow.
+  const buildAhrefsPrompt = useCallback((domains: string[], dr: number, limit: number) => {
+    return (
       `Phân tích Aged Domain bằng Ahrefs MCP + đánh giá chất lượng anchor.\n` +
       `Cấu hình: DR tối thiểu = ${dr}, limit = ${limit} ref domains/target.\n` +
       `Danh sách domain cần phân tích:\n${domains.join("\n")}\n` +
@@ -910,24 +913,54 @@ export default function DomainPickerPage() {
       `- category: phân loại ngắn gọn (vd: "Spam Indonesian gambling", "Sạch - Health niche", "Hacked - Russian pharmacy")\n` +
       `- detail: mô tả chi tiết evidence (top anchors, brand info, multilingual hints, ...)\n` +
       `\n` +
-      `Lưu ý CSV: dùng dấu nháy kép escape các cell có chứa dấu phẩy hoặc xuống dòng.`;
+      `Lưu ý CSV: dùng dấu nháy kép escape các cell có chứa dấu phẩy hoặc xuống dòng.`
+    );
+  }, []);
+
+  const copyTextToClipboard = useCallback(async (text: string) => {
     try {
-      await navigator.clipboard.writeText(prompt);
+      await navigator.clipboard.writeText(text);
     } catch {
       const el = document.createElement("textarea");
-      el.value = prompt;
+      el.value = text;
       el.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0";
       document.body.appendChild(el);
       el.focus(); el.select();
       document.execCommand("copy");
       document.body.removeChild(el);
     }
+  }, []);
+
+  const copyAhrefsPrompt = useCallback(async () => {
+    const domains = displayedRows.map((r) => r.domain);
+    if (!domains.length) return;
+    const prompt = buildAhrefsPrompt(domains, ahrefsPromptDr, ahrefsPromptLimit);
+    await copyTextToClipboard(prompt);
     setCopiedAhrefsPrompt(true);
     setTimeout(() => setCopiedAhrefsPrompt(false), 2000);
-    showToast(`✅ Đã copy prompt cho ${domains.length} domain (DR≥${dr}, limit ${limit})`);
-    // Mark step 2 complete + advance to step 3 — user has the prompt, next they'll upload Ahrefs CSV.
+    showToast(`✅ Đã copy prompt cho ${domains.length} domain (DR≥${ahrefsPromptDr}, limit ${ahrefsPromptLimit})`);
     dispatchWizard({ type: "advance", from: 2 });
-  }, [displayedRows, ahrefsPromptDr, ahrefsPromptLimit, showToast]);
+  }, [displayedRows, ahrefsPromptDr, ahrefsPromptLimit, buildAhrefsPrompt, copyTextToClipboard, showToast]);
+
+  const copyAhrefsPromptFromPasted = useCallback(async () => {
+    // Accept comma / newline / whitespace separated. Strip http(s)://, trailing slashes, lowercase.
+    const domains = Array.from(new Set(
+      pasteText
+        .split(/[\s,]+/)
+        .map((d) => d.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, ""))
+        .filter((d) => /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/.test(d))
+    ));
+    if (!domains.length) {
+      showToast("❌ Không tìm thấy domain hợp lệ trong list", true);
+      return;
+    }
+    const prompt = buildAhrefsPrompt(domains, pasteDr, pasteLimit);
+    await copyTextToClipboard(prompt);
+    showToast(`✅ Đã copy prompt cho ${domains.length} domain (DR≥${pasteDr}, limit ${pasteLimit})`);
+    setPasteFormOpen(false);
+    setPasteText("");
+    dispatchWizard({ type: "advance", from: 2 });
+  }, [pasteText, pasteDr, pasteLimit, buildAhrefsPrompt, copyTextToClipboard, showToast]);
 
   const exportCsv = useCallback(() => {
     if (!displayedRows.length) return;
@@ -1060,12 +1093,81 @@ export default function DomainPickerPage() {
 
       {/* ── Step 2: Filter & generate Ahrefs prompt ───────────────────────── */}
       {wizard.step === 2 && rawRows.length === 0 && (
-        <div className="rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50/60 dark:bg-amber-950/30 p-4 text-sm flex items-center gap-3">
+        <div className="rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50/60 dark:bg-amber-950/30 p-4 text-sm flex items-center gap-3 flex-wrap">
           <AlertCircle className="h-4 w-4 text-amber-600 shrink-0" />
-          <span className="flex-1">CSV Spamzilla đã được clear (refresh tab). Quay lại bước 1 để upload lại.</span>
+          <span className="flex-1 min-w-[200px]">CSV Spamzilla đã được clear. Upload lại — hoặc paste list domain thủ công để sinh prompt.</span>
           <Button size="sm" variant="outline" onClick={() => dispatchWizard({ type: "goto", step: 1 })}>
             ← Quay lại bước 1
           </Button>
+          <Button
+            size="sm"
+            className="gap-1.5 bg-orange-600 hover:bg-orange-700 text-white"
+            onClick={() => setPasteFormOpen((o) => !o)}
+          >
+            <FileSpreadsheet className="h-3.5 w-3.5" />
+            📋 Paste Domain
+          </Button>
+        </div>
+      )}
+
+      {/* ── Paste-domain prompt generator (works at any step) ────────────── */}
+      {pasteFormOpen && (
+        <div className="rounded-xl border border-orange-300 dark:border-orange-700 bg-orange-50/50 dark:bg-orange-950/30 p-5 shadow-sm space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <FileSpreadsheet className="h-4 w-4 text-orange-600" />
+              <h3 className="text-sm font-semibold">Paste list domain → sinh prompt Ahrefs</h3>
+            </div>
+            <button
+              onClick={() => { setPasteFormOpen(false); setPasteText(""); }}
+              className="text-muted-foreground hover:text-foreground"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Mỗi domain 1 dòng (hoặc ngăn cách bằng dấu phẩy/space). Tự strip <code>http(s)://</code> + path, lowercase + dedupe.
+          </p>
+          <textarea
+            value={pasteText}
+            onChange={(e) => setPasteText(e.target.value)}
+            rows={8}
+            placeholder={"example.com\nanother-site.org\nhttps://third.net/some/path"}
+            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-y focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+          <div className="flex flex-wrap items-end gap-2">
+            <div>
+              <label className="block text-[11px] text-muted-foreground mb-1">DR tối thiểu</label>
+              <Input
+                type="number"
+                min={0}
+                max={100}
+                value={pasteDr}
+                onChange={(e) => setPasteDr(Math.max(0, Math.min(100, parseInt(e.target.value, 10) || 0)))}
+                className="w-20 h-8 text-xs"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] text-muted-foreground mb-1">Limit ref/target</label>
+              <Input
+                type="number"
+                min={1}
+                max={500}
+                value={pasteLimit}
+                onChange={(e) => setPasteLimit(Math.max(1, Math.min(500, parseInt(e.target.value, 10) || 100)))}
+                className="w-24 h-8 text-xs"
+              />
+            </div>
+            <Button
+              size="sm"
+              className="gap-1.5 bg-orange-600 hover:bg-orange-700 text-white ml-auto"
+              onClick={copyAhrefsPromptFromPasted}
+              disabled={!pasteText.trim()}
+            >
+              <Copy className="h-3.5 w-3.5" />
+              Tạo & copy prompt
+            </Button>
+          </div>
         </div>
       )}
 
