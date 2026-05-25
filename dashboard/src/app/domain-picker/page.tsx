@@ -526,14 +526,15 @@ export default function DomainPickerPage() {
 
   const filteredAhrefs = useMemo(() => {
     const bySearch = ahrefsSummary.filter((t) => {
-      // Manually excluded — domain already bought by someone else, hide entirely
-      if (t.excluded) return false;
+      const isJustUploaded = justUploadedTargets.has(t.targetDomain);
+      // Manually excluded — domain already bought by someone else, hide entirely.
+      // BUT re-uploading the domain in the same session means the user wants to
+      // re-evaluate, so bypass this filter for just-uploaded targets.
+      if (t.excluded && !isJustUploaded) return false;
       // UI-only hide: skip entries last-checked at-or-before viewClearedAt.
-      // Targets from the most recent upload always bypass this filter so a
-      // re-upload of an already-existing domain is guaranteed to be visible
-      // (clock skew between client Date.now() and server now() makes the
-      // timestamp comparison alone unreliable).
-      if (viewClearedAt != null && !justUploadedTargets.has(t.targetDomain)) {
+      // Also bypassed for just-uploaded targets — clock skew between client
+      // Date.now() and server now() makes the timestamp comparison unreliable.
+      if (viewClearedAt != null && !isJustUploaded) {
         const t0 = new Date(t.checkedAt).getTime();
         if (t0 <= viewClearedAt) return false;
       }
