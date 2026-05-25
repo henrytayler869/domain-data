@@ -38,6 +38,8 @@ export default function InventoryPage() {
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "holding" | "sold">("all");
   const [filterExpected, setFilterExpected] = useState<"all" | "yes" | "no">("all");
+  const [showArchived, setShowArchived] = useState(false);
+  const [archiving, setArchiving] = useState(false);
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(25);
   const [datePreset, setDatePreset] = useState<"all" | "7d" | "30d" | "month" | "year" | "custom">("all");
@@ -248,10 +250,21 @@ export default function InventoryPage() {
   }, [dateRange]);
 
   // Within range = entry was purchased in range OR sold in range
+  // Drop archived rows unless user explicitly toggles "Hiện cả lưu trữ".
+  // Done at the very top so stats + table both honor the filter.
+  const visibleEntries = useMemo(
+    () => (showArchived ? entries : entries.filter((e) => !e.archivedAt)),
+    [entries, showArchived],
+  );
+  const archivedCount = useMemo(
+    () => entries.filter((e) => e.archivedAt).length,
+    [entries],
+  );
+
   const dateFiltered = useMemo(() => {
-    if (datePreset === "all") return entries;
-    return entries.filter((e) => inRange(e.purchasedAt) || inRange(e.soldAt));
-  }, [entries, datePreset, inRange]);
+    if (datePreset === "all") return visibleEntries;
+    return visibleEntries.filter((e) => inRange(e.purchasedAt) || inRange(e.soldAt));
+  }, [visibleEntries, datePreset, inRange]);
 
   const stats = useMemo(() => {
     // Matched profit accounting (no sales yet → 0 profit, not -100% ROI):
@@ -271,7 +284,7 @@ export default function InventoryPage() {
     const inScope = (e: InventoryEntry) =>
       datePreset === "all" || inRange(e.purchasedAt) || inRange(e.soldAt);
 
-    for (const e of entries) {
+    for (const e of visibleEntries) {
       if (!inScope(e)) continue;
       totalSpend += e.purchasePrice ?? 0;
       if (e.sellPrice != null) {
@@ -294,7 +307,7 @@ export default function InventoryPage() {
       totalSpend, totalRevenue, totalProfit, soldCount, holdingCount, soldCostBasis,
       holdingExpectedTotal, holdingExpectedCount,
     };
-  }, [entries, datePreset, inRange]);
+  }, [visibleEntries, datePreset, inRange]);
 
   // Quick lookup: domain → wayback row.
   const waybackByDomain = useMemo(() => {
@@ -394,6 +407,37 @@ export default function InventoryPage() {
       return next;
     });
   };
+
+  // Archive / un-archive selected domains. Optimistically updates local state
+  // (since /api/inventory doesn't expose a `?refresh` flag) then re-reads.
+  const archiveSelected = useCallback(async (archived: boolean) => {
+    if (selected.size === 0) return;
+    const domains = Array.from(selected);
+    const verb = archived ? "lưu trữ" : "khôi phục";
+    setArchiving(true);
+    try {
+      const res = await fetch("/api/inventory/archive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domains, archived }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Lỗi");
+      // Patch local state so the UI updates immediately without a full reload.
+      const now = new Date().toISOString();
+      setEntries((prev) =>
+        prev.map((e) =>
+          selected.has(e.domain) ? { ...e, archivedAt: archived ? now : null } : e,
+        ),
+      );
+      setSelected(new Set());
+      showToast(`✅ Đã ${verb} ${domains.length} domain`);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    } finally {
+      setArchiving(false);
+    }
+  }, [selected, showToast]);
 
   const openSellForm = useCallback(() => {
     if (selected.size === 0) return;
@@ -962,6 +1006,20 @@ export default function InventoryPage() {
           <option value="flagged">🚨 Flagged</option>
           <option value="unchecked">— Chưa check</option>
         </select>
+        {archivedCount > 0 && (
+          <label
+            className="flex items-center gap-1.5 text-xs cursor-pointer select-none px-2 py-1 rounded-md border border-input bg-background hover:bg-muted"
+            title={`${archivedCount} domain đã lưu trữ — bật để hiện chúng trong danh sách`}
+          >
+            <input
+              type="checkbox"
+              checked={showArchived}
+              onChange={(e) => setShowArchived(e.target.checked)}
+              className="rounded"
+            />
+            <span>Hiện lưu trữ ({archivedCount})</span>
+          </label>
+        )}
         {(() => {
           // Trigger Wayback for holding + currently-filtered + unchecked domains.
           const candidates = filtered
@@ -1010,6 +1068,11 @@ export default function InventoryPage() {
             const e = entries.find((x) => x.domain === d);
             return e?.expectedSellPrice != null;
           }).length;
+          const archivedInSel = Array.from(selected).filter((d) => {
+            const e = entries.find((x) => x.domain === d);
+            return !!e?.archivedAt;
+          }).length;
+          const isAllArchived = archivedInSel === selected.size;
           return (
             <>
               <Button
@@ -1029,6 +1092,26 @@ export default function InventoryPage() {
               >
                 <TrendingUp className="h-3.5 w-3.5" />
                 Bán @ Dự kiến ({withExpected}{selected.size > withExpected ? `/${selected.size}` : ""})
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={archiving}
+                className={cn(
+                  "gap-1.5",
+                  isAllArchived
+                    ? "text-emerald-700 border-emerald-400/60 hover:bg-emerald-50 dark:hover:bg-emerald-950"
+                    : "text-slate-700 border-slate-400/60 hover:bg-slate-50 dark:hover:bg-slate-950"
+                )}
+                onClick={() => archiveSelected(!isAllArchived)}
+                title={
+                  isAllArchived
+                    ? `Khôi phục ${selected.size} domain — hiện lại trong Kho Domain`
+                    : `Lưu trữ ${selected.size} domain — ẩn khỏi Kho Domain (DB vẫn còn)`
+                }
+              >
+                <Boxes className="h-3.5 w-3.5" />
+                {isAllArchived ? `Khôi phục (${selected.size})` : `Lưu trữ (${selected.size})`}
               </Button>
               <Button
                 size="sm" variant="ghost" className="gap-1.5 text-xs"
@@ -1308,7 +1391,8 @@ export default function InventoryPage() {
                     <React.Fragment key={e.domain}>
                     <tr className={cn(
                       "border-b border-border/50 hover:bg-muted/20 group align-top",
-                      selected.has(e.domain) && "bg-blue-50/50 dark:bg-blue-950/30"
+                      selected.has(e.domain) && "bg-blue-50/50 dark:bg-blue-950/30",
+                      e.archivedAt && "opacity-60 italic"
                     )}>
                       <td className="px-3 py-2">
                         <input

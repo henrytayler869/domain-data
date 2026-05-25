@@ -142,6 +142,12 @@ alter table domain_inventory add column if not exists sold_at    timestamptz;
 alter table domain_inventory add column if not exists expected_sell_price numeric(10, 2);
 create index if not exists domain_inventory_sold_idx on domain_inventory (sold_at desc);
 
+-- Soft-archive: archived rows are hidden from the default Kho Domain view
+-- but kept in DB. UI exposes a "Hiện cả lưu trữ" toggle to view + unarchive.
+alter table domain_inventory add column if not exists archived_at timestamptz;
+create index if not exists domain_inventory_archived_idx
+  on domain_inventory (archived_at) where archived_at is not null;
+
 -- ─── Withdrawals (rút tiền từ doanh thu domain) ─────────────────────────────
 create table if not exists withdrawals (
   id            uuid primary key default gen_random_uuid(),

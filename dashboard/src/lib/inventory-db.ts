@@ -18,6 +18,7 @@ export interface InventoryEntry {
   source: string | null;
   rating: string | null;
   category: string | null;
+  archivedAt: string | null;
   updatedAt: string;
 }
 
@@ -32,6 +33,7 @@ interface DbRow {
   source: string | null;
   rating: string | null;
   category: string | null;
+  archived_at: string | null;
   updated_at: string;
 }
 
@@ -47,6 +49,7 @@ function rowToEntry(r: DbRow): InventoryEntry {
     source: r.source,
     rating: r.rating,
     category: r.category,
+    archivedAt: r.archived_at,
     updatedAt: r.updated_at,
   };
 }
@@ -156,4 +159,24 @@ export async function deleteEntry(domain: string): Promise<number> {
     .eq("domain", target);
   if (error) throw new Error(error.message);
   return count ?? 0;
+}
+
+// Soft-archive: set archived_at = now() so the row drops out of the default
+// Kho Domain view. Reversible via setArchived(domains, false).
+export async function setArchived(
+  domains: string[],
+  archived: boolean,
+): Promise<{ updated: number }> {
+  const sb = supabase();
+  const targets = Array.from(new Set(
+    domains.map((d) => d.toLowerCase().trim()).filter(Boolean),
+  ));
+  if (!targets.length) return { updated: 0 };
+  const now = new Date().toISOString();
+  const { error } = await sb
+    .from(TABLE)
+    .update({ archived_at: archived ? now : null, updated_at: now })
+    .in("domain", targets);
+  if (error) throw new Error(error.message);
+  return { updated: targets.length };
 }
