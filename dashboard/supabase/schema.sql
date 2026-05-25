@@ -148,6 +148,13 @@ alter table domain_inventory add column if not exists archived_at timestamptz;
 create index if not exists domain_inventory_archived_idx
   on domain_inventory (archived_at) where archived_at is not null;
 
+-- Backorder flag: domain ordered via registrar drop-catch but not yet
+-- confirmed as owned. UI can later flip false (confirm) or hard-delete +
+-- mark excluded in target_assessment (fail).
+alter table domain_inventory add column if not exists is_backorder boolean default false;
+create index if not exists domain_inventory_backorder_idx
+  on domain_inventory (is_backorder) where is_backorder = true;
+
 -- ─── Withdrawals (rút tiền từ doanh thu domain) ─────────────────────────────
 create table if not exists withdrawals (
   id            uuid primary key default gen_random_uuid(),

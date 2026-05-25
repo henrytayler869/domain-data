@@ -408,6 +408,52 @@ export default function InventoryPage() {
     });
   };
 
+  // Confirm a backorder (flip is_backorder=false → now owned).
+  const confirmBackorderSelected = useCallback(async () => {
+    if (selected.size === 0) return;
+    const domains = Array.from(selected);
+    try {
+      const res = await fetch("/api/inventory/backorder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domains, isBackorder: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Lỗi");
+      setEntries((prev) =>
+        prev.map((e) => (selected.has(e.domain) ? { ...e, isBackorder: false } : e)),
+      );
+      setSelected(new Set());
+      showToast(`✅ Đã confirm ${domains.length} backorder`);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    }
+  }, [selected, showToast]);
+
+  // Loại trừ — backorder fail hoặc bất kỳ lý do nào khác để bỏ domain:
+  // xóa khỏi inventory + mark excluded trong target_assessment.
+  const excludeSelected = useCallback(async () => {
+    if (selected.size === 0) return;
+    const domains = Array.from(selected);
+    if (!confirm(`Loại trừ ${domains.length} domain? Sẽ xóa khỏi kho + ẩn khỏi picker.`)) return;
+    try {
+      const res = await fetch("/api/inventory/exclude", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domains }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Lỗi");
+      // Drop them locally
+      const dropSet = new Set(domains);
+      setEntries((prev) => prev.filter((e) => !dropSet.has(e.domain)));
+      setSelected(new Set());
+      showToast(`✅ Đã loại trừ ${data.deletedFromInventory} domain`);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    }
+  }, [selected, showToast]);
+
   // Archive / un-archive selected domains. Optimistically updates local state
   // (since /api/inventory doesn't expose a `?refresh` flag) then re-reads.
   const archiveSelected = useCallback(async (archived: boolean) => {
@@ -1073,6 +1119,11 @@ export default function InventoryPage() {
             return !!e?.archivedAt;
           }).length;
           const isAllArchived = archivedInSel === selected.size;
+          const backorderInSel = Array.from(selected).filter((d) => {
+            const e = entries.find((x) => x.domain === d);
+            return !!e?.isBackorder;
+          }).length;
+          const hasBackorder = backorderInSel > 0;
           return (
             <>
               <Button
@@ -1092,6 +1143,27 @@ export default function InventoryPage() {
               >
                 <TrendingUp className="h-3.5 w-3.5" />
                 Bán @ Dự kiến ({withExpected}{selected.size > withExpected ? `/${selected.size}` : ""})
+              </Button>
+              {hasBackorder && (
+                <Button
+                  size="sm"
+                  className="gap-1.5 bg-emerald-700 hover:bg-emerald-800 text-white"
+                  onClick={confirmBackorderSelected}
+                  title={`Confirm ${backorderInSel} backorder — chuyển sang trạng thái đã sở hữu`}
+                >
+                  <Check className="h-3.5 w-3.5" />
+                  Confirm BO ({backorderInSel}{selected.size > backorderInSel ? `/${selected.size}` : ""})
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5 text-rose-700 border-rose-400/60 hover:bg-rose-50 dark:hover:bg-rose-950"
+                onClick={excludeSelected}
+                title={`Loại trừ ${selected.size} domain — xóa khỏi kho + ẩn khỏi picker (dùng cho backorder fail)`}
+              >
+                <X className="h-3.5 w-3.5" />
+                Loại trừ ({selected.size})
               </Button>
               <Button
                 size="sm"
@@ -1434,9 +1506,16 @@ export default function InventoryPage() {
                           "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
                           isSold
                             ? "bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300"
-                            : "bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300"
+                            : e.isBackorder
+                              ? "bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300"
+                              : "bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300"
                         )}>
-                          {isSold ? <><DollarSign className="h-2.5 w-2.5" /> Đã bán</> : <><Boxes className="h-2.5 w-2.5" /> Đang giữ</>}
+                          {isSold
+                            ? <><DollarSign className="h-2.5 w-2.5" /> Đã bán</>
+                            : e.isBackorder
+                              ? <>🛒 Backorder</>
+                              : <><Boxes className="h-2.5 w-2.5" /> Đang giữ</>
+                          }
                         </span>
                         {isSold && e.soldAt && (
                           <p className="text-[10px] text-muted-foreground mt-0.5">

@@ -19,6 +19,7 @@ export interface InventoryEntry {
   rating: string | null;
   category: string | null;
   archivedAt: string | null;
+  isBackorder: boolean;
   updatedAt: string;
 }
 
@@ -34,6 +35,7 @@ interface DbRow {
   rating: string | null;
   category: string | null;
   archived_at: string | null;
+  is_backorder: boolean | null;
   updated_at: string;
 }
 
@@ -50,6 +52,7 @@ function rowToEntry(r: DbRow): InventoryEntry {
     rating: r.rating,
     category: r.category,
     archivedAt: r.archived_at,
+    isBackorder: !!r.is_backorder,
     updatedAt: r.updated_at,
   };
 }
@@ -81,6 +84,7 @@ export interface AddInput {
   source?: string | null;
   rating?: string | null;
   category?: string | null;
+  isBackorder?: boolean;
 }
 
 export async function upsertEntries(entries: AddInput[]): Promise<{ added: number; total: number }> {
@@ -102,6 +106,7 @@ export async function upsertEntries(entries: AddInput[]): Promise<{ added: numbe
       source: e.source ?? null,
       rating: e.rating ?? null,
       category: e.category ?? null,
+      is_backorder: e.isBackorder ?? false,
       updated_at: new Date().toISOString(),
     }));
     const { error } = await sb.from(TABLE).upsert(slice, { onConflict: "domain" });
@@ -110,6 +115,40 @@ export async function upsertEntries(entries: AddInput[]): Promise<{ added: numbe
   const { count: countAfter } = await sb.from(TABLE).select("*", { count: "exact", head: true });
   const total = countAfter ?? 0;
   return { added: total - before, total };
+}
+
+// Flip the backorder flag in bulk. Used by "Confirm backorder" UI action.
+export async function setBackorder(
+  domains: string[],
+  isBackorder: boolean,
+): Promise<{ updated: number }> {
+  const sb = supabase();
+  const targets = Array.from(new Set(
+    domains.map((d) => d.toLowerCase().trim()).filter(Boolean),
+  ));
+  if (!targets.length) return { updated: 0 };
+  const { error } = await sb
+    .from(TABLE)
+    .update({ is_backorder: isBackorder, updated_at: new Date().toISOString() })
+    .in("domain", targets);
+  if (error) throw new Error(error.message);
+  return { updated: targets.length };
+}
+
+// Bulk delete by domain — used when a backorder fails. Caller is responsible
+// for separately marking those domains as excluded in target_assessment.
+export async function deleteEntries(domains: string[]): Promise<{ deleted: number }> {
+  const sb = supabase();
+  const targets = Array.from(new Set(
+    domains.map((d) => d.toLowerCase().trim()).filter(Boolean),
+  ));
+  if (!targets.length) return { deleted: 0 };
+  const { error, count } = await sb
+    .from(TABLE)
+    .delete({ count: "exact" })
+    .in("domain", targets);
+  if (error) throw new Error(error.message);
+  return { deleted: count ?? 0 };
 }
 
 export async function updateEntry(

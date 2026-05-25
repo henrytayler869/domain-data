@@ -157,6 +157,8 @@ export default function DomainPickerPage() {
   const [filterPurchased, setFilterPurchased] = useState<"all" | "yes" | "no">("all");
   const [purchaseFormOpen, setPurchaseFormOpen] = useState(false);
   const [purchaseRows, setPurchaseRows] = useState<Record<string, string>>({}); // domain → price string
+  // "purchase" = đã mua hẳn; "backorder" = chỉ đặt, chưa sở hữu.
+  const [purchaseFormMode, setPurchaseFormMode] = useState<"purchase" | "backorder">("purchase");
   // Multi-select trong card Picker DB panel (độc lập với selectedTargets ở step 4).
   const [selectedDbDomains, setSelectedDbDomains] = useState<Set<string>>(new Set());
   const [purchaseBulkPrice, setPurchaseBulkPrice] = useState("");
@@ -627,7 +629,7 @@ export default function DomainPickerPage() {
   }, [dbEntries]);
 
   // Open purchase form: prefill rows from selectedTargets
-  const openPurchaseForm = useCallback(() => {
+  const openPurchaseForm = useCallback((mode: "purchase" | "backorder" = "purchase") => {
     if (selectedTargets.size === 0) return;
     const init: Record<string, string> = {};
     for (const d of selectedTargets) {
@@ -636,11 +638,12 @@ export default function DomainPickerPage() {
     }
     setPurchaseRows(init);
     setPurchaseBulkPrice("");
+    setPurchaseFormMode(mode);
     setPurchaseFormOpen(true);
   }, [selectedTargets, inventory]);
 
   // Same flow but sourced from the Picker DB checkbox column.
-  const openPurchaseFormForDbDomains = useCallback(() => {
+  const openPurchaseFormForDbDomains = useCallback((mode: "purchase" | "backorder" = "purchase") => {
     if (selectedDbDomains.size === 0) return;
     const init: Record<string, string> = {};
     for (const d of selectedDbDomains) {
@@ -649,6 +652,7 @@ export default function DomainPickerPage() {
     }
     setPurchaseRows(init);
     setPurchaseBulkPrice("");
+    setPurchaseFormMode(mode);
     setPurchaseFormOpen(true);
   }, [selectedDbDomains, inventory]);
 
@@ -688,8 +692,9 @@ export default function DomainPickerPage() {
 
   const savePurchases = useCallback(async () => {
     setSavingPurchase(true);
+    const isBackorder = purchaseFormMode === "backorder";
     try {
-      const entries: { domain: string; purchasePrice: number | null; source: string | null; rating: string | null; category: string | null }[] = [];
+      const entries: { domain: string; purchasePrice: number | null; source: string | null; rating: string | null; category: string | null; isBackorder: boolean }[] = [];
       for (const [domain, priceStr] of Object.entries(purchaseRows)) {
         const t = ahrefsSummary.find((x) => x.targetDomain === domain);
         const price = priceStr.trim() === "" ? null : Number(priceStr);
@@ -699,6 +704,7 @@ export default function DomainPickerPage() {
           source: sourceMap.get(domain) ?? null,
           rating: t?.rating ?? null,
           category: t?.category ?? null,
+          isBackorder,
         });
       }
       const res = await fetch("/api/inventory/add", {
@@ -709,29 +715,33 @@ export default function DomainPickerPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Lỗi");
 
-      // Cũng đánh dấu đã check Ahrefs để các domain này không hiện lại trong picker.
-      const targets = entries.map((e) => e.domain);
-      if (targets.length > 0) {
-        try {
-          await fetch("/api/ahrefs-results/db/exclude", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ targets }),
-          });
-        } catch { /* non-fatal — kho vẫn save thành công */ }
+      // Backorder ≠ owned yet → KHÔNG mark excluded ở picker (vẫn nên hiện
+      // trong picker cho tới khi backorder confirmed). Purchase thì luôn exclude.
+      if (!isBackorder) {
+        const targets = entries.map((e) => e.domain);
+        if (targets.length > 0) {
+          try {
+            await fetch("/api/ahrefs-results/db/exclude", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ targets }),
+            });
+          } catch { /* non-fatal — kho vẫn save thành công */ }
+        }
       }
 
       await Promise.all([loadInventory(), loadAhrefs()]);
       setPurchaseFormOpen(false);
       setSelectedTargets(new Set());
       setSelectedDbDomains(new Set());
-      showToast(`✅ Đã lưu ${entries.length} domain vào kho · tổng ${data.total}`);
+      const label = isBackorder ? "đặt backorder" : "lưu";
+      showToast(`✅ Đã ${label} ${entries.length} domain · tổng ${data.total}`);
     } catch (err) {
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
     } finally {
       setSavingPurchase(false);
     }
-  }, [purchaseRows, ahrefsSummary, sourceMap, loadInventory, loadAhrefs, showToast]);
+  }, [purchaseRows, purchaseFormMode, ahrefsSummary, sourceMap, loadInventory, loadAhrefs, showToast]);
 
   // Effective list for copy/export: selection if any, else all filtered
   const exportableAhrefs = useMemo(() => {
@@ -1758,10 +1768,18 @@ export default function DomainPickerPage() {
                   <Button
                     size="sm"
                     className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"
-                    onClick={openPurchaseForm}
+                    onClick={() => openPurchaseForm("purchase")}
                   >
                     <Check className="h-3.5 w-3.5" />
                     Đã mua ({selectedTargets.size})
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="gap-1.5 bg-amber-600 hover:bg-amber-700 text-white"
+                    onClick={() => openPurchaseForm("backorder")}
+                    title="Đặt Back Order — lưu vào kho với cờ chưa xác nhận; vào Kho Domain để Confirm/Loại trừ sau"
+                  >
+                    🛒 Back Order ({selectedTargets.size})
                   </Button>
                   <Button
                     size="sm"
@@ -2002,19 +2020,39 @@ export default function DomainPickerPage() {
       </div>
 
       {/* ── Purchase form (shared by step 4 selection + Picker DB selection) ── */}
-      {purchaseFormOpen && (
-        <div className="rounded-xl border border-emerald-300 dark:border-emerald-700 bg-emerald-50/50 dark:bg-emerald-950/30 p-4 shadow-sm">
+      {purchaseFormOpen && (() => {
+        const isBackorder = purchaseFormMode === "backorder";
+        const colorBorder = isBackorder ? "border-amber-300 dark:border-amber-700" : "border-emerald-300 dark:border-emerald-700";
+        const colorBg = isBackorder ? "bg-amber-50/50 dark:bg-amber-950/30" : "bg-emerald-50/50 dark:bg-emerald-950/30";
+        const colorBtn = isBackorder ? "bg-amber-600 hover:bg-amber-700" : "bg-emerald-600 hover:bg-emerald-700";
+        const colorIcon = isBackorder ? "text-amber-600" : "text-emerald-600";
+        const colorDivider = isBackorder ? "border-amber-200 dark:border-amber-800" : "border-emerald-200 dark:border-emerald-800";
+        const Icon = isBackorder ? FilterIcon : Check;
+        const title = isBackorder
+          ? `🛒 Đặt Back Order — ${Object.keys(purchaseRows).length} domain`
+          : `Đánh dấu đã mua — ${Object.keys(purchaseRows).length} domain`;
+        const saveLabel = isBackorder ? "Đặt Back Order" : "Lưu vào kho";
+        return (
+        <div className={cn("rounded-xl border p-4 shadow-sm", colorBorder, colorBg)}>
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
-              <Check className="h-4 w-4 text-emerald-600" />
-              <h3 className="text-sm font-semibold">Đánh dấu đã mua — {Object.keys(purchaseRows).length} domain</h3>
+              <Icon className={cn("h-4 w-4", colorIcon)} />
+              <h3 className="text-sm font-semibold">{title}</h3>
             </div>
             <button onClick={() => setPurchaseFormOpen(false)} className="text-muted-foreground hover:text-foreground">
               <X className="h-4 w-4" />
             </button>
           </div>
 
-          <div className="flex items-center gap-2 mb-3 pb-3 border-b border-emerald-200 dark:border-emerald-800">
+          {isBackorder && (
+            <p className="text-[11px] text-amber-700 dark:text-amber-300 mb-3 -mt-1">
+              ⚠️ Backorder chưa thực sự sở hữu domain. Vào Kho Domain để{" "}
+              <strong>✓ Confirm</strong> khi registrar xác nhận thành công, hoặc{" "}
+              <strong>✗ Loại trừ</strong> nếu fail.
+            </p>
+          )}
+
+          <div className={cn("flex items-center gap-2 mb-3 pb-3 border-b", colorDivider)}>
             <span className="text-xs text-muted-foreground">Áp giá đồng loạt:</span>
             <Input
               type="number"
@@ -2051,17 +2089,18 @@ export default function DomainPickerPage() {
               size="sm"
               onClick={savePurchases}
               disabled={savingPurchase}
-              className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"
+              className={cn("gap-1.5 text-white", colorBtn)}
             >
               {savingPurchase ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-              {savingPurchase ? "Đang lưu..." : "Lưu vào kho"}
+              {savingPurchase ? "Đang lưu..." : saveLabel}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setPurchaseFormOpen(false)}>
               Hủy
             </Button>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* ── Picker DB Panel ─────────────────────────────────────────────────── */}
       <div className="rounded-xl border bg-card shadow-sm">
@@ -2092,10 +2131,18 @@ export default function DomainPickerPage() {
                   <Button
                     size="sm"
                     className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"
-                    onClick={openPurchaseFormForDbDomains}
+                    onClick={() => openPurchaseFormForDbDomains("purchase")}
                   >
                     <DollarSign className="h-3.5 w-3.5" />
                     Đã mua ({selectedDbDomains.size})
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="gap-1.5 bg-amber-600 hover:bg-amber-700 text-white"
+                    onClick={() => openPurchaseFormForDbDomains("backorder")}
+                    title="Đặt Back Order — vào Kho Domain để Confirm/Loại trừ sau"
+                  >
+                    🛒 Back Order ({selectedDbDomains.size})
                   </Button>
                   <Button
                     size="sm"
