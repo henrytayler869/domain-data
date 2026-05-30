@@ -75,6 +75,8 @@ export default function OrdersPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   // Date range filter (scopes stats + tables)
   const [datePreset, setDatePreset] = useState<DateRangePreset>("all");
@@ -321,11 +323,59 @@ export default function OrdersPage() {
     try {
       await fetch(`/api/os-orders/${o.id}`, { method: "DELETE" });
       setOrders((prev) => prev.filter((x) => x.id !== o.id));
+      setSelectedOrders((prev) => {
+        if (!prev.has(o.id)) return prev;
+        const next = new Set(prev);
+        next.delete(o.id);
+        return next;
+      });
       showToast("🗑️ Đã xóa");
     } catch (err) {
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
     }
   }, [showToast]);
+
+  // Bulk delete — DELETE each selected order in parallel, then drop from state.
+  // /api/os-orders has no bulk endpoint, so fan-out per-id.
+  const bulkDelete = useCallback(async () => {
+    if (selectedOrders.size === 0) return;
+    const ids = Array.from(selectedOrders);
+    if (!confirm(`Xóa ${ids.length} đơn hàng đã chọn? (cũng xóa luôn các lần rút gắn với chúng)`)) return;
+    setBulkDeleting(true);
+    try {
+      const results = await Promise.allSettled(
+        ids.map((id) => fetch(`/api/os-orders/${id}`, { method: "DELETE" })),
+      );
+      const failed = results.filter((r) => r.status === "rejected" || (r.status === "fulfilled" && !r.value.ok));
+      const deletedSet = new Set<string>();
+      ids.forEach((id, i) => {
+        const r = results[i];
+        if (r.status === "fulfilled" && r.value.ok) deletedSet.add(id);
+      });
+      setOrders((prev) => prev.filter((x) => !deletedSet.has(x.id)));
+      setSelectedOrders(new Set());
+      if (failed.length === 0) {
+        showToast(`🗑️ Đã xóa ${deletedSet.size} đơn hàng`);
+      } else {
+        showToast(`⚠️ Xóa ${deletedSet.size}/${ids.length} đơn hàng (${failed.length} lỗi)`, true);
+      }
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    } finally {
+      setBulkDeleting(false);
+    }
+  }, [selectedOrders, showToast]);
+
+  const toggleSelectOrder = useCallback((id: string) => {
+    setSelectedOrders((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const clearOrderSelection = useCallback(() => setSelectedOrders(new Set()), []);
 
   // ─── Withdrawals ─────────────────────────────────────────────────────────────
 
@@ -1038,6 +1088,32 @@ export default function OrdersPage() {
         />
       </div>
 
+      {/* Bulk action bar — chỉ hiện khi có dòng được chọn */}
+      {selectedOrders.size > 0 && (
+        <div className="rounded-lg border border-blue-300 dark:border-blue-700 bg-blue-50/50 dark:bg-blue-950/30 px-4 py-2 flex items-center gap-3 flex-wrap text-sm">
+          <span className="text-blue-700 dark:text-blue-300 font-medium">
+            Đã chọn {selectedOrders.size} đơn hàng
+          </span>
+          <Button
+            size="sm"
+            disabled={bulkDeleting}
+            className="gap-1.5 bg-rose-600 hover:bg-rose-700 text-white ml-auto"
+            onClick={bulkDelete}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            {bulkDeleting ? "Đang xóa..." : `Xóa ${selectedOrders.size} đơn`}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="gap-1.5 text-xs"
+            onClick={clearOrderSelection}
+          >
+            Bỏ chọn
+          </Button>
+        </div>
+      )}
+
       {/* Table */}
       <div className="rounded-xl border bg-card shadow-sm overflow-hidden">
         {loading ? (
@@ -1057,6 +1133,36 @@ export default function OrdersPage() {
             <table className="w-full text-sm">
               <thead className="bg-muted/40 border-b">
                 <tr>
+                  <th className="px-3 py-3 w-8">
+                    {(() => {
+                      const allSelected = filtered.length > 0 && filtered.every((o) => selectedOrders.has(o.id));
+                      const someSelected = filtered.some((o) => selectedOrders.has(o.id));
+                      return (
+                        <input
+                          type="checkbox"
+                          className="rounded cursor-pointer"
+                          aria-label="Chọn tất cả"
+                          checked={allSelected}
+                          ref={(el) => {
+                            if (!el) return;
+                            el.indeterminate = someSelected && !allSelected;
+                          }}
+                          onChange={() => {
+                            setSelectedOrders((prev) => {
+                              if (allSelected) {
+                                const next = new Set(prev);
+                                for (const o of filtered) next.delete(o.id);
+                                return next;
+                              }
+                              const next = new Set(prev);
+                              for (const o of filtered) next.add(o.id);
+                              return next;
+                            });
+                          }}
+                        />
+                      );
+                    })()}
+                  </th>
                   <th className="px-3 py-3 text-left text-xs font-semibold text-muted-foreground uppercase">Đối tác</th>
                   <th className="px-3 py-3 text-left text-xs font-semibold text-muted-foreground uppercase">Gói dịch vụ</th>
                   <th className="px-3 py-3 text-left text-xs font-semibold text-muted-foreground uppercase">Giá</th>
@@ -1070,8 +1176,23 @@ export default function OrdersPage() {
                 {filtered.map((o) => {
                   const partner = o.partnerId ? partnerById.get(o.partnerId) : null;
                   const revenue = revenueByOrder.get(o.id) ?? o.revenue;
+                  const isSelected = selectedOrders.has(o.id);
                   return (
-                    <tr key={o.id} className="border-b border-border/50 hover:bg-muted/20 group align-top">
+                    <tr
+                      key={o.id}
+                      className={cn(
+                        "border-b border-border/50 hover:bg-muted/20 group align-top",
+                        isSelected && "bg-blue-50/50 dark:bg-blue-950/30",
+                      )}
+                    >
+                      <td className="px-3 py-2">
+                        <input
+                          type="checkbox"
+                          className="rounded cursor-pointer"
+                          checked={isSelected}
+                          onChange={() => toggleSelectOrder(o.id)}
+                        />
+                      </td>
                       <td className="px-3 py-2 text-sm">
                         {partner ? (
                           <div>
