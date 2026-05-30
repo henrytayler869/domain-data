@@ -1216,7 +1216,25 @@ export default function OrdersPage() {
                       </td>
                       <td className="px-3 py-2 font-semibold whitespace-nowrap">{formatMoney(o.price, o.currency)}</td>
                       <td className="px-3 py-2 whitespace-nowrap">
-                        <p className="font-semibold text-emerald-600 dark:text-emerald-400">{formatMoney(revenue, o.currency)}</p>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <p className="font-semibold text-emerald-600 dark:text-emerald-400">{formatMoney(revenue, o.currency)}</p>
+                          {(() => {
+                            const w = withdrawnByOrder.get(o.id) ?? 0;
+                            const remaining = revenue - w;
+                            // Settled = đã rút đủ (hoặc dư) — floating-point safe (< 1 cent residual).
+                            if (revenue > 0 && remaining < 0.01) {
+                              return (
+                                <span
+                                  className="inline-flex items-center gap-0.5 rounded-full border border-emerald-400 bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 px-1.5 py-0.5 text-[10px] font-semibold"
+                                  title="Đã rút đủ doanh thu của đơn này"
+                                >
+                                  ✓ Hoàn tất
+                                </span>
+                              );
+                            }
+                            return null;
+                          })()}
+                        </div>
                         {(() => {
                           const w = withdrawnByOrder.get(o.id) ?? 0;
                           const remaining = revenue - w;
@@ -1230,8 +1248,8 @@ export default function OrdersPage() {
                               </p>
                               <p className={cn(
                                 "text-[10px]",
-                                remaining > 0 ? "text-blue-600 dark:text-blue-400"
-                                : remaining < 0 ? "text-rose-600 dark:text-rose-400"
+                                remaining > 0.01 ? "text-blue-600 dark:text-blue-400"
+                                : remaining < -0.01 ? "text-rose-600 dark:text-rose-400"
                                 : "text-muted-foreground"
                               )}>
                                 Còn: {formatMoney(remaining, o.currency)}
