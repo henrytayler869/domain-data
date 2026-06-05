@@ -288,18 +288,56 @@ export default function DomainPickerPage() {
   const startWaybackCheck = useCallback(async (targets: string[]) => {
     if (!targets.length) return;
     setWaybackStarting(true);
+
+    // Split into batches of 10 — Apify actor times out on large input
+    // lists. Trigger với concurrency cap 5 để chạy nhanh nhưng không
+    // dội Apify API quá tải.
+    const BATCH_SIZE = 10;
+    const CONCURRENCY = 5;
+    const batches: string[][] = [];
+    for (let i = 0; i < targets.length; i += BATCH_SIZE) {
+      batches.push(targets.slice(i, i + BATCH_SIZE));
+    }
+
+    if (batches.length > 1) {
+      showToast(`🚀 Trigger ${batches.length} Wayback runs (${BATCH_SIZE} domain/run, ${targets.length} target)…`);
+    }
+
+    const results: PromiseSettledResult<unknown>[] = new Array(batches.length);
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(CONCURRENCY, batches.length) }, async () => {
+      while (cursor < batches.length) {
+        const i = cursor++;
+        try {
+          const res = await fetch("/api/wayback/runs", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ targets: batches[i] }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error ?? "Start run thất bại");
+          results[i] = { status: "fulfilled", value: data };
+        } catch (e) {
+          results[i] = { status: "rejected", reason: e };
+        }
+      }
+    });
+
     try {
-      const res = await fetch("/api/wayback/runs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ targets }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Start run thất bại");
-      showToast(`✅ Đã trigger Wayback run · ${targets.length} target · runId ${data.run.runId.slice(0, 8)}…`);
+      await Promise.all(workers);
+      const ok = results.filter((r) => r?.status === "fulfilled").length;
+      const failed = results.filter((r) => r?.status === "rejected");
+      if (failed.length === 0) {
+        showToast(
+          batches.length === 1
+            ? `✅ Đã trigger Wayback run · ${targets.length} target`
+            : `✅ Đã trigger ${ok} runs · ${targets.length} target (${BATCH_SIZE}/run)`,
+        );
+      } else {
+        const firstErr = failed[0]?.status === "rejected" ? String((failed[0] as PromiseRejectedResult).reason).slice(0, 80) : "unknown";
+        showToast(`⚠️ ${ok}/${batches.length} runs OK · ${failed.length} lỗi (${firstErr})`, true);
+      }
       await loadWayback();
-    } catch (err) {
-      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
     } finally {
       setWaybackStarting(false);
     }
