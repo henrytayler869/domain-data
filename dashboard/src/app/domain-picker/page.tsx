@@ -726,6 +726,14 @@ export default function DomainPickerPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Lỗi");
+      // Drop from the just-uploaded bypass set — an explicit "Loại trừ" must
+      // win over the re-upload visibility override, otherwise the row stays.
+      setJustUploadedTargets((prev) => {
+        if (prev.size === 0) return prev;
+        const next = new Set(prev);
+        for (const t of targets) next.delete(t);
+        return next;
+      });
       await loadAhrefs();
       setSelectedTargets(new Set());
       showToast(`✅ Đã loại trừ ${targets.length} domain`);
@@ -773,6 +781,14 @@ export default function DomainPickerPage() {
               body: JSON.stringify({ targets }),
             });
           } catch { /* non-fatal — kho vẫn save thành công */ }
+          // Explicit purchase overrides the re-upload visibility bypass —
+          // drop from justUploadedTargets so the rows disappear immediately.
+          setJustUploadedTargets((prev) => {
+            if (prev.size === 0) return prev;
+            const next = new Set(prev);
+            for (const t of targets) next.delete(t);
+            return next;
+          });
         }
       }
 
