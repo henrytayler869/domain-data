@@ -744,6 +744,68 @@ export default function DomainPickerPage() {
     }
   }, [selectedTargets, loadAhrefs, showToast]);
 
+  // Mua thật qua Gname API — tiêu tiền thật nên confirm kỹ trước khi gửi.
+  // Giá mua lấy từ response của Gname (số tiền bị freeze), không nhập tay.
+  const [buyingGname, setBuyingGname] = useState(false);
+  const buyViaGname = useCallback(async () => {
+    if (selectedTargets.size === 0) return;
+    const targets = Array.from(selectedTargets);
+    const preview = targets.slice(0, 10).join("\n") + (targets.length > 10 ? `\n… +${targets.length - 10} domain nữa` : "");
+    if (!confirm(
+      `⚡ GỬI LỆNH MUA THẬT đến Gname cho ${targets.length} domain?\n\n${preview}\n\n` +
+      `Tiền sẽ bị trừ từ số dư Gname. Domain mua thành công sẽ tự lưu vào kho với giá thực tế.`
+    )) return;
+    setBuyingGname(true);
+    try {
+      const meta: Record<string, { source: string | null; rating: string | null; category: string | null }> = {};
+      for (const d of targets) {
+        const t = ahrefsSummary.find((x) => x.targetDomain === d);
+        meta[d] = {
+          source: sourceMap.get(d) ?? null,
+          rating: t?.rating ?? null,
+          category: t?.category ?? null,
+        };
+      }
+      const res = await fetch("/api/gname/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domains: targets, meta }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Gname register thất bại");
+
+      const results: { domain: string; ok: boolean; premium: boolean; msg: string; price: number | null }[] = data.results ?? [];
+      const okDomains = results.filter((r) => r.ok).map((r) => r.domain);
+      const premium = results.filter((r) => r.premium);
+      const failed = results.filter((r) => !r.ok && !r.premium);
+
+      // Bought domains are excluded server-side — drop their upload bypass too.
+      if (okDomains.length > 0) {
+        setJustUploadedTargets((prev) => {
+          if (prev.size === 0) return prev;
+          const next = new Set(prev);
+          for (const d of okDomains) next.delete(d);
+          return next;
+        });
+      }
+      await Promise.all([loadInventory(), loadAhrefs()]);
+      setSelectedTargets(new Set());
+
+      if (failed.length === 0 && premium.length === 0) {
+        showToast(`✅ Gname đã nhận ${data.succeeded} lệnh mua · tổng $${(data.totalCharged ?? 0).toFixed(2)} · đã lưu kho`);
+      } else {
+        const parts = [`✅ ${data.succeeded} OK ($${(data.totalCharged ?? 0).toFixed(2)})`];
+        if (premium.length) parts.push(`💎 ${premium.length} premium (cần mua tay trên Gname)`);
+        if (failed.length) parts.push(`❌ ${failed.length} lỗi: ${failed[0].msg.slice(0, 60)}`);
+        showToast(parts.join(" · "), failed.length > 0);
+      }
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    } finally {
+      setBuyingGname(false);
+    }
+  }, [selectedTargets, ahrefsSummary, sourceMap, loadInventory, loadAhrefs, showToast]);
+
   const savePurchases = useCallback(async () => {
     setSavingPurchase(true);
     const isBackorder = purchaseFormMode === "backorder";
@@ -1834,6 +1896,16 @@ export default function DomainPickerPage() {
                   >
                     <Check className="h-3.5 w-3.5" />
                     Đã mua ({selectedTargets.size})
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="gap-1.5 bg-violet-600 hover:bg-violet-700 text-white"
+                    onClick={buyViaGname}
+                    disabled={buyingGname}
+                    title="Gửi lệnh mua THẬT qua Gname API — tiền trừ từ số dư Gname, giá thực tế tự lưu vào kho"
+                  >
+                    {buyingGname ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <>⚡</>}
+                    {buyingGname ? "Đang gửi Gname…" : `Mua Gname (${selectedTargets.size})`}
                   </Button>
                   <Button
                     size="sm"
