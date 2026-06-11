@@ -234,7 +234,12 @@ export default function InventoryPage() {
       const data = await res.json();
       if (!res.ok) return;
       if (data.ingested?.count) {
-        showToast(`✅ Wayback ingested ${data.ingested.count} kết quả`);
+        const ex = data.ingested.autoExcluded ?? 0;
+        showToast(
+          ex > 0
+            ? `✅ Wayback ingested ${data.ingested.count} kết quả · 🚫 auto loại trừ ${ex} flagged khỏi picker`
+            : `✅ Wayback ingested ${data.ingested.count} kết quả`,
+        );
       }
       await reloadWayback();
     } catch { /* ignore */ }

@@ -350,11 +350,19 @@ export default function DomainPickerPage() {
       if (!res.ok) return;
       // Refresh both lists so newly ingested results show up.
       if (data.ingested?.count) {
-        showToast(`✅ Wayback ingested ${data.ingested.count} kết quả`);
+        const ex = data.ingested.autoExcluded ?? 0;
+        showToast(
+          ex > 0
+            ? `✅ Wayback ingested ${data.ingested.count} kết quả · 🚫 auto loại trừ ${ex} flagged`
+            : `✅ Wayback ingested ${data.ingested.count} kết quả`,
+        );
+        // Flagged domains were just excluded server-side — refresh Ahrefs list
+        // so they drop out of the picker immediately.
+        if (ex > 0) await loadAhrefs();
       }
       await loadWayback();
     } catch { /* ignore */ }
-  }, [loadWayback, showToast]);
+  }, [loadWayback, loadAhrefs, showToast]);
 
   // Auto-poll any RUNNING runs every 10s while user is on step 4.
   useEffect(() => {

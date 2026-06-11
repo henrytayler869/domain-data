@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getWaybackRunStatus, fetchWaybackResults } from "@/lib/apify-wayback";
 import { getRun, updateRun, upsertResults } from "@/lib/wayback-db";
+import { markExcluded } from "@/lib/ahrefs-db";
 
 /**
  * GET /api/wayback/runs/:runId
@@ -8,7 +9,11 @@ import { getRun, updateRun, upsertResults } from "@/lib/wayback-db";
  *   dataset and upserts into wayback_results in the same call. Idempotent —
  *   safe to poll repeatedly; ingestion happens at most once.
  *
- * Response: { run, ingested: { count } | null }
+ *   Flagged domains (betting/adult) are auto-excluded in target_assessment so
+ *   they drop out of the picker without a manual "Loại trừ" pass. Harmless for
+ *   inventory-owned domains — the inventory view doesn't filter on excluded_at.
+ *
+ * Response: { run, ingested: { count, autoExcluded } | null }
  */
 export async function GET(
   _request: NextRequest,
@@ -35,12 +40,22 @@ export async function GET(
       finished_at: live.finishedAt ?? dbRow.finishedAt,
     });
 
-    let ingested: { count: number } | null = null;
+    let ingested: { count: number; autoExcluded: number } | null = null;
     if (live.status === "SUCCEEDED" && live.datasetId && !dbRow.ingestedAt) {
       const items = await fetchWaybackResults(live.datasetId);
       const { count } = await upsertResults(items);
+      // Auto-exclude flagged domains so they vanish from the picker without
+      // a manual "Loại trừ" pass.
+      const flagged = items
+        .filter((it) => it.hasBetting || it.hasAdult)
+        .map((it) => it.domain);
+      let autoExcluded = 0;
+      if (flagged.length > 0) {
+        const ex = await markExcluded(flagged);
+        autoExcluded = ex.count;
+      }
       await updateRun(runId, { ingested_at: new Date().toISOString() });
-      ingested = { count };
+      ingested = { count, autoExcluded };
     } else if (["FAILED", "TIMED-OUT", "ABORTED"].includes(live.status) && !dbRow.error) {
       await updateRun(runId, { error: `Apify status: ${live.status}` });
     }
