@@ -40,22 +40,24 @@ export async function GET(
       finished_at: live.finishedAt ?? dbRow.finishedAt,
     });
 
-    let ingested: { count: number; autoExcluded: number } | null = null;
+    let ingested: { count: number; autoExcluded: number; autoExcludedDomains: string[] } | null = null;
     if (live.status === "SUCCEEDED" && live.datasetId && !dbRow.ingestedAt) {
       const items = await fetchWaybackResults(live.datasetId);
       const { count } = await upsertResults(items);
       // Auto-exclude flagged domains so they vanish from the picker without
-      // a manual "Loại trừ" pass.
+      // a manual "Loại trừ" pass. The domain list is returned so the client
+      // can also prune its justUploadedTargets bypass set — otherwise rows
+      // uploaded in the same session would keep showing despite excluded_at.
       const flagged = items
         .filter((it) => it.hasBetting || it.hasAdult)
-        .map((it) => it.domain);
+        .map((it) => it.domain.toLowerCase().trim());
       let autoExcluded = 0;
       if (flagged.length > 0) {
         const ex = await markExcluded(flagged);
         autoExcluded = ex.count;
       }
       await updateRun(runId, { ingested_at: new Date().toISOString() });
-      ingested = { count, autoExcluded };
+      ingested = { count, autoExcluded, autoExcludedDomains: flagged };
     } else if (["FAILED", "TIMED-OUT", "ABORTED"].includes(live.status) && !dbRow.error) {
       await updateRun(runId, { error: `Apify status: ${live.status}` });
     }

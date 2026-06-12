@@ -356,9 +356,22 @@ export default function DomainPickerPage() {
             ? `✅ Wayback ingested ${data.ingested.count} kết quả · 🚫 auto loại trừ ${ex} flagged`
             : `✅ Wayback ingested ${data.ingested.count} kết quả`,
         );
-        // Flagged domains were just excluded server-side — refresh Ahrefs list
-        // so they drop out of the picker immediately.
-        if (ex > 0) await loadAhrefs();
+        if (ex > 0) {
+          // Auto-exclude must also beat the re-upload visibility bypass,
+          // same as a manual "Loại trừ" — otherwise targets uploaded in this
+          // session keep showing despite excluded_at being set.
+          const exDomains: string[] = data.ingested.autoExcludedDomains ?? [];
+          if (exDomains.length > 0) {
+            setJustUploadedTargets((prev) => {
+              if (prev.size === 0) return prev;
+              const next = new Set(prev);
+              for (const d of exDomains) next.delete(d);
+              return next;
+            });
+          }
+          // Refresh Ahrefs list so flagged rows drop out of the picker immediately.
+          await loadAhrefs();
+        }
       }
       await loadWayback();
     } catch { /* ignore */ }
