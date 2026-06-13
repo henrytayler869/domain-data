@@ -19,14 +19,13 @@ import {
   type PresetName,
 } from "@/lib/picker-csv";
 
-export type WizardStep = 1 | 2 | 3 | 4 | 5;
+export type WizardStep = 1 | 2 | 3 | 4;
 
 export const WIZARD_STEPS: { id: WizardStep; label: string }[] = [
   { id: 1, label: "Upload Spamzilla" },
-  { id: 2, label: "Lọc & sinh prompt" },
-  { id: 3, label: "Upload Ahrefs result" },
+  { id: 2, label: "Danh sách domain" },
+  { id: 3, label: "Upload Result" },
   { id: 4, label: "Wayback check" },
-  { id: 5, label: "Quyết định & lưu" },
 ];
 
 export interface WizardState {
@@ -53,8 +52,9 @@ export function initialWizardState(): WizardState {
   return {
     step: 1,
     completed: new Set(),
-    presetName: "balanced",
-    thresholds: { ...DEFAULT_THRESHOLDS },
+    // Không lọc — mọi domain đều qua (đã bỏ preset + tinh chỉnh thủ công).
+    presetName: "none",
+    thresholds: { ...THRESHOLD_PRESETS.none },
     weights: { ...DEFAULT_WEIGHTS },
     topN: 50,
   };
@@ -78,7 +78,7 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
     case "advance": {
       const next = new Set(state.completed);
       next.add(action.from);
-      const nextStep = Math.min(5, action.from + 1) as WizardStep;
+      const nextStep = Math.min(4, action.from + 1) as WizardStep;
       return { ...state, completed: next, step: nextStep };
     }
     case "applyPreset": {

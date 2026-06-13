@@ -35,9 +35,6 @@ import {
   parseAhrefsCsv,
   parseUnifiedCsv,
   REF_BLACKLIST,
-  THRESHOLD_PRESETS,
-  PRESET_LABELS,
-  detectPreset,
   type PickerRow,
 } from "@/lib/picker-csv";
 import type { PickerEntry } from "@/lib/picker-db";
@@ -74,7 +71,6 @@ export default function DomainPickerPage() {
   // ── Wizard state (step + completed + presets + thresholds + weights + topN) ──
   const [wizard, dispatchWizard] = useReducer(wizardReducer, undefined, initialWizardState);
   const { thresholds, weights, topN, presetName } = wizard;
-  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   // Hydrate from localStorage on mount, persist on every wizard change.
   useEffect(() => {
@@ -85,10 +81,6 @@ export default function DomainPickerPage() {
   useEffect(() => {
     saveSnapshot(wizard);
   }, [wizard]);
-
-  const resetConfig = useCallback(() => {
-    dispatchWizard({ type: "resetConfig" });
-  }, []);
 
   // ── Sort ────────────────────────────────────────────────────────────────────
   const [sortKey, setSortKey] = useState<SortKey>("score");
@@ -113,6 +105,9 @@ export default function DomainPickerPage() {
   const [checkedTargets, setCheckedTargets] = useState<Set<string>>(new Set());
   const [ahrefsSearch, setAhrefsSearch] = useState("");
   const [ahrefsUploading, setAhrefsUploading] = useState(false);
+  // Nguồn dữ liệu ref ở bước "Upload Result": Ahrefs (CSV) hoặc DataforSEO (API).
+  const [resultSource, setResultSource] = useState<"ahrefs" | "dataforseo">("ahrefs");
+  const [ingestingDfs, setIngestingDfs] = useState(false);
   const [excludeChecked, setExcludeChecked] = useState(true);
   const [copiedAhrefsTargets, setCopiedAhrefsTargets] = useState(false);
   const [applyRefBlacklist, setApplyRefBlacklist] = useState(true);
@@ -172,17 +167,6 @@ export default function DomainPickerPage() {
 
   // ── Export helpers ──────────────────────────────────────────────────────────
   const [copiedDomains, setCopiedDomains] = useState(false);
-
-  // Ahrefs prompt generator
-  const [ahrefsPromptOpen, setAhrefsPromptOpen] = useState(false);
-  const [ahrefsPromptDr, setAhrefsPromptDr] = useState(90);
-  const [ahrefsPromptLimit, setAhrefsPromptLimit] = useState(100);
-  // Paste-domain shortcut: bypass CSV/filter, paste a manual list, generate prompt.
-  const [pasteFormOpen, setPasteFormOpen] = useState(false);
-  const [pasteText, setPasteText] = useState("");
-  const [pasteDr, setPasteDr] = useState(90);
-  const [pasteLimit, setPasteLimit] = useState(100);
-  const [copiedAhrefsPrompt, setCopiedAhrefsPrompt] = useState(false);
 
   // ── Toasts ──────────────────────────────────────────────────────────────────
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -562,6 +546,47 @@ export default function DomainPickerPage() {
       setAhrefsUploading(false);
     }
   }, [loadAhrefs, showToast]);
+
+  // DataforSEO ingest: lấy ref domain cho list domain trong picker (scoredRows),
+  // server đối sánh DR từ backlink_db rồi ghi vào ahrefs_results như Ahrefs.
+  const ingestDataforseo = useCallback(async () => {
+    const targets = scoredRows.map((r) => r.domain);
+    if (targets.length === 0) {
+      showToast("Không có domain nào trong danh sách (upload Spamzilla ở bước 1)", true);
+      return;
+    }
+    if (!confirm(
+      `Chạy DataforSEO cho ${targets.length} domain?\n` +
+      `Mỗi domain tốn credit DataforSEO. Ref domain sẽ được đối sánh DR từ dữ liệu đã thu thập (backlink_db).`,
+    )) return;
+    setIngestingDfs(true);
+    try {
+      const res = await fetch("/api/ahrefs-results/db/ingest-dataforseo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targets }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "DataforSEO ingest thất bại");
+      // Các target vừa ingest luôn hiển thị (vượt qua viewClearedAt bypass).
+      setJustUploadedTargets(new Set(targets.map((t) => t.toLowerCase())));
+      await loadAhrefs();
+      const refStat = data.refs;
+      const parts = [`${data.targetsRequested} target`];
+      if (refStat?.total) parts.push(`${refStat.total} ref rows khớp DR`);
+      parts.push(`${data.refsMatched}/${data.refsSeen} ref match`);
+      if (data.dataforseoCost) parts.push(`$${Number(data.dataforseoCost).toFixed(4)} DfS`);
+      showToast(`✅ DataforSEO OK · ${parts.join(" · ")}`);
+      if (Array.isArray(data.errors) && data.errors.length) {
+        showToast(`⚠️ ${data.errors.length} batch lỗi: ${String(data.errors[0]).slice(0, 60)}`, true);
+      }
+      dispatchWizard({ type: "advance", from: 3 });
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    } finally {
+      setIngestingDfs(false);
+    }
+  }, [scoredRows, loadAhrefs, showToast]);
 
   const removeAhrefsTarget = useCallback(async (domain: string) => {
     await fetch(`/api/ahrefs-results/db/${encodeURIComponent(domain)}`, { method: "DELETE" });
@@ -1050,114 +1075,6 @@ export default function DomainPickerPage() {
     showToast(`✅ Đã copy ${displayedRows.length} domain`);
   }, [displayedRows, showToast]);
 
-  // Pure prompt template — shared by both the filtered-table flow and the
-  // manual paste-list flow.
-  const buildAhrefsPrompt = useCallback((domains: string[], dr: number, limit: number) => {
-    return (
-      `Phân tích Aged Domain bằng Ahrefs MCP + đánh giá chất lượng anchor.\n` +
-      `Cấu hình: DR tối thiểu = ${dr}, limit = ${limit} ref domains/target.\n` +
-      `Danh sách domain cần phân tích:\n${domains.join("\n")}\n` +
-      `\n` +
-      `Yêu cầu:\n` +
-      `1. Với mỗi domain, gọi Ahrefs MCP (site-explorer-referring-domains) để lấy referring domains có DR ≥ ${dr}, sắp xếp theo domain_rating desc, limit ${limit}.\n` +
-      `2. Gọi thêm site-explorer-anchors hoặc xem top anchors để đánh giá chất lượng:\n` +
-      `   - ✅ TỐT — niche-relevant, anchor sạch, brand thật\n` +
-      `   - ⚠️ TRUNG BÌNH — có gì đó risky nhưng salvageable (real brand + minor spam)\n` +
-      `   - ⚠️ RỦI RO — mixed signals, cần review kỹ\n` +
-      `   - ❌ XẤU — bị abuse: gambling/porn/pharmacy/PBN/hacked\n` +
-      `   - ❌ RẤT XẤU — drug/phishing/malware/black SEO marketplace\n` +
-      `3. Output ra CSV với header và format chính xác như sau:\n` +
-      `\n` +
-      `target_domain,checked_at,refs,rating,category,detail\n` +
-      `\n` +
-      `Trong đó:\n` +
-      `- target_domain: domain đang phân tích (lowercase)\n` +
-      `- checked_at: ISO timestamp khi check (vd: 2026-04-30T10:00:00Z)\n` +
-      `- refs: list ref domains kèm DR, ngăn cách bằng dấu chấm phẩy. Format: "domain1.com (DR 92); domain2.com (DR 91); ..."\n` +
-      `- rating: một trong [✅ TỐT, ⚠️ TRUNG BÌNH, ⚠️ RỦI RO, ❌ XẤU, ❌ RẤT XẤU]\n` +
-      `- category: phân loại ngắn gọn (vd: "Spam Indonesian gambling", "Sạch - Health niche", "Hacked - Russian pharmacy")\n` +
-      `- detail: mô tả chi tiết evidence (top anchors, brand info, multilingual hints, ...)\n` +
-      `\n` +
-      `Lưu ý CSV: dùng dấu nháy kép escape các cell có chứa dấu phẩy hoặc xuống dòng.`
-    );
-  }, []);
-
-  const copyTextToClipboard = useCallback(async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      const el = document.createElement("textarea");
-      el.value = text;
-      el.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0";
-      document.body.appendChild(el);
-      el.focus(); el.select();
-      document.execCommand("copy");
-      document.body.removeChild(el);
-    }
-  }, []);
-
-  const copyAhrefsPrompt = useCallback(async () => {
-    const domains = displayedRows.map((r) => r.domain);
-    if (!domains.length) return;
-    const prompt = buildAhrefsPrompt(domains, ahrefsPromptDr, ahrefsPromptLimit);
-    await copyTextToClipboard(prompt);
-    setCopiedAhrefsPrompt(true);
-    setTimeout(() => setCopiedAhrefsPrompt(false), 2000);
-    showToast(`✅ Đã copy prompt cho ${domains.length} domain (DR≥${ahrefsPromptDr}, limit ${ahrefsPromptLimit})`);
-    dispatchWizard({ type: "advance", from: 2 });
-  }, [displayedRows, ahrefsPromptDr, ahrefsPromptLimit, buildAhrefsPrompt, copyTextToClipboard, showToast]);
-
-  const copyAhrefsPromptFromPasted = useCallback(async () => {
-    // Accept comma / newline / whitespace separated. Strip http(s)://, trailing slashes, lowercase.
-    const domains = Array.from(new Set(
-      pasteText
-        .split(/[\s,]+/)
-        .map((d) => d.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, ""))
-        .filter((d) => /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/.test(d))
-    ));
-    if (!domains.length) {
-      showToast("❌ Không tìm thấy domain hợp lệ trong list", true);
-      return;
-    }
-    const prompt = buildAhrefsPrompt(domains, pasteDr, pasteLimit);
-    await copyTextToClipboard(prompt);
-    showToast(`✅ Đã copy prompt cho ${domains.length} domain (DR≥${pasteDr}, limit ${pasteLimit})`);
-    setPasteFormOpen(false);
-    setPasteText("");
-    dispatchWizard({ type: "advance", from: 2 });
-  }, [pasteText, pasteDr, pasteLimit, buildAhrefsPrompt, copyTextToClipboard, showToast]);
-
-  const exportCsv = useCallback(() => {
-    if (!displayedRows.length) return;
-    const headers = [
-      "domain", "source", "score",
-      "tf", "cf", "bl", "rd", "da", "pa",
-      "age", "sz_score", "sz_drops",
-      "sem_traffic", "sem_keywords",
-      "price", "expires",
-    ];
-    const escape = (v: unknown) => {
-      const s = String(v ?? "");
-      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    };
-    const rows = displayedRows.map((r) => [
-      r.domain, r.source, r.score.toFixed(2),
-      r.tf, r.cf, r.bl, r.rd, r.da, r.pa,
-      r.age, r.szScore, r.szDrops,
-      r.semTraffic, r.semKeywords,
-      r.price, r.expires,
-    ].map(escape).join(","));
-    const csv = [headers.join(","), ...rows].join("\n");
-    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    a.download = `domain-picks-${ts}.csv`;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    showToast(`✅ Export ${displayedRows.length} domain → ${a.download}`);
-  }, [displayedRows, showToast]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) setSortDir((d) => (d === 1 ? -1 : 1));
@@ -1256,172 +1173,14 @@ export default function DomainPickerPage() {
       </div>
       )}
 
-      {/* ── Step 2: Filter & generate Ahrefs prompt ───────────────────────── */}
+      {/* ── Step 2: Danh sách domain (không lọc) ──────────────────────────── */}
       {wizard.step === 2 && rawRows.length === 0 && (
         <div className="rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50/60 dark:bg-amber-950/30 p-4 text-sm flex items-center gap-3 flex-wrap">
           <AlertCircle className="h-4 w-4 text-amber-600 shrink-0" />
-          <span className="flex-1 min-w-[200px]">CSV Spamzilla đã được clear. Upload lại — hoặc paste list domain thủ công để sinh prompt.</span>
+          <span className="flex-1 min-w-[200px]">CSV Spamzilla đã được clear (refresh tab). Quay lại bước 1 để upload lại.</span>
           <Button size="sm" variant="outline" onClick={() => dispatchWizard({ type: "goto", step: 1 })}>
             ← Quay lại bước 1
           </Button>
-          <Button
-            size="sm"
-            className="gap-1.5 bg-orange-600 hover:bg-orange-700 text-white"
-            onClick={() => setPasteFormOpen((o) => !o)}
-          >
-            <FileSpreadsheet className="h-3.5 w-3.5" />
-            📋 Paste Domain
-          </Button>
-        </div>
-      )}
-
-      {/* ── Paste-domain prompt generator (works at any step) ────────────── */}
-      {pasteFormOpen && (
-        <div className="rounded-xl border border-orange-300 dark:border-orange-700 bg-orange-50/50 dark:bg-orange-950/30 p-5 shadow-sm space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <FileSpreadsheet className="h-4 w-4 text-orange-600" />
-              <h3 className="text-sm font-semibold">Paste list domain → sinh prompt Ahrefs</h3>
-            </div>
-            <button
-              onClick={() => { setPasteFormOpen(false); setPasteText(""); }}
-              className="text-muted-foreground hover:text-foreground"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-          <p className="text-[11px] text-muted-foreground">
-            Mỗi domain 1 dòng (hoặc ngăn cách bằng dấu phẩy/space). Tự strip <code>http(s)://</code> + path, lowercase + dedupe.
-          </p>
-          <textarea
-            value={pasteText}
-            onChange={(e) => setPasteText(e.target.value)}
-            rows={8}
-            placeholder={"example.com\nanother-site.org\nhttps://third.net/some/path"}
-            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-y focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          />
-          <div className="flex flex-wrap items-end gap-2">
-            <div>
-              <label className="block text-[11px] text-muted-foreground mb-1">DR tối thiểu</label>
-              <Input
-                type="number"
-                min={0}
-                max={100}
-                value={pasteDr}
-                onChange={(e) => setPasteDr(Math.max(0, Math.min(100, parseInt(e.target.value, 10) || 0)))}
-                className="w-20 h-8 text-xs"
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] text-muted-foreground mb-1">Limit ref/target</label>
-              <Input
-                type="number"
-                min={1}
-                max={500}
-                value={pasteLimit}
-                onChange={(e) => setPasteLimit(Math.max(1, Math.min(500, parseInt(e.target.value, 10) || 100)))}
-                className="w-24 h-8 text-xs"
-              />
-            </div>
-            <Button
-              size="sm"
-              className="gap-1.5 bg-orange-600 hover:bg-orange-700 text-white ml-auto"
-              onClick={copyAhrefsPromptFromPasted}
-              disabled={!pasteText.trim()}
-            >
-              <Copy className="h-3.5 w-3.5" />
-              Tạo & copy prompt
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {wizard.step === 2 && rawRows.length > 0 && (
-        <div className="rounded-xl border bg-card p-5 shadow-sm space-y-5">
-          <div>
-            <h3 className="text-sm font-semibold mb-3">Preset lọc</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              {(Object.keys(THRESHOLD_PRESETS) as Array<keyof typeof THRESHOLD_PRESETS>).map((name) => {
-                const active = presetName === name;
-                const p = THRESHOLD_PRESETS[name];
-                return (
-                  <button
-                    key={name}
-                    type="button"
-                    onClick={() => dispatchWizard({ type: "applyPreset", name })}
-                    className={cn(
-                      "rounded-lg border px-4 py-3 text-left transition-colors",
-                      active
-                        ? "border-primary bg-primary/10 ring-2 ring-primary/30"
-                        : "border-border bg-background hover:bg-muted",
-                    )}
-                  >
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-sm font-semibold">{PRESET_LABELS[name]}</span>
-                      {active && <Check className="h-4 w-4 text-primary" />}
-                    </div>
-                    <p className="text-[11px] text-muted-foreground font-mono leading-snug">
-                      {name === "none"
-                        ? "Hiển thị tất cả domain — bỏ qua mọi ngưỡng"
-                        : `TF≥${p.tfMin} · CF≥${p.cfMin} · RD≥${p.rdMin} · DA≥${p.daMin} · Age≥${p.ageMin} · SZ≥${p.szScoreMin} · Drops≤${p.szDropsMax}`}
-                    </p>
-                  </button>
-                );
-              })}
-            </div>
-            {presetName === "custom" && (
-              <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
-                Đang dùng cấu hình tự chỉnh — click một preset để reset.
-              </p>
-            )}
-          </div>
-
-          <details
-            open={advancedOpen}
-            onToggle={(e) => setAdvancedOpen((e.target as HTMLDetailsElement).open)}
-            className="rounded-lg border border-border bg-muted/20 p-4"
-          >
-            <summary className="cursor-pointer select-none text-sm font-medium flex items-center gap-2">
-              <FilterIcon className="h-4 w-4" />
-              Tinh chỉnh thủ công
-              <ChevronDown className={cn("h-3.5 w-3.5 transition-transform ml-auto", advancedOpen && "rotate-180")} />
-            </summary>
-            <div className="mt-4 space-y-5">
-              <div>
-                <h4 className="text-xs font-semibold mb-2 uppercase tracking-wide text-muted-foreground">Thresholds</h4>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <NumField label="TF ≥" value={thresholds.tfMin} onChange={(v) => dispatchWizard({ type: "setThresholds", thresholds: { ...thresholds, tfMin: v }, presetName: detectPreset({ ...thresholds, tfMin: v }) })} />
-                  <NumField label="CF ≥" value={thresholds.cfMin} onChange={(v) => dispatchWizard({ type: "setThresholds", thresholds: { ...thresholds, cfMin: v }, presetName: detectPreset({ ...thresholds, cfMin: v }) })} />
-                  <NumField label="Maj. RD ≥" value={thresholds.rdMin} onChange={(v) => dispatchWizard({ type: "setThresholds", thresholds: { ...thresholds, rdMin: v }, presetName: detectPreset({ ...thresholds, rdMin: v }) })} />
-                  <NumField label="Moz DA ≥" value={thresholds.daMin} onChange={(v) => dispatchWizard({ type: "setThresholds", thresholds: { ...thresholds, daMin: v }, presetName: detectPreset({ ...thresholds, daMin: v }) })} />
-                  <NumField label="Age ≥ (năm)" value={thresholds.ageMin} onChange={(v) => dispatchWizard({ type: "setThresholds", thresholds: { ...thresholds, ageMin: v }, presetName: detectPreset({ ...thresholds, ageMin: v }) })} />
-                  <NumField label="SZ Score ≥" value={thresholds.szScoreMin} onChange={(v) => dispatchWizard({ type: "setThresholds", thresholds: { ...thresholds, szScoreMin: v }, presetName: detectPreset({ ...thresholds, szScoreMin: v }) })} />
-                  <NumField label="SZ Drops ≤" value={thresholds.szDropsMax} onChange={(v) => dispatchWizard({ type: "setThresholds", thresholds: { ...thresholds, szDropsMax: v }, presetName: detectPreset({ ...thresholds, szDropsMax: v }) })} />
-                  <NumField label="Top N (0=all)" value={topN} onChange={(v) => dispatchWizard({ type: "setTopN", topN: v })} />
-                </div>
-              </div>
-
-              <div>
-                <h4 className="text-xs font-semibold mb-2 uppercase tracking-wide text-muted-foreground">Score weights</h4>
-                <p className="text-[11px] text-muted-foreground mb-3 font-mono">
-                  score = TF×{weights.tf} + CF×{weights.cf} + log10(RD+1)×{weights.rd} + DA×{weights.da} + Age×{weights.age} + SZ_Score×{weights.szScore} − SZ_Drops×{weights.szDrops}
-                </p>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <NumField label="w(TF)" value={weights.tf} step={0.5} onChange={(v) => dispatchWizard({ type: "setWeights", weights: { ...weights, tf: v } })} />
-                  <NumField label="w(CF)" value={weights.cf} step={0.5} onChange={(v) => dispatchWizard({ type: "setWeights", weights: { ...weights, cf: v } })} />
-                  <NumField label="w(log RD)" value={weights.rd} step={0.5} onChange={(v) => dispatchWizard({ type: "setWeights", weights: { ...weights, rd: v } })} />
-                  <NumField label="w(DA)" value={weights.da} step={0.5} onChange={(v) => dispatchWizard({ type: "setWeights", weights: { ...weights, da: v } })} />
-                  <NumField label="w(Age)" value={weights.age} step={0.5} onChange={(v) => dispatchWizard({ type: "setWeights", weights: { ...weights, age: v } })} />
-                  <NumField label="w(SZ Score)" value={weights.szScore} step={0.5} onChange={(v) => dispatchWizard({ type: "setWeights", weights: { ...weights, szScore: v } })} />
-                  <NumField label="w(SZ Drops penalty)" value={weights.szDrops} step={0.5} onChange={(v) => dispatchWizard({ type: "setWeights", weights: { ...weights, szDrops: v } })} />
-                </div>
-              </div>
-
-              <Button size="sm" variant="outline" onClick={resetConfig}>
-                Reset về Cân bằng
-              </Button>
-            </div>
-          </details>
         </div>
       )}
 
@@ -1507,73 +1266,8 @@ export default function DomainPickerPage() {
                   : <Copy className="h-3.5 w-3.5" />}
                 {copiedDomains ? "Đã copy!" : `Copy ${displayedRows.length} domain`}
               </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={exportCsv}
-                disabled={!displayedRows.length}
-                className="gap-1.5"
-              >
-                <Download className="h-3.5 w-3.5" />
-                Export CSV
-              </Button>
-              <Button
-                size="sm"
-                className="gap-1.5 bg-orange-600 hover:bg-orange-700 text-white"
-                onClick={() => setAhrefsPromptOpen((o) => !o)}
-                disabled={!displayedRows.length}
-                title="Copy prompt phân tích Ahrefs (paste vào Claude AI có MCP)"
-              >
-                <FilterIcon className="h-3.5 w-3.5" />
-                Ahrefs prompt
-                <ChevronDown className={cn("h-3 w-3 transition-transform", ahrefsPromptOpen && "rotate-180")} />
-              </Button>
             </div>
           </div>
-
-          {/* Ahrefs prompt config panel */}
-          {ahrefsPromptOpen && (
-            <div className="border-b border-orange-200 dark:border-orange-800 bg-orange-50/50 dark:bg-orange-950/20 px-5 py-4">
-              <div className="flex items-end gap-3 flex-wrap">
-                <div>
-                  <label className="block text-xs font-medium text-muted-foreground mb-1">DR tối thiểu</label>
-                  <Input
-                    type="number"
-                    min={0}
-                    max={100}
-                    value={ahrefsPromptDr}
-                    onChange={(e) => setAhrefsPromptDr(Number(e.target.value) || 0)}
-                    className="h-8 w-24 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-muted-foreground mb-1">Limit / target</label>
-                  <Input
-                    type="number"
-                    min={1}
-                    max={1000}
-                    value={ahrefsPromptLimit}
-                    onChange={(e) => setAhrefsPromptLimit(Number(e.target.value) || 1)}
-                    className="h-8 w-24 text-sm"
-                  />
-                </div>
-                <Button
-                  size="sm"
-                  className="gap-1.5 bg-orange-600 hover:bg-orange-700 text-white"
-                  onClick={copyAhrefsPrompt}
-                  disabled={!displayedRows.length}
-                >
-                  {copiedAhrefsPrompt
-                    ? <Check className="h-3.5 w-3.5" />
-                    : <Copy className="h-3.5 w-3.5" />}
-                  {copiedAhrefsPrompt ? "Đã copy!" : `Copy prompt (${displayedRows.length} domain, DR≥${ahrefsPromptDr})`}
-                </Button>
-                <p className="text-[11px] text-muted-foreground italic ml-auto">
-                  Dán vào Claude AI có Ahrefs MCP → nhận lại CSV → upload ở panel Ahrefs Result DB phía dưới
-                </p>
-              </div>
-            </div>
-          )}
 
           <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
             <table className="w-full text-sm">
@@ -1706,18 +1400,14 @@ export default function DomainPickerPage() {
         />
       )}
 
-      {/* ── Steps 3 / 4 / 5: Ahrefs Result Panel (always visible after upload) ── */}
-      {(wizard.step === 3 || wizard.step === 4 || wizard.step === 5) && (
+      {/* ── Steps 3 / 4: Result Panel (always visible after upload) ── */}
+      {(wizard.step === 3 || wizard.step === 4) && (
       <div className="rounded-xl border bg-card shadow-sm">
         <div className="flex items-center justify-between px-6 py-4">
           <div className="flex items-center gap-2">
             <Database className="h-4 w-4 text-orange-500" />
             <h2 className="text-sm font-semibold uppercase tracking-wide">
-              {wizard.step === 3
-                ? "Upload kết quả Ahrefs"
-                : wizard.step === 4
-                ? "Wayback context"
-                : "Quyết định & lưu"}
+              {wizard.step === 3 ? "Upload Result" : "Wayback context"}
             </h2>
             <span className="bg-orange-100 dark:bg-orange-950 text-orange-700 dark:text-orange-300 text-xs font-bold px-2 py-0.5 rounded-full">
               {ahrefsSummary.length.toLocaleString()} target
@@ -1734,14 +1424,11 @@ export default function DomainPickerPage() {
             <p className="text-xs text-muted-foreground pt-4 pb-4 leading-relaxed">
               {wizard.step === 3 ? (
                 <>
-                  Sau khi chạy prompt Ahrefs (bước 2) và nhận lại CSV, upload tại đây. Format chấp nhận:
-                  unified 6 cột (<code className="font-mono bg-muted px-1.5 py-0.5 rounded">target_domain,checked_at,refs,rating,category,detail</code>)
-                  hoặc legacy 3 cột (<code className="font-mono bg-muted px-1.5 py-0.5 rounded">target_domain,ref_domain,domain_rating</code>).
+                  Lấy dữ liệu ref domain cho danh sách. Chọn <strong>Ahrefs</strong> (upload CSV đã có DR)
+                  hoặc <strong>DataforSEO</strong> (tự lấy ref qua API, đối sánh DR từ dữ liệu đã thu thập).
                 </>
-              ) : wizard.step === 4 ? (
-                <>Đây là bảng Ahrefs cho ngữ cảnh. Panel <strong>Wayback Machine check</strong> ở trên cho phép chạy actor để xem lịch sử content (betting/adult).</>
               ) : (
-                <>Chọn target để đánh dấu <strong>Đã mua</strong> (lưu kho + ẩn khỏi picker) hoặc <strong>Loại trừ</strong> (người khác đã mua — ẩn khỏi picker, không lưu kho).</>
+                <>Đây là bảng ref cho ngữ cảnh. Panel <strong>Wayback Machine check</strong> ở trên cho phép chạy actor để xem lịch sử content (betting/adult). Chọn target để <strong>Đã mua</strong> / <strong>Loại trừ</strong>.</>
               )}
             </p>
 
@@ -1860,26 +1547,67 @@ export default function DomainPickerPage() {
               )}
             </div>
 
+            {/* Nguồn dữ liệu: Ahrefs (CSV) | DataforSEO (API) */}
+            <div className="inline-flex rounded-md border border-border overflow-hidden mb-3 text-xs">
+              <button
+                type="button"
+                onClick={() => setResultSource("ahrefs")}
+                className={cn(
+                  "px-3 py-1.5 font-medium transition-colors",
+                  resultSource === "ahrefs" ? "bg-orange-600 text-white" : "bg-background hover:bg-muted",
+                )}
+              >
+                Ahrefs (CSV)
+              </button>
+              <button
+                type="button"
+                onClick={() => setResultSource("dataforseo")}
+                className={cn(
+                  "px-3 py-1.5 font-medium transition-colors border-l border-border",
+                  resultSource === "dataforseo" ? "bg-sky-600 text-white" : "bg-background hover:bg-muted",
+                )}
+              >
+                DataforSEO (API)
+              </button>
+            </div>
+
             <div className="flex flex-wrap items-end gap-2 mb-4">
-              <label className="cursor-pointer">
-                <input
-                  type="file"
-                  accept=".csv,text/csv"
-                  className="hidden"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) uploadAhrefsCsv(f);
-                    e.target.value = "";
-                  }}
-                />
-                <span className={cn(
-                  "inline-flex items-center gap-2 rounded-md bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 text-sm font-medium shadow-sm",
-                  ahrefsUploading && "opacity-60 pointer-events-none"
-                )}>
-                  {ahrefsUploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
-                  {ahrefsUploading ? "Đang upload..." : "Upload Ahrefs CSV"}
-                </span>
-              </label>
+              {resultSource === "ahrefs" ? (
+                <label className="cursor-pointer">
+                  <input
+                    type="file"
+                    accept=".csv,text/csv"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) uploadAhrefsCsv(f);
+                      e.target.value = "";
+                    }}
+                  />
+                  <span className={cn(
+                    "inline-flex items-center gap-2 rounded-md bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 text-sm font-medium shadow-sm",
+                    ahrefsUploading && "opacity-60 pointer-events-none"
+                  )}>
+                    {ahrefsUploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                    {ahrefsUploading ? "Đang upload..." : "Upload Ahrefs CSV"}
+                  </span>
+                </label>
+              ) : (
+                <Button
+                  size="sm"
+                  className="gap-1.5 bg-sky-600 hover:bg-sky-700 text-white"
+                  onClick={ingestDataforseo}
+                  disabled={ingestingDfs || scoredRows.length === 0}
+                  title={
+                    scoredRows.length === 0
+                      ? "Upload Spamzilla ở bước 1 trước"
+                      : `Lấy ref qua DataforSEO cho ${scoredRows.length} domain, đối sánh DR từ backlink_db`
+                  }
+                >
+                  {ingestingDfs ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Database className="h-3.5 w-3.5" />}
+                  {ingestingDfs ? "Đang chạy DataforSEO…" : `Chạy DataforSEO (${scoredRows.length})`}
+                </Button>
+              )}
               <Button
                 size="sm" variant="outline"
                 className="gap-1.5"
@@ -2159,7 +1887,7 @@ export default function DomainPickerPage() {
         </span>
         <Button
           onClick={() => dispatchWizard({ type: "advance", from: wizard.step })}
-          disabled={wizard.step === 5}
+          disabled={wizard.step === 4}
           className="gap-2"
         >
           Tiếp →
@@ -2462,23 +2190,6 @@ function Stat({ label, value, mono, accent }: { label: string; value: string; mo
       )} title={value}>
         {value}
       </p>
-    </div>
-  );
-}
-
-function NumField({ label, value, onChange, step = 1 }: {
-  label: string; value: number; onChange: (v: number) => void; step?: number;
-}) {
-  return (
-    <div>
-      <label className="block text-xs font-medium text-muted-foreground mb-1">{label}</label>
-      <Input
-        type="number"
-        value={value}
-        step={step}
-        onChange={(e) => onChange(Number(e.target.value) || 0)}
-        className="h-8 text-sm"
-      />
     </div>
   );
 }
