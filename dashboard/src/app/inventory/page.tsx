@@ -32,6 +32,26 @@ type SortKey = "domain" | "purchasePrice" | "sellPrice" | "expectedSellPrice" | 
 
 interface ToastItem { id: number; message: string; isError: boolean }
 
+// ─── Định giá theo REFS ────────────────────────────────────────────────────
+// Định giá đơn giản, minh bạch dựa trên chất lượng backlink (referring domains
+// đã lọc blacklist). Mỗi ref đóng góp theo DR vượt ngưỡng 40; tổng nhân hệ số
+// rồi kẹp trong khoảng [VALUATION_MIN, VALUATION_MAX].
+//   1 ref DR 90        → 35 + 50×0.20  = ~$45
+//   5 ref DR ~92       → 35 + 260×0.20 = ~$87
+//   8 ref DR ~95       → 35 + 440×0.20 = ~$123
+//   ≥12 ref DR cao     → kẹp $150
+//   0 ref              → $35 (giá sàn)
+export const VALUATION_MIN = 35;
+export const VALUATION_MAX = 150;
+const VALUATION_K = 0.2;
+
+export function valuateByRefs(refs: { dr: number }[]): number {
+  const raw = refs.reduce((sum, r) => sum + Math.max(0, (r.dr ?? 0) - 40), 0);
+  const price = VALUATION_MIN + raw * VALUATION_K;
+  const clamped = Math.min(VALUATION_MAX, Math.max(VALUATION_MIN, price));
+  return Math.round(clamped * 100) / 100;
+}
+
 export default function InventoryPage() {
   const [entries, setEntries] = useState<InventoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -101,6 +121,7 @@ export default function InventoryPage() {
     return m;
   }, [ahrefsSummary, blacklistSet]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [valuating, setValuating] = useState(false);
   const [sellFormOpen, setSellFormOpen] = useState(false);
   const [sellRows, setSellRows] = useState<Record<string, string>>({});
   const [sellBulkPrice, setSellBulkPrice] = useState("");
@@ -628,6 +649,71 @@ export default function InventoryPage() {
     }
   }, [editExpectedValue, patchLocal, showToast]);
 
+  // Auto-định giá theo REFS cho MỌI domain chưa có giá dự kiến và chưa bán
+  // (bỏ qua filter view, chỉ tôn trọng toggle lưu trữ). Set expectedSellPrice
+  // = valuateByRefs(refs), kẹp [35, 150].
+  const bulkValuate = useCallback(async () => {
+    const candidates = visibleEntries.filter(
+      (e) => e.expectedSellPrice == null && e.sellPrice == null,
+    );
+    if (candidates.length === 0) {
+      showToast("Không có domain nào cần định giá (đều đã có giá dự kiến hoặc đã bán)", true);
+      return;
+    }
+    setValuating(true);
+    try {
+      const priced = candidates.map((e) => ({
+        domain: e.domain,
+        price: valuateByRefs(refsByDomain.get(e.domain) ?? []),
+      }));
+      // Fan-out PATCH với concurrency 8 — đây là API nội bộ nên nhanh.
+      const CONCURRENCY = 8;
+      let cursor = 0;
+      const results: PromiseSettledResult<unknown>[] = new Array(priced.length);
+      const worker = async () => {
+        while (cursor < priced.length) {
+          const i = cursor++;
+          const { domain, price } = priced[i];
+          try {
+            const res = await fetch(`/api/inventory/${encodeURIComponent(domain)}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ expectedSellPrice: price }),
+            });
+            if (!res.ok) throw new Error((await res.json()).error ?? "Lỗi");
+            results[i] = { status: "fulfilled", value: price };
+          } catch (e) {
+            results[i] = { status: "rejected", reason: e };
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, priced.length) }, () => worker()));
+
+      // Patch local state cho các domain thành công.
+      const okSet = new Set<string>();
+      priced.forEach((p, i) => {
+        if (results[i]?.status === "fulfilled") okSet.add(p.domain);
+      });
+      setEntries((prev) =>
+        prev.map((e) => {
+          if (!okSet.has(e.domain)) return e;
+          const hit = priced.find((p) => p.domain === e.domain);
+          return hit ? { ...e, expectedSellPrice: hit.price } : e;
+        }),
+      );
+      const failed = priced.length - okSet.size;
+      const total = priced.reduce((a, p) => (okSet.has(p.domain) ? a + p.price : a), 0);
+      showToast(
+        failed === 0
+          ? `✅ Đã định giá ${okSet.size} domain · tổng tiềm năng $${total.toFixed(2)}`
+          : `⚠️ Định giá ${okSet.size}/${priced.length} domain (${failed} lỗi)`,
+        failed > 0,
+      );
+    } finally {
+      setValuating(false);
+    }
+  }, [visibleEntries, refsByDomain, showToast]);
+
   // Bulk: sell all selected domains @ their expected price (skips those without)
   const bulkSellAtExpected = useCallback(async () => {
     if (selected.size === 0) return;
@@ -1134,6 +1220,26 @@ export default function InventoryPage() {
             {inFlightWaybackTargets.size} đang chạy
           </span>
         )}
+        {(() => {
+          const toValuate = visibleEntries.filter((e) => e.expectedSellPrice == null && e.sellPrice == null).length;
+          return (
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5 text-indigo-700 border-indigo-400/60 hover:bg-indigo-50 dark:hover:bg-indigo-950"
+              onClick={bulkValuate}
+              disabled={valuating || toValuate === 0}
+              title={
+                toValuate === 0
+                  ? "Mọi domain đều đã có giá dự kiến (hoặc đã bán)"
+                  : `Tự định giá ${toValuate} domain chưa có giá dự kiến dựa trên REFS (khoảng $${VALUATION_MIN}–$${VALUATION_MAX})`
+              }
+            >
+              {valuating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <TrendingUp className="h-3.5 w-3.5" />}
+              {valuating ? "Đang định giá…" : `Định giá (${toValuate})`}
+            </Button>
+          );
+        })()}
         <Button
           size="sm"
           variant="outline"
