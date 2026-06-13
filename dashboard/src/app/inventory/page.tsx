@@ -36,16 +36,50 @@ interface ToastItem { id: number; message: string; isError: boolean }
 // Định giá đơn giản, minh bạch dựa trên chất lượng backlink (referring domains
 // đã lọc blacklist). Mỗi ref đóng góp theo DR vượt ngưỡng 40; tổng nhân hệ số
 // rồi kẹp trong khoảng [VALUATION_MIN, VALUATION_MAX].
-//   1 ref DR 90        → 35 + 50×0.20  = ~$45
-//   5 ref DR ~92       → 35 + 260×0.20 = ~$87
-//   8 ref DR ~95       → 35 + 440×0.20 = ~$123
-//   ≥12 ref DR cao     → kẹp $150
-//   0 ref              → $35 (giá sàn)
+//   1 ref DR 90 thường  → 35 + 50×0.20  = ~$45
+//   1 ref wikipedia.org → 35 + 200×0.20 = ~$75  (ưu tiên authority)
+//   5 ref DR ~92        → 35 + 260×0.20 = ~$87
+//   ≥12 ref / vài authority → kẹp $150
+//   0 ref               → $35 (giá sàn)
 // Phần lẻ (.1–.9) suy ra từ tên domain để giá trông tự nhiên, không tròn (.0),
 // ổn định mỗi domain — vd 98.7, 123.4. Whole-dollar phản ánh sức mạnh backlink.
 export const VALUATION_MIN = 35;
 export const VALUATION_MAX = 150;
 const VALUATION_K = 0.2;
+
+// Ref domain authority "mạnh" — đóng góp điểm cố định cao hơn nhiều so với
+// DR thô, ưu tiên backlink chất lượng thật. 1 ref ~200đ → +$40 (≈$75).
+const PREMIUM_REFS: Record<string, number> = {
+  "wikipedia.org": 200,
+  "wikimedia.org": 170,
+  "nytimes.com": 190,
+  "bbc.com": 190,
+  "bbc.co.uk": 190,
+  "theguardian.com": 180,
+  "forbes.com": 170,
+  "cnn.com": 170,
+  "reuters.com": 180,
+  "bloomberg.com": 170,
+  "apple.com": 180,
+  "microsoft.com": 180,
+  "github.com": 160,
+  "mozilla.org": 160,
+  "who.int": 190,
+  "un.org": 190,
+  "europa.eu": 180,
+  "imdb.com": 150,
+  "amazon.com": 160,
+  "youtube.com": 150,
+};
+
+// Điểm 1 ref: ưu tiên list authority → TLD .gov/.edu → còn lại theo DR thô.
+function refPoints(domain: string | undefined, dr: number): number {
+  const d = (domain ?? "").toLowerCase().trim();
+  if (d && PREMIUM_REFS[d] != null) return PREMIUM_REFS[d];
+  if (/\.(gov|edu|mil)(\.[a-z]{2,3})?$/.test(d)) return 150; // cơ quan/đại học
+  if (/\.(ac\.[a-z]{2})$/.test(d)) return 150;               // academic (ac.uk, ...)
+  return Math.max(0, (dr ?? 0) - 40);
+}
 
 function hashStr(s: string): number {
   let h = 0;
@@ -53,9 +87,9 @@ function hashStr(s: string): number {
   return h;
 }
 
-export function valuateByRefs(refs: { dr: number }[], domain = ""): number {
-  const raw = refs.reduce((sum, r) => sum + Math.max(0, (r.dr ?? 0) - 40), 0);
-  const base = VALUATION_MIN + raw * VALUATION_K;
+export function valuateByRefs(refs: { domain?: string; dr: number }[], domain = ""): number {
+  const points = refs.reduce((sum, r) => sum + refPoints(r.domain, r.dr), 0);
+  const base = VALUATION_MIN + points * VALUATION_K;
   // Whole dollars kẹp [MIN, MAX-1] để cộng phần lẻ vẫn ≤ MAX và ≥ MIN.
   const whole = Math.min(VALUATION_MAX - 1, Math.max(VALUATION_MIN, Math.floor(base)));
   const tenths = (hashStr(domain) % 9) + 1; // 1..9 → không bao giờ .0
