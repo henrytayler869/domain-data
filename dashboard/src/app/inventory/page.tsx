@@ -41,15 +41,25 @@ interface ToastItem { id: number; message: string; isError: boolean }
 //   8 ref DR ~95       → 35 + 440×0.20 = ~$123
 //   ≥12 ref DR cao     → kẹp $150
 //   0 ref              → $35 (giá sàn)
+// Phần lẻ (.1–.9) suy ra từ tên domain để giá trông tự nhiên, không tròn (.0),
+// ổn định mỗi domain — vd 98.7, 123.4. Whole-dollar phản ánh sức mạnh backlink.
 export const VALUATION_MIN = 35;
 export const VALUATION_MAX = 150;
 const VALUATION_K = 0.2;
 
-export function valuateByRefs(refs: { dr: number }[]): number {
+function hashStr(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h;
+}
+
+export function valuateByRefs(refs: { dr: number }[], domain = ""): number {
   const raw = refs.reduce((sum, r) => sum + Math.max(0, (r.dr ?? 0) - 40), 0);
-  const price = VALUATION_MIN + raw * VALUATION_K;
-  const clamped = Math.min(VALUATION_MAX, Math.max(VALUATION_MIN, price));
-  return Math.round(clamped * 100) / 100;
+  const base = VALUATION_MIN + raw * VALUATION_K;
+  // Whole dollars kẹp [MIN, MAX-1] để cộng phần lẻ vẫn ≤ MAX và ≥ MIN.
+  const whole = Math.min(VALUATION_MAX - 1, Math.max(VALUATION_MIN, Math.floor(base)));
+  const tenths = (hashStr(domain) % 9) + 1; // 1..9 → không bao giờ .0
+  return Math.round((whole + tenths / 10) * 100) / 100;
 }
 
 export default function InventoryPage() {
@@ -664,7 +674,7 @@ export default function InventoryPage() {
     try {
       const priced = candidates.map((e) => ({
         domain: e.domain,
-        price: valuateByRefs(refsByDomain.get(e.domain) ?? []),
+        price: valuateByRefs(refsByDomain.get(e.domain) ?? [], e.domain),
       }));
       // Fan-out PATCH với concurrency 8 — đây là API nội bộ nên nhanh.
       const CONCURRENCY = 8;
