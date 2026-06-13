@@ -693,15 +693,23 @@ export default function InventoryPage() {
     }
   }, [editExpectedValue, patchLocal, showToast]);
 
-  // Auto-định giá theo REFS cho MỌI domain chưa có giá dự kiến và chưa bán
-  // (bỏ qua filter view, chỉ tôn trọng toggle lưu trữ). Set expectedSellPrice
-  // = valuateByRefs(refs), kẹp [35, 150].
+  // Auto-định giá (lại) theo REFS cho MỌI domain CHƯA BÁN — bao gồm cả domain
+  // đã có giá dự kiến (ghi đè). Bỏ qua filter view, chỉ tôn trọng toggle lưu
+  // trữ. Set expectedSellPrice = valuateByRefs(refs), kẹp [35, 150].
   const bulkValuate = useCallback(async () => {
-    const candidates = visibleEntries.filter(
-      (e) => e.expectedSellPrice == null && e.sellPrice == null,
-    );
+    const candidates = visibleEntries.filter((e) => e.sellPrice == null);
     if (candidates.length === 0) {
-      showToast("Không có domain nào cần định giá (đều đã có giá dự kiến hoặc đã bán)", true);
+      showToast("Không có domain nào để định giá (đều đã bán)", true);
+      return;
+    }
+    const withExisting = candidates.filter((e) => e.expectedSellPrice != null).length;
+    if (
+      withExisting > 0 &&
+      !confirm(
+        `Định giá lại ${candidates.length} domain chưa bán?\n` +
+        `${withExisting} domain đã có giá dự kiến sẽ bị GHI ĐÈ bằng giá tính từ REFS.`,
+      )
+    ) {
       return;
     }
     setValuating(true);
@@ -1265,7 +1273,7 @@ export default function InventoryPage() {
           </span>
         )}
         {(() => {
-          const toValuate = visibleEntries.filter((e) => e.expectedSellPrice == null && e.sellPrice == null).length;
+          const toValuate = visibleEntries.filter((e) => e.sellPrice == null).length;
           return (
             <Button
               size="sm"
@@ -1275,8 +1283,8 @@ export default function InventoryPage() {
               disabled={valuating || toValuate === 0}
               title={
                 toValuate === 0
-                  ? "Mọi domain đều đã có giá dự kiến (hoặc đã bán)"
-                  : `Tự định giá ${toValuate} domain chưa có giá dự kiến dựa trên REFS (khoảng $${VALUATION_MIN}–$${VALUATION_MAX})`
+                  ? "Không có domain chưa bán để định giá"
+                  : `Tự định giá (lại) ${toValuate} domain chưa bán dựa trên REFS (khoảng $${VALUATION_MIN}–$${VALUATION_MAX}); ghi đè giá dự kiến đã có`
               }
             >
               {valuating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <TrendingUp className="h-3.5 w-3.5" />}
