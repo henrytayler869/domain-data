@@ -693,31 +693,23 @@ export default function InventoryPage() {
     }
   }, [editExpectedValue, patchLocal, showToast]);
 
-  // Auto-định giá (lại) theo REFS, kẹp [35, 150]. Set expectedSellPrice.
-  // Phạm vi: nếu có domain được CHỌN → chỉ định giá selection (chưa bán);
-  // nếu không chọn gì → định giá MỌI domain chưa bán đang hiển thị.
+  // Auto-định giá (lại) theo REFS, kẹp [35, 150]. CHỈ áp cho domain ĐÃ CHỌN
+  // (chưa bán). Không chọn gì → không làm gì (nút disabled).
   const bulkValuate = useCallback(async () => {
-    const hasSelection = selected.size > 0;
-    const candidates = (
-      hasSelection
-        ? visibleEntries.filter((e) => selected.has(e.domain))
-        : visibleEntries
-    ).filter((e) => e.sellPrice == null);
+    if (selected.size === 0) {
+      showToast("Chọn domain trước khi định giá", true);
+      return;
+    }
+    const candidates = visibleEntries.filter((e) => selected.has(e.domain) && e.sellPrice == null);
     if (candidates.length === 0) {
-      showToast(
-        hasSelection
-          ? "Domain đã chọn đều đã bán — không có gì để định giá"
-          : "Không có domain nào để định giá (đều đã bán)",
-        true,
-      );
+      showToast("Domain đã chọn đều đã bán — không có gì để định giá", true);
       return;
     }
     const withExisting = candidates.filter((e) => e.expectedSellPrice != null).length;
     if (
       withExisting > 0 &&
       !confirm(
-        `Định giá lại ${candidates.length} domain chưa bán` +
-        `${hasSelection ? " (đã chọn)" : ""}?\n` +
+        `Định giá lại ${candidates.length} domain đã chọn (chưa bán)?\n` +
         `${withExisting} domain đã có giá dự kiến sẽ bị GHI ĐÈ bằng giá tính từ REFS.`,
       )
     ) {
@@ -1284,11 +1276,7 @@ export default function InventoryPage() {
           </span>
         )}
         {(() => {
-          const hasSelection = selected.size > 0;
-          const scope = hasSelection
-            ? visibleEntries.filter((e) => selected.has(e.domain))
-            : visibleEntries;
-          const toValuate = scope.filter((e) => e.sellPrice == null).length;
+          const toValuate = visibleEntries.filter((e) => selected.has(e.domain) && e.sellPrice == null).length;
           return (
             <Button
               size="sm"
@@ -1298,10 +1286,8 @@ export default function InventoryPage() {
               disabled={valuating || toValuate === 0}
               title={
                 toValuate === 0
-                  ? "Không có domain chưa bán để định giá"
-                  : hasSelection
-                    ? `Định giá ${toValuate} domain đã chọn (chưa bán) dựa trên REFS ($${VALUATION_MIN}–$${VALUATION_MAX}); ghi đè giá đã có`
-                    : `Tự định giá (lại) toàn bộ ${toValuate} domain chưa bán dựa trên REFS ($${VALUATION_MIN}–$${VALUATION_MAX}); ghi đè giá đã có`
+                  ? "Chọn domain (chưa bán) để định giá"
+                  : `Định giá ${toValuate} domain đã chọn dựa trên REFS ($${VALUATION_MIN}–$${VALUATION_MAX}); ghi đè giá đã có`
               }
             >
               {valuating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <TrendingUp className="h-3.5 w-3.5" />}
