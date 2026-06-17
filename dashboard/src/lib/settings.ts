@@ -1,66 +1,96 @@
 /**
- * Dashboard Settings — stored in Apify KV Store ("dashboard-settings").
+ * Dashboard Settings — stored in Supabase (table: app_settings, key="dataforseo").
  * Passwords/API keys are never returned to the client after being saved.
+ *
+ * Migrated off Apify KV Store. A one-time lazy fallback still reads the old
+ * Apify KV record if Supabase is empty, and copies it into Supabase so the
+ * credential survives the move without the user re-entering it. That legacy
+ * fallback can be deleted once everyone has migrated.
  */
 
-const APIFY_TOKEN = process.env.APIFY_TOKEN!;
-const STORE_NAME = "dashboard-settings";
-const STORE_KEY = "SETTINGS";
-const APIFY_BASE = "https://api.apify.com/v2";
+import { supabase } from "./supabase";
+
+const TABLE = "app_settings";
+const KEY = "dataforseo";
 
 export interface Settings {
   dataforseoLogin: string;
   dataforseoPassword: string; // stored server-side only
 }
 
-let _storeId: string | null = null;
+const envDefaults = (): Settings => ({
+  dataforseoLogin: process.env.DATAFORSEO_LOGIN ?? "",
+  dataforseoPassword: process.env.DATAFORSEO_PASSWORD ?? "",
+});
 
-async function getStoreId(): Promise<string> {
-  if (_storeId) return _storeId;
+async function readFromSupabase(): Promise<Settings | null> {
+  const sb = supabase();
+  const { data, error } = await sb.from(TABLE).select("value").eq("key", KEY).maybeSingle();
+  if (error) throw new Error(error.message);
+  const v = (data?.value ?? null) as Partial<Settings> | null;
+  if (!v || (!v.dataforseoLogin && !v.dataforseoPassword)) return null;
+  return {
+    dataforseoLogin: v.dataforseoLogin ?? "",
+    dataforseoPassword: v.dataforseoPassword ?? "",
+  };
+}
 
-  const r = await fetch(
-    `${APIFY_BASE}/key-value-stores?token=${APIFY_TOKEN}&limit=100`,
-    { cache: "no-store" }
-  );
-  const data = await r.json();
-  const match = (data.data?.items ?? []).find(
-    (s: { name: string; id: string }) => s.name === STORE_NAME
-  );
-  if (match) {
-    _storeId = match.id as string;
-    return _storeId!;
+async function writeToSupabase(s: Settings): Promise<void> {
+  const sb = supabase();
+  const { error } = await sb
+    .from(TABLE)
+    .upsert({ key: KEY, value: s, updated_at: new Date().toISOString() }, { onConflict: "key" });
+  if (error) throw new Error(error.message);
+}
+
+// ─── Legacy: one-time read from the old Apify KV store ──────────────────────
+const APIFY_TOKEN = process.env.APIFY_TOKEN;
+const LEGACY_STORE_NAME = "dashboard-settings";
+const LEGACY_STORE_KEY = "SETTINGS";
+const APIFY_BASE = "https://api.apify.com/v2";
+
+async function readLegacyApify(): Promise<Settings | null> {
+  if (!APIFY_TOKEN) return null;
+  try {
+    const r = await fetch(`${APIFY_BASE}/key-value-stores?token=${APIFY_TOKEN}&limit=100`, { cache: "no-store" });
+    const data = await r.json();
+    const match = (data.data?.items ?? []).find(
+      (s: { name: string; id: string }) => s.name === LEGACY_STORE_NAME,
+    );
+    if (!match) return null;
+    const rr = await fetch(
+      `${APIFY_BASE}/key-value-stores/${match.id}/records/${LEGACY_STORE_KEY}?token=${APIFY_TOKEN}`,
+      { cache: "no-store" },
+    );
+    if (!rr.ok) return null;
+    const v = await rr.json();
+    if (!v?.dataforseoLogin && !v?.dataforseoPassword) return null;
+    return {
+      dataforseoLogin: v.dataforseoLogin ?? "",
+      dataforseoPassword: v.dataforseoPassword ?? "",
+    };
+  } catch {
+    return null;
   }
-
-  const cr = await fetch(
-    `${APIFY_BASE}/key-value-stores?token=${APIFY_TOKEN}&name=${STORE_NAME}`,
-    { method: "POST" }
-  );
-  const cdata = await cr.json();
-  _storeId = cdata.data.id as string;
-  return _storeId!;
 }
 
 export async function readSettings(): Promise<Settings> {
-  const envDefaults: Settings = {
-    dataforseoLogin: process.env.DATAFORSEO_LOGIN ?? "",
-    dataforseoPassword: process.env.DATAFORSEO_PASSWORD ?? "",
-  };
-
+  // 1) Supabase (nguồn chính). Bọc try riêng để nếu bảng chưa tồn tại / lỗi
+  //    thì vẫn rơi xuống legacy fallback chứ không gãy.
   try {
-    const storeId = await getStoreId();
-    const r = await fetch(
-      `${APIFY_BASE}/key-value-stores/${storeId}/records/${STORE_KEY}?token=${APIFY_TOKEN}`,
-      { cache: "no-store" }
-    );
-    if (r.status === 404) return envDefaults;
-    const data = await r.json();
-    return {
-      dataforseoLogin: data.dataforseoLogin || envDefaults.dataforseoLogin,
-      dataforseoPassword: data.dataforseoPassword || envDefaults.dataforseoPassword,
-    };
-  } catch {
-    return envDefaults;
+    const fromSb = await readFromSupabase();
+    if (fromSb) return fromSb;
+  } catch { /* table missing or transient error — fall through */ }
+
+  // 2) Legacy Apify KV → trả về + auto-migrate sang Supabase (1 lần).
+  const legacy = await readLegacyApify();
+  if (legacy) {
+    try { await writeToSupabase(legacy); } catch { /* bảng có thể chưa tạo — bỏ qua */ }
+    return legacy;
   }
+
+  // 3) Env fallback.
+  return envDefaults();
 }
 
 export async function writeSettings(settings: Partial<Settings>): Promise<void> {
@@ -72,14 +102,5 @@ export async function writeSettings(settings: Partial<Settings>): Promise<void> 
         ? settings.dataforseoPassword
         : current.dataforseoPassword,
   };
-
-  const storeId = await getStoreId();
-  await fetch(
-    `${APIFY_BASE}/key-value-stores/${storeId}/records/${STORE_KEY}?token=${APIFY_TOKEN}`,
-    {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(merged),
-    }
-  );
+  await writeToSupabase(merged);
 }

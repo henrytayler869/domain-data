@@ -1,3 +1,12 @@
+-- ─── App Settings (key → JSON) ───────────────────────────────────────────────
+-- Lưu config/credentials (vd DataforSEO login/password). Trước đây ở Apify KV,
+-- nay chuyển sang Supabase cho nhất quán. Service role bypass RLS nên an toàn.
+create table if not exists app_settings (
+  key        text primary key,
+  value      jsonb not null,
+  updated_at timestamptz default now()
+);
+
 -- ─── Domain Picker DB ────────────────────────────────────────────────────────
 create table if not exists picker_domains (
   domain        text primary key,
