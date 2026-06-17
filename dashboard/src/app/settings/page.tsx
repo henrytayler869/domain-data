@@ -142,7 +142,7 @@ export default function SettingsPage() {
           <div>
             <h2 className="text-sm font-semibold">DataforSEO API</h2>
             <p className="text-xs text-muted-foreground">
-              Dùng cho Aged Domain — Option 1 (Backlink DB)
+              Dùng cho Aged Domain (Backlink DB) + Domain Picker (Upload Result → DataforSEO)
             </p>
           </div>
           {saved && (
