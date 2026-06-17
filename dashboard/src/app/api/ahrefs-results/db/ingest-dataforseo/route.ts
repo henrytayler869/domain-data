@@ -53,6 +53,9 @@ export async function POST(request: NextRequest) {
     const drMap = new Map(backlinks.map((e) => [e.domain.toLowerCase(), e.dr]));
 
     const refsRows: { targetDomain: string; refDomain: string; domainRating: number }[] = [];
+    // Ref domain CHƯA có trong backlink_db (DR unknown) → gom lại để user
+    // export, kiểm tra DR thủ công rồi upload lại. Lưu max backlinks để sắp xếp.
+    const unmatchedMap = new Map<string, number>();
     let totalRefsSeen = 0;
     let totalMatched = 0;
     let dfsCost = 0;
@@ -103,7 +106,14 @@ export async function POST(request: NextRequest) {
           totalRefsSeen++;
           const ref = (it.domain ?? "").toLowerCase().trim();
           const dr = drMap.get(ref);
-          if (dr == null) continue; // ref không có trong dữ liệu DR đã thu thập → bỏ
+          if (dr == null) {
+            // Chưa có DR — gom để export (giữ backlinks lớn nhất để ưu tiên).
+            if (ref) {
+              const prev = unmatchedMap.get(ref) ?? 0;
+              if ((it.backlinks ?? 0) > prev) unmatchedMap.set(ref, it.backlinks ?? 0);
+            }
+            continue;
+          }
           totalMatched++;
           refsRows.push({ targetDomain: target, refDomain: ref, domainRating: dr });
         }
@@ -114,12 +124,21 @@ export async function POST(request: NextRequest) {
       ? await upsertRows(refsRows)
       : { added: 0, updated: 0, total: 0, uniqueTargets: 0 };
 
+    // Unique unmatched ref domain, sắp xếp backlinks giảm dần, cap 5000 để
+    // payload gọn. Đây là list user export → check DR thủ công → upload lại.
+    const unmatchedRefs = [...unmatchedMap.entries()]
+      .map(([domain, backlinks]) => ({ domain, backlinks }))
+      .sort((a, b) => b.backlinks - a.backlinks)
+      .slice(0, 5000);
+
     return NextResponse.json({
       ok: true,
       targetsRequested: targets.length,
       refsSeen: totalRefsSeen,
       refsMatched: totalMatched,
       refsUnmatched: totalRefsSeen - totalMatched,
+      unmatchedUnique: unmatchedMap.size,
+      unmatchedRefs,
       refs: refsResult,
       dataforseoCost: dfsCost,
       errors,

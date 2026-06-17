@@ -108,6 +108,9 @@ export default function DomainPickerPage() {
   // Nguồn dữ liệu ref ở bước "Upload Result": Ahrefs (CSV) hoặc DataforSEO (API).
   const [resultSource, setResultSource] = useState<"ahrefs" | "dataforseo">("ahrefs");
   const [ingestingDfs, setIngestingDfs] = useState(false);
+  // Ref domain DataforSEO trả về nhưng chưa có DR trong backlink_db — export
+  // để user check DR thủ công rồi upload lại.
+  const [dfsUnmatched, setDfsUnmatched] = useState<{ domain: string; backlinks: number }[]>([]);
   const [excludeChecked, setExcludeChecked] = useState(true);
   const [copiedAhrefsTargets, setCopiedAhrefsTargets] = useState(false);
   const [applyRefBlacklist, setApplyRefBlacklist] = useState(true);
@@ -571,10 +574,13 @@ export default function DomainPickerPage() {
       // Các target vừa ingest luôn hiển thị (vượt qua viewClearedAt bypass).
       setJustUploadedTargets(new Set(targets.map((t) => t.toLowerCase())));
       await loadAhrefs();
+      // Lưu ref chưa có DR để export.
+      setDfsUnmatched(Array.isArray(data.unmatchedRefs) ? data.unmatchedRefs : []);
       const refStat = data.refs;
       const parts = [`${data.targetsRequested} target`];
       if (refStat?.total) parts.push(`${refStat.total} ref rows khớp DR`);
       parts.push(`${data.refsMatched}/${data.refsSeen} ref match`);
+      if (data.unmatchedUnique) parts.push(`${data.unmatchedUnique} ref chưa có DR`);
       if (data.dataforseoCost) parts.push(`$${Number(data.dataforseoCost).toFixed(4)} DfS`);
       showToast(`✅ DataforSEO OK · ${parts.join(" · ")}`);
       if (Array.isArray(data.errors) && data.errors.length) {
@@ -587,6 +593,25 @@ export default function DomainPickerPage() {
       setIngestingDfs(false);
     }
   }, [scoredRows, loadAhrefs, showToast]);
+
+  // Export ref domain DataforSEO chưa có DR → CSV "domain,dr,backlinks".
+  // User điền cột dr rồi upload lại ở Aged Domain → Backlink DB → Import CSV
+  // (đọc domain,dr; cột backlinks bỏ qua). Sau đó re-run DataforSEO sẽ match.
+  const exportUnmatchedRefs = useCallback(() => {
+    if (dfsUnmatched.length === 0) return;
+    const header = "domain,dr,backlinks";
+    const rows = dfsUnmatched.map((r) => `${r.domain},,${r.backlinks}`);
+    const csv = [header, ...rows].join("\n");
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    a.download = `dataforseo-refs-no-dr-${ts}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast(`✅ Export ${dfsUnmatched.length} ref chưa có DR → điền cột dr rồi Import ở Aged Domain`);
+  }, [dfsUnmatched, showToast]);
 
   const removeAhrefsTarget = useCallback(async (domain: string) => {
     await fetch(`/api/ahrefs-results/db/${encodeURIComponent(domain)}`, { method: "DELETE" });
@@ -1606,6 +1631,18 @@ export default function DomainPickerPage() {
                 >
                   {ingestingDfs ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Database className="h-3.5 w-3.5" />}
                   {ingestingDfs ? "Đang chạy DataforSEO…" : `Chạy DataforSEO (${scoredRows.length})`}
+                </Button>
+              )}
+              {resultSource === "dataforseo" && dfsUnmatched.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5 text-amber-700 border-amber-400/60 hover:bg-amber-50 dark:hover:bg-amber-950"
+                  onClick={exportUnmatchedRefs}
+                  title="Export ref domain chưa có DR (CSV domain,dr,backlinks) — điền DR rồi Import lại ở Aged Domain → Backlink DB"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Export ref chưa có DR ({dfsUnmatched.length})
                 </Button>
               )}
               <Button
