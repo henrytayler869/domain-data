@@ -11,6 +11,20 @@ interface DfsReferringDomain {
   backlinks: number;
 }
 
+// Gộp subdomain về root domain để khớp backlink_db (lưu root) + export gọn.
+//   svnesterov.blogspot.com → blogspot.com
+//   sub.example.co.uk       → example.co.uk (giữ 3 nhãn cho ccTLD 2 phần)
+const MULTI_SLD = new Set(["co", "com", "net", "org", "gov", "edu", "ac", "or", "ne", "go", "mil"]);
+function rootDomain(host: string): string {
+  const h = host.toLowerCase().trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/:\d+$/, "");
+  const parts = h.split(".").filter(Boolean);
+  if (parts.length <= 2) return h;
+  const last = parts[parts.length - 1];
+  const sld = parts[parts.length - 2];
+  if (last.length === 2 && MULTI_SLD.has(sld)) return parts.slice(-3).join(".");
+  return parts.slice(-2).join(".");
+}
+
 /**
  * POST /api/ahrefs-results/db/ingest-dataforseo
  * Body: { targets: string[], limitPerDomain?: number }
@@ -104,7 +118,9 @@ export async function POST(request: NextRequest) {
           const items = task.result[0].items ?? [];
           for (const it of items) {
             totalRefsSeen++;
-            const ref = (it.domain ?? "").toLowerCase().trim();
+            // Gộp subdomain về root để khớp backlink_db (svnesterov.blogspot.com
+            // → blogspot.com) + export gọn theo root.
+            const ref = rootDomain(it.domain ?? "");
             if (!ref) continue;
             const dr = drMap.get(ref);
             if (dr == null) {
