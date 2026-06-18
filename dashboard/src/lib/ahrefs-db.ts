@@ -207,13 +207,14 @@ export async function listCheckedTargets(): Promise<string[]> {
     offset += PAGE;
   }
 
-  // 2) Manually-excluded targets that may have no ref rows at all.
+  // 2) Mọi target có assessment row đều coi là "đã check" — gồm: target bị
+  //    loại trừ thủ công (excluded_at), target được rate qua Ahrefs, và target
+  //    đã query DataforSEO (marker "DataforSEO checked", kể cả 0 ref khớp).
   offset = 0;
   while (true) {
     const { data, error } = await sb
       .from(ASSESS_TABLE)
       .select("target_domain")
-      .not("excluded_at", "is", null)
       .range(offset, offset + PAGE - 1);
     if (error) throw new Error(error.message);
     if (!data || data.length === 0) break;

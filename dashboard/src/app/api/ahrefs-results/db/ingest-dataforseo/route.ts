@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readSettings } from "@/lib/settings";
 import { readDb as readBacklinks } from "@/lib/backlink-db";
-import { upsertRows } from "@/lib/ahrefs-db";
+import { upsertRows, upsertAssessments } from "@/lib/ahrefs-db";
 
 const DATAFORSEO_ENDPOINT =
   "https://api.dataforseo.com/v3/backlinks/referring_domains/live";
@@ -56,6 +56,9 @@ export async function POST(request: NextRequest) {
     // Ref domain CHƯA có trong backlink_db (DR unknown) → gom lại để user
     // export, kiểm tra DR thủ công rồi upload lại. Lưu max backlinks để sắp xếp.
     const unmatchedMap = new Map<string, number>();
+    // Mọi target đã query DataforSEO thành công → đánh dấu "đã check" (kể cả
+    // 0 ref khớp) để lần upload Spamzilla sau loại chúng ra.
+    const processedTargets = new Set<string>();
     let totalRefsSeen = 0;
     let totalMatched = 0;
     let dfsCost = 0;
@@ -101,6 +104,7 @@ export async function POST(request: NextRequest) {
         const target = (task.data?.target ?? "").toLowerCase();
         if (!target) continue;
         if (task.status_code !== 20000 || !task.result?.[0]) continue;
+        processedTargets.add(target); // query thành công → đã check
         const items = task.result[0].items ?? [];
         for (const it of items) {
           totalRefsSeen++;
@@ -123,6 +127,20 @@ export async function POST(request: NextRequest) {
     const refsResult = refsRows.length > 0
       ? await upsertRows(refsRows)
       : { added: 0, updated: 0, total: 0, uniqueTargets: 0 };
+
+    // Đánh dấu mọi target đã query là "đã check" (assessment row, không set
+    // excluded_at) → listCheckedTargets nhận diện, kể cả target 0 ref khớp.
+    if (processedTargets.size > 0) {
+      await upsertAssessments(
+        [...processedTargets].map((target) => ({
+          targetDomain: target,
+          rating: null,
+          category: null,
+          detail: "DataforSEO checked",
+          excludedAt: null,
+        })),
+      );
+    }
 
     // Unique unmatched ref domain, sắp xếp backlinks giảm dần, cap 5000 để
     // payload gọn. Đây là list user export → check DR thủ công → upload lại.

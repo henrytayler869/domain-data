@@ -1237,7 +1237,7 @@ export default function DomainPickerPage() {
                   variant="secondary"
                   className="text-xs bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
                 >
-                  ⊘ Excluded {excludedCount.toLocaleString()} đã check Ahrefs
+                  ⊘ Excluded {excludedCount.toLocaleString()} đã check (Ahrefs/DataforSEO)
                 </Badge>
               )}
               <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none">
@@ -1247,7 +1247,7 @@ export default function DomainPickerPage() {
                   onChange={(e) => setExcludeChecked(e.target.checked)}
                   className="rounded"
                 />
-                <span className="text-muted-foreground">Loại domain đã check Ahrefs</span>
+                <span className="text-muted-foreground">Loại domain đã check (Ahrefs/DataforSEO)</span>
               </label>
               {step2AvailableSources.length > 0 && (
                 <select
