@@ -59,11 +59,13 @@ export async function POST(request: NextRequest) {
     );
 
     // Build tasks — one per domain
-    // Sort by backlinks_count desc so we get the most-linked referring domains first
+    // Sort by backlinks desc so we get the most-linked referring domains first.
+    // Field is "backlinks" — "backlinks_count" returns 40501 Invalid Field and
+    // the task fails silently (0 items).
     const tasks = normalizedDomains.map((domain) => ({
       target: domain,
       limit: Math.min(limitPerDomain, 1000),
-      order_by: ["backlinks_count,desc"],
+      order_by: ["backlinks,desc"],
     }));
 
     // ── Call DataforSEO (all domains in one batch request) ─────────────────────

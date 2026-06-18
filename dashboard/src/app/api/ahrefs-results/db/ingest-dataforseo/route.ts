@@ -64,65 +64,64 @@ export async function POST(request: NextRequest) {
     let dfsCost = 0;
     const errors: string[] = [];
 
-    // Batch targets (DataforSEO nhận array tasks) — 100/request, tuần tự.
-    const BATCH = 100;
-    for (let i = 0; i < targets.length; i += BATCH) {
-      const slice = targets.slice(i, i + BATCH);
-      const tasks = slice.map((domain) => ({
-        target: domain,
-        limit: limitPerDomain,
-        order_by: ["backlinks_count,desc"],
-      }));
-      let dfsData: {
-        cost?: number;
-        tasks?: {
-          status_code: number;
-          status_message: string;
-          data?: { target?: string };
-          result?: { items?: DfsReferringDomain[] }[];
-        }[];
-      };
-      try {
-        const res = await fetch(DATAFORSEO_ENDPOINT, {
-          method: "POST",
-          headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json" },
-          body: JSON.stringify(tasks),
-          signal: AbortSignal.timeout(120_000),
-        });
-        if (!res.ok) {
-          errors.push(`DataforSEO HTTP ${res.status} (batch ${i / BATCH + 1})`);
-          continue;
-        }
-        dfsData = await res.json();
-      } catch (e) {
-        errors.push(`Batch ${i / BATCH + 1}: ${e instanceof Error ? e.message : "fetch error"}`);
-        continue;
-      }
-      dfsCost += dfsData.cost ?? 0;
-
-      for (const task of dfsData.tasks ?? []) {
-        const target = (task.data?.target ?? "").toLowerCase();
-        if (!target) continue;
-        if (task.status_code !== 20000 || !task.result?.[0]) continue;
-        processedTargets.add(target); // query thành công → đã check
-        const items = task.result[0].items ?? [];
-        for (const it of items) {
-          totalRefsSeen++;
-          const ref = (it.domain ?? "").toLowerCase().trim();
-          const dr = drMap.get(ref);
-          if (dr == null) {
-            // Chưa có DR — gom để export (giữ backlinks lớn nhất để ưu tiên).
-            if (ref) {
-              const prev = unmatchedMap.get(ref) ?? 0;
-              if ((it.backlinks ?? 0) > prev) unmatchedMap.set(ref, it.backlinks ?? 0);
+    // referring_domains/live CHỈ nhận 1 task/request (gửi nhiều → 40000
+    // "You can set only one task at a time"). Nên gọi 1 domain/request, chạy
+    // song song có giới hạn concurrency.
+    const CONCURRENCY = 6;
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < targets.length) {
+        const target = targets[cursor++];
+        try {
+          const res = await fetch(DATAFORSEO_ENDPOINT, {
+            method: "POST",
+            headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json" },
+            // Field đúng là "backlinks" — "backlinks_count" trả 40501 Invalid Field.
+            body: JSON.stringify([{ target, limit: limitPerDomain, order_by: ["backlinks,desc"] }]),
+            signal: AbortSignal.timeout(120_000),
+          });
+          if (!res.ok) {
+            if (errors.length < 5) errors.push(`${target}: HTTP ${res.status}`);
+            continue;
+          }
+          const dfsData = await res.json() as {
+            cost?: number;
+            tasks?: {
+              status_code: number;
+              status_message: string;
+              result?: { items?: DfsReferringDomain[] }[];
+            }[];
+          };
+          dfsCost += dfsData.cost ?? 0;
+          const task = dfsData.tasks?.[0];
+          if (!task || task.status_code !== 20000 || !task.result?.[0]) {
+            if (task && task.status_code !== 20000 && errors.length < 5) {
+              errors.push(`${target}: ${task.status_code} ${task.status_message}`);
             }
             continue;
           }
-          totalMatched++;
-          refsRows.push({ targetDomain: target, refDomain: ref, domainRating: dr });
+          processedTargets.add(target); // query thành công → đã check
+          const items = task.result[0].items ?? [];
+          for (const it of items) {
+            totalRefsSeen++;
+            const ref = (it.domain ?? "").toLowerCase().trim();
+            if (!ref) continue;
+            const dr = drMap.get(ref);
+            if (dr == null) {
+              // Chưa có DR — gom để export (giữ backlinks lớn nhất để ưu tiên).
+              const prev = unmatchedMap.get(ref) ?? 0;
+              if ((it.backlinks ?? 0) > prev) unmatchedMap.set(ref, it.backlinks ?? 0);
+              continue;
+            }
+            totalMatched++;
+            refsRows.push({ targetDomain: target, refDomain: ref, domainRating: dr });
+          }
+        } catch (e) {
+          if (errors.length < 5) errors.push(`${target}: ${e instanceof Error ? e.message : "fetch error"}`);
         }
       }
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, targets.length) }, () => worker()));
 
     const refsResult = refsRows.length > 0
       ? await upsertRows(refsRows)
