@@ -550,12 +550,13 @@ export default function DomainPickerPage() {
     }
   }, [loadAhrefs, showToast]);
 
-  // DataforSEO ingest: lấy ref domain cho list domain trong picker (scoredRows),
-  // server đối sánh DR từ backlink_db rồi ghi vào ahrefs_results như Ahrefs.
+  // DataforSEO ingest: lấy ref domain cho list domain ĐÃ LỌC (qualifiedRows —
+  // đã bỏ domain đã check Ahrefs/DataforSEO), khớp đúng số hiển thị ở bước 2 và
+  // không tốn credit check lại. Server đối sánh DR từ backlink_db.
   const ingestDataforseo = useCallback(async () => {
-    const targets = scoredRows.map((r) => r.domain);
+    const targets = qualifiedRows.map((r) => r.domain);
     if (targets.length === 0) {
-      showToast("Không có domain nào trong danh sách (upload Spamzilla ở bước 1)", true);
+      showToast("Không có domain nào để check (đã lọc hết / đều đã check)", true);
       return;
     }
     if (!confirm(
@@ -592,7 +593,7 @@ export default function DomainPickerPage() {
     } finally {
       setIngestingDfs(false);
     }
-  }, [scoredRows, loadAhrefs, showToast]);
+  }, [qualifiedRows, loadAhrefs, showToast]);
 
   // Export ref domain DataforSEO chưa có DR → CSV "domain,dr,backlinks".
   // User điền cột dr rồi upload lại ở Aged Domain → Backlink DB → Import CSV
@@ -1622,15 +1623,15 @@ export default function DomainPickerPage() {
                   size="sm"
                   className="gap-1.5 bg-sky-600 hover:bg-sky-700 text-white"
                   onClick={ingestDataforseo}
-                  disabled={ingestingDfs || scoredRows.length === 0}
+                  disabled={ingestingDfs || qualifiedRows.length === 0}
                   title={
-                    scoredRows.length === 0
-                      ? "Upload Spamzilla ở bước 1 trước"
-                      : `Lấy ref qua DataforSEO cho ${scoredRows.length} domain, đối sánh DR từ backlink_db`
+                    qualifiedRows.length === 0
+                      ? "Không có domain để check (đã lọc hết / đều đã check)"
+                      : `Lấy ref qua DataforSEO cho ${qualifiedRows.length} domain (sau lọc), đối sánh DR từ backlink_db`
                   }
                 >
                   {ingestingDfs ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Database className="h-3.5 w-3.5" />}
-                  {ingestingDfs ? "Đang chạy DataforSEO…" : `Chạy DataforSEO (${scoredRows.length})`}
+                  {ingestingDfs ? "Đang chạy DataforSEO…" : `Chạy DataforSEO (${qualifiedRows.length})`}
                 </Button>
               )}
               {resultSource === "dataforseo" && dfsUnmatched.length > 0 && (
