@@ -137,9 +137,11 @@ export async function readTargetSummary(): Promise<TargetSummary[]> {
     if (r.checkedAt > cur.checkedAt) cur.checkedAt = r.checkedAt;
     cur.refs.push({ domain: r.refDomain, dr: r.domainRating });
   }
-  // Attach assessments — also surface excluded targets that have no ref rows yet
+  // Attach assessments — also surface targets that have NO ref rows but were
+  // still processed: excluded targets, và DataforSEO-checked (0 ref khớp DR)
+  // → để chúng vẫn hiện trong panel cho user review + Wayback + quyết định.
   for (const [domain, a] of assessMap.entries()) {
-    if (a.excluded_at && !map.has(domain)) {
+    if (!map.has(domain) && (a.excluded_at || a.detail === "DataforSEO checked")) {
       ensure(domain, a.updated_at);
     }
   }

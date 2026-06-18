@@ -691,7 +691,9 @@ export default function DomainPickerPage() {
         source: sourceMap.get(t.targetDomain) ?? "",
       };
     });
-    const visible = enriched.filter((t) => t.refsCount > 0);
+    // Giữ target có ref, HOẶC target DataforSEO-checked dù 0 ref khớp (để
+    // user vẫn review + Wayback + quyết định những domain đã check).
+    const visible = enriched.filter((t) => t.refsCount > 0 || t.detail === "DataforSEO checked");
 
     return [...visible].sort((a, b) => {
       let av: number | string;
