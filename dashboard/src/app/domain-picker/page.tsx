@@ -631,6 +631,13 @@ export default function DomainPickerPage() {
     return m;
   }, [dbEntries]);
 
+  // Domain của CSV Spamzilla đang load → scope result panel theo upload hiện
+  // tại (thay vì hiện toàn bộ DB lịch sử). Rỗng (chưa upload) = không scope.
+  const uploadedDomainSet = useMemo(
+    () => new Set(scoredRows.map((r) => r.domain.toLowerCase())),
+    [scoredRows],
+  );
+
   // Severity rank for rating sort (high = worse)
   const RATING_RANK: Record<string, number> = {
     "❌ RẤT XẤU": 5, "❌ XẤU": 4, "⚠️ RỦI RO": 3, "⚠️ TRUNG BÌNH": 2, "✅ TỐT": 1,
@@ -638,6 +645,9 @@ export default function DomainPickerPage() {
 
   const filteredAhrefs = useMemo(() => {
     const bySearch = ahrefsSummary.filter((t) => {
+      // Scope theo CSV vừa upload: chỉ hiện target thuộc list hiện tại. Khi
+      // chưa upload (set rỗng) thì không scope (hiện toàn bộ để browse DB).
+      if (uploadedDomainSet.size > 0 && !uploadedDomainSet.has(t.targetDomain)) return false;
       const isJustUploaded = justUploadedTargets.has(t.targetDomain);
       // Manually excluded — domain already bought by someone else, hide entirely.
       // BUT re-uploading the domain in the same session means the user wants to
@@ -699,7 +709,7 @@ export default function DomainPickerPage() {
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * ahrefsSortDir;
       return String(av).localeCompare(String(bv)) * ahrefsSortDir;
     });
-  }, [ahrefsSummary, ahrefsSearch, applyRefBlacklist, effectiveBlacklist, sourceMap, ahrefsSortKey, ahrefsSortDir, filterRating, filterSource, filterPurchased, purchasedSet, viewClearedAt, justUploadedTargets]);
+  }, [ahrefsSummary, ahrefsSearch, applyRefBlacklist, effectiveBlacklist, sourceMap, ahrefsSortKey, ahrefsSortDir, filterRating, filterSource, filterPurchased, purchasedSet, viewClearedAt, justUploadedTargets, uploadedDomainSet]);
 
   const handleAhrefsSort = (key: typeof ahrefsSortKey) => {
     if (ahrefsSortKey === key) setAhrefsSortDir((d) => (d === 1 ? -1 : 1));
@@ -1438,11 +1448,11 @@ export default function DomainPickerPage() {
               {wizard.step === 3 ? "Upload Result" : "Wayback context"}
             </h2>
             <span className="bg-orange-100 dark:bg-orange-950 text-orange-700 dark:text-orange-300 text-xs font-bold px-2 py-0.5 rounded-full">
-              {ahrefsSummary.length.toLocaleString()} target
+              {filteredAhrefs.length.toLocaleString()} target
             </span>
-            {ahrefsSummary.length > 0 && (
+            {filteredAhrefs.length > 0 && (
               <span className="bg-muted text-muted-foreground text-xs px-2 py-0.5 rounded-full">
-                {ahrefsSummary.reduce((a, t) => a + t.refsCount, 0).toLocaleString()} ref rows
+                {filteredAhrefs.reduce((a, t) => a + t.refsCount, 0).toLocaleString()} ref rows
               </span>
             )}
           </div>
