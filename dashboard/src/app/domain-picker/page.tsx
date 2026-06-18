@@ -1083,8 +1083,10 @@ export default function DomainPickerPage() {
   // ─── Copy domains / Export CSV ───────────────────────────────────────────────
 
   const copyDomains = useCallback(async () => {
-    if (!displayedRows.length) return;
-    const text = displayedRows.map((r) => r.domain).join("\n");
+    // Copy TOÀN BỘ list đã lọc (qualifiedRows), không chỉ trang hiện tại —
+    // để paste hết domain cần check vào Ahrefs MCP.
+    if (!qualifiedRows.length) return;
+    const text = qualifiedRows.map((r) => r.domain).join("\n");
     try {
       await navigator.clipboard.writeText(text);
     } catch {
@@ -1098,8 +1100,8 @@ export default function DomainPickerPage() {
     }
     setCopiedDomains(true);
     setTimeout(() => setCopiedDomains(false), 2000);
-    showToast(`✅ Đã copy ${displayedRows.length} domain`);
-  }, [displayedRows, showToast]);
+    showToast(`✅ Đã copy ${qualifiedRows.length} domain`);
+  }, [qualifiedRows, showToast]);
 
 
   const handleSort = (key: SortKey) => {
@@ -1284,13 +1286,13 @@ export default function DomainPickerPage() {
                 size="sm"
                 variant="outline"
                 onClick={copyDomains}
-                disabled={!displayedRows.length}
+                disabled={!qualifiedRows.length}
                 className="gap-1.5"
               >
                 {copiedDomains
                   ? <Check className="h-3.5 w-3.5 text-green-500" />
                   : <Copy className="h-3.5 w-3.5" />}
-                {copiedDomains ? "Đã copy!" : `Copy ${displayedRows.length} domain`}
+                {copiedDomains ? "Đã copy!" : `Copy ${qualifiedRows.length} domain`}
               </Button>
             </div>
           </div>
