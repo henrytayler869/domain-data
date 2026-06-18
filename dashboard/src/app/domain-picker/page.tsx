@@ -111,6 +111,7 @@ export default function DomainPickerPage() {
   // Ref domain DataforSEO trả về nhưng chưa có DR trong backlink_db — export
   // để user check DR thủ công rồi upload lại.
   const [dfsUnmatched, setDfsUnmatched] = useState<{ domain: string; backlinks: number }[]>([]);
+  const [importingDr, setImportingDr] = useState(false);
   const [excludeChecked, setExcludeChecked] = useState(true);
   const [copiedAhrefsTargets, setCopiedAhrefsTargets] = useState(false);
   const [applyRefBlacklist, setApplyRefBlacklist] = useState(true);
@@ -611,8 +612,44 @@ export default function DomainPickerPage() {
     a.download = `dataforseo-refs-no-dr-${ts}.csv`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    showToast(`✅ Export ${dfsUnmatched.length} ref chưa có DR → điền cột dr rồi Import ở Aged Domain`);
+    showToast(`✅ Export ${dfsUnmatched.length} ref chưa có DR → điền cột dr rồi bấm "Import DR"`);
   }, [dfsUnmatched, showToast]);
+
+  // Import lại CSV ref domain + DR (sau khi check thủ công) vào backlink_db.
+  // Chấp nhận domain,dr[,backlinks] — đọc domain + dr, bỏ dòng dr trống/không hợp lệ.
+  const importBacklinkDr = useCallback(async (file: File) => {
+    setImportingDr(true);
+    try {
+      const text = await file.text();
+      const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const entries: { domain: string; dr: number }[] = [];
+      for (const line of lines) {
+        const parts = line.split(",");
+        const domain = (parts[0] ?? "").trim().toLowerCase().replace(/^["']|["']$/g, "");
+        const dr = parseInt((parts[1] ?? "").trim(), 10);
+        // Bỏ header + dòng dr trống/không hợp lệ.
+        if (!/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/.test(domain)) continue;
+        if (isNaN(dr) || dr < 0 || dr > 100) continue;
+        entries.push({ domain, dr });
+      }
+      if (entries.length === 0) {
+        showToast("❌ Không có dòng hợp lệ (cần domain,dr với dr 0–100)", true);
+        return;
+      }
+      const res = await fetch("/api/aged-domain/db/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entries }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Import thất bại");
+      showToast(`✅ Import ${entries.length} ref + DR vào backlink_db (tổng ${data.total}) — chạy lại DataforSEO để khớp`);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    } finally {
+      setImportingDr(false);
+    }
+  }, [showToast]);
 
   const removeAhrefsTarget = useCallback(async (domain: string) => {
     await fetch(`/api/ahrefs-results/db/${encodeURIComponent(domain)}`, { method: "DELETE" });
@@ -1654,11 +1691,32 @@ export default function DomainPickerPage() {
                   variant="outline"
                   className="gap-1.5 text-amber-700 border-amber-400/60 hover:bg-amber-50 dark:hover:bg-amber-950"
                   onClick={exportUnmatchedRefs}
-                  title="Export ref domain chưa có DR (CSV domain,dr,backlinks) — điền DR rồi Import lại ở Aged Domain → Backlink DB"
+                  title="Export ref domain chưa có DR (CSV domain,dr,backlinks) — điền cột dr rồi bấm Import DR"
                 >
                   <Download className="h-3.5 w-3.5" />
                   Export ref chưa có DR ({dfsUnmatched.length})
                 </Button>
+              )}
+              {resultSource === "dataforseo" && (
+                <label className="cursor-pointer">
+                  <input
+                    type="file"
+                    accept=".csv,text/csv"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) importBacklinkDr(f);
+                      e.target.value = "";
+                    }}
+                  />
+                  <span className={cn(
+                    "inline-flex items-center gap-1.5 rounded-md border border-emerald-400/60 text-emerald-700 dark:hover:bg-emerald-950 hover:bg-emerald-50 px-2.5 h-7 text-[0.8rem] font-medium",
+                    importingDr && "opacity-60 pointer-events-none",
+                  )}>
+                    {importingDr ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                    {importingDr ? "Đang import…" : "Import DR (CSV)"}
+                  </span>
+                </label>
               )}
               <Button
                 size="sm" variant="outline"
