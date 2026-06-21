@@ -16,3 +16,6 @@ storage
 .claude/settings.local.json
 .vercel
 .env*.local
+
+# Local Ahrefs ref-DR CSVs (import source, not for git)
+backlinkDataforSEO/
