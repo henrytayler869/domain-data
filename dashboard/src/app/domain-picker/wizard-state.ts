@@ -56,7 +56,7 @@ export function initialWizardState(): WizardState {
     presetName: "none",
     thresholds: { ...THRESHOLD_PRESETS.none },
     weights: { ...DEFAULT_WEIGHTS },
-    topN: 50,
+    topN: 100,
   };
 }
 

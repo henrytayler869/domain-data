@@ -1278,10 +1278,10 @@ export default function DomainPickerPage() {
                 className="h-7 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
                 title="Số dòng mỗi trang"
               >
-                <option value="20">20 / trang</option>
-                <option value="50">50 / trang</option>
                 <option value="100">100 / trang</option>
                 <option value="200">200 / trang</option>
+                <option value="500">500 / trang</option>
+                <option value="1000">1000 / trang</option>
                 <option value="0">Tất cả</option>
               </select>
               {excludeChecked && excludedCount > 0 && (
