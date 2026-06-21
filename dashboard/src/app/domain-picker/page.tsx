@@ -1107,7 +1107,7 @@ export default function DomainPickerPage() {
 
   const downloadAhrefsCsv = useCallback(() => {
     if (!exportableAhrefs.length) return;
-    const headers = ["target_domain", "checked_at", "refs", "rating", "category", "detail"];
+    const headers = ["target_domain", "checked_at", "refs", "rating", "category", "detail", "backlink_condition", "backlink_manh"];
     const escape = (v: unknown) => {
       const s = String(v ?? "");
       return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -1115,6 +1115,13 @@ export default function DomainPickerPage() {
     const rows: string[] = [];
     for (const t of exportableAhrefs) {
       const refsCell = t.refs.map((r) => `${r.domain} (DR ${r.dr})`).join("; ");
+      const ev = backlinkEvidence(t.refs, trafficMap);
+      const condCell = ev.cond === 1 ? "ĐK1 (ref DR>90)" : ev.cond === 2 ? "ĐK2 (ref DR70-89 ≥1M)" : "";
+      const evCell = ev.cond === 1
+        ? ev.items.map((r) => `${r.domain} (DR ${r.dr})`).join(" | ")
+        : ev.cond === 2
+        ? ev.items.map((r) => `${r.domain} (DR ${r.dr}), ${r.traffic ?? 0}`).join(" | ")
+        : "";
       rows.push([
         t.targetDomain,
         t.checkedAt,
@@ -1122,6 +1129,8 @@ export default function DomainPickerPage() {
         t.rating ?? "",
         t.category ?? "",
         t.detail ?? "",
+        condCell,
+        evCell,
       ].map(escape).join(","));
     }
     const csv = [headers.join(","), ...rows].join("\n");
@@ -1134,7 +1143,7 @@ export default function DomainPickerPage() {
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
     showToast(`✅ Export ${rows.length} target → ${a.download}`);
-  }, [exportableAhrefs, showToast]);
+  }, [exportableAhrefs, trafficMap, showToast]);
 
   // UI-only hide: set cutoff timestamp; entries checked at-or-before this are hidden
   // from the Ahrefs panel display (DB intact, new uploads will reappear automatically).
