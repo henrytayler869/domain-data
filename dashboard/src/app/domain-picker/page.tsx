@@ -145,7 +145,7 @@ export default function DomainPickerPage() {
   const [copiedAhrefsTargets, setCopiedAhrefsTargets] = useState(false);
   const [applyRefBlacklist, setApplyRefBlacklist] = useState(true);
   const [refBlacklistOpen, setRefBlacklistOpen] = useState(false);
-  const [ahrefsSortKey, setAhrefsSortKey] = useState<"targetDomain" | "source" | "rating" | "category" | "checkedAt" | "refsCount">("refsCount");
+  const [ahrefsSortKey, setAhrefsSortKey] = useState<"targetDomain" | "source" | "rating" | "category" | "checkedAt" | "refsCount" | "backlink">("refsCount");
 
   // ── Wayback Machine (step 4) ──────────────────────────────────────────────
   type WaybackRow = {
@@ -185,6 +185,8 @@ export default function DomainPickerPage() {
   const [step2FilterSource, setStep2FilterSource] = useState<string>("all");
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [filterPurchased, setFilterPurchased] = useState<"all" | "yes" | "no">("all");
+  // Lọc theo backlink mạnh: ĐK1 (ref DR>90) / ĐK2 (ref DR70-89 traffic≥1M) / đạt 1 trong 2 / không đạt.
+  const [filterBacklink, setFilterBacklink] = useState<"all" | "dk1" | "dk2" | "strong" | "none">("all");
   const [purchaseFormOpen, setPurchaseFormOpen] = useState(false);
   const [purchaseRows, setPurchaseRows] = useState<Record<string, string>>({}); // domain → price string
   // "purchase" = đã mua hẳn; "backorder" = chỉ đặt, chưa sở hữu.
@@ -813,13 +815,27 @@ export default function DomainPickerPage() {
         refsCount: applyRefBlacklist ? cleanRefs.length : t.refsCount,
         maxDr: applyRefBlacklist ? (cleanRefs.length ? cleanRefs[0].dr : 0) : t.maxDr,
         source: sourceMap.get(t.targetDomain) ?? "",
+        // Backlink mạnh: 1 = ĐK1 (ref DR>90), 2 = ĐK2 (ref DR70-89 ≥1M), 0 = không.
+        cond: backlinkEvidence(cleanRefs, trafficMap).cond,
       };
     });
     // Giữ target có ref, HOẶC target DataforSEO-checked dù 0 ref khớp (để
     // user vẫn review + Wayback + quyết định những domain đã check).
     const visible = enriched.filter((t) => t.refsCount > 0 || t.detail === "DataforSEO checked");
 
-    return [...visible].sort((a, b) => {
+    // Lọc theo điều kiện backlink mạnh.
+    const byBacklink = filterBacklink === "all" ? visible : visible.filter((t) => {
+      if (filterBacklink === "dk1") return t.cond === 1;
+      if (filterBacklink === "dk2") return t.cond === 2;
+      if (filterBacklink === "strong") return t.cond === 1 || t.cond === 2;
+      if (filterBacklink === "none") return t.cond === 0;
+      return true;
+    });
+
+    // Rank backlink để sort: ĐK1 mạnh nhất > ĐK2 > không đạt.
+    const condRank = (c: number) => (c === 1 ? 2 : c === 2 ? 1 : 0);
+
+    return [...byBacklink].sort((a, b) => {
       let av: number | string;
       let bv: number | string;
       if (ahrefsSortKey === "rating") {
@@ -828,6 +844,9 @@ export default function DomainPickerPage() {
       } else if (ahrefsSortKey === "checkedAt") {
         av = new Date(a.checkedAt).getTime();
         bv = new Date(b.checkedAt).getTime();
+      } else if (ahrefsSortKey === "backlink") {
+        av = condRank(a.cond);
+        bv = condRank(b.cond);
       } else {
         av = (a[ahrefsSortKey] ?? "") as string | number;
         bv = (b[ahrefsSortKey] ?? "") as string | number;
@@ -835,7 +854,7 @@ export default function DomainPickerPage() {
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * ahrefsSortDir;
       return String(av).localeCompare(String(bv)) * ahrefsSortDir;
     });
-  }, [ahrefsSummary, ahrefsSearch, applyRefBlacklist, effectiveBlacklist, sourceMap, ahrefsSortKey, ahrefsSortDir, filterRating, filterSource, filterPurchased, purchasedSet, viewClearedAt, justUploadedTargets, uploadedDomainSet]);
+  }, [ahrefsSummary, ahrefsSearch, applyRefBlacklist, effectiveBlacklist, sourceMap, trafficMap, ahrefsSortKey, ahrefsSortDir, filterRating, filterSource, filterPurchased, filterBacklink, purchasedSet, viewClearedAt, justUploadedTargets, uploadedDomainSet]);
 
   const handleAhrefsSort = (key: typeof ahrefsSortKey) => {
     if (ahrefsSortKey === key) setAhrefsSortDir((d) => (d === 1 ? -1 : 1));
@@ -1956,11 +1975,23 @@ export default function DomainPickerPage() {
                   <option value="yes">Đã mua</option>
                   <option value="no">Chưa mua</option>
                 </select>
-                {(filterRating !== "all" || filterSource !== "all" || filterPurchased !== "all") && (
+                <select
+                  value={filterBacklink}
+                  onChange={(e) => setFilterBacklink(e.target.value as typeof filterBacklink)}
+                  className="h-8 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
+                  title="Filter Backlink mạnh (ĐK1: ref DR>90 · ĐK2: ref DR70-89 traffic≥1M)"
+                >
+                  <option value="all">Tất cả backlink</option>
+                  <option value="strong">✅ Mạnh (ĐK1 + ĐK2)</option>
+                  <option value="dk1">ĐK1 (ref DR&gt;90)</option>
+                  <option value="dk2">ĐK2 (ref DR70-89 ≥1M)</option>
+                  <option value="none">Không đạt</option>
+                </select>
+                {(filterRating !== "all" || filterSource !== "all" || filterPurchased !== "all" || filterBacklink !== "all") && (
                   <Button
                     size="sm" variant="ghost"
                     className="h-8 text-xs"
-                    onClick={() => { setFilterRating("all"); setFilterSource("all"); setFilterPurchased("all"); }}
+                    onClick={() => { setFilterRating("all"); setFilterSource("all"); setFilterPurchased("all"); setFilterBacklink("all"); }}
                   >
                     <X className="h-3 w-3" />
                     Reset filter
@@ -2002,7 +2033,8 @@ export default function DomainPickerPage() {
                       <SortTh label="Phân loại" col="category" current={ahrefsSortKey} dir={ahrefsSortDir} onSort={() => handleAhrefsSort("category")} />
                       <SortTh label="Checked" col="checkedAt" current={ahrefsSortKey} dir={ahrefsSortDir} onSort={() => handleAhrefsSort("checkedAt")} />
                       <SortTh label="Refs" col="refsCount" current={ahrefsSortKey} dir={ahrefsSortDir} onSort={() => handleAhrefsSort("refsCount")} />
-                      <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide whitespace-nowrap" title="ĐK1: ref DR>90 · ĐK2: ref DR 70-89 traffic≥1M">Backlink mạnh</th>
+                      <SortTh label="Backlink mạnh" col="backlink" current={ahrefsSortKey} dir={ahrefsSortDir} onSort={() => handleAhrefsSort("backlink")} />
+
                       <th className="w-12" />
                     </tr>
                   </thead>
