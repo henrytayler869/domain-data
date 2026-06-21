@@ -222,10 +222,15 @@ export default function DomainPickerPage() {
   );
 
   // Step 1: drop Ahrefs-checked targets (drives the "Excluded N đã check Ahrefs" badge).
+  // Ngoại lệ: domain vừa upload/chuyển từ Check Backlink (justUploadedTargets) là
+  // tập đang làm việc → KHÔNG loại dù đã có marker "đã check", để user check
+  // Wayback + chọn mua. (Cùng pattern bỏ qua filter như panel bước 3.)
   const qualifiedAfterChecked = useMemo(() => {
     if (!excludeChecked || checkedTargets.size === 0) return thresholdQualified;
-    return thresholdQualified.filter((r) => !checkedTargets.has(r.domain));
-  }, [thresholdQualified, excludeChecked, checkedTargets]);
+    return thresholdQualified.filter(
+      (r) => !checkedTargets.has(r.domain) || justUploadedTargets.has(r.domain),
+    );
+  }, [thresholdQualified, excludeChecked, checkedTargets, justUploadedTargets]);
 
   // Step 2: apply source filter on top. Final list feeds the table + count.
   const qualifiedRows = useMemo(() => {
