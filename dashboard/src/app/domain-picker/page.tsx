@@ -1120,7 +1120,7 @@ export default function DomainPickerPage() {
       const evCell = ev.cond === 1
         ? ev.items.map((r) => `${r.domain} (DR ${r.dr})`).join(" | ")
         : ev.cond === 2
-        ? ev.items.map((r) => `${r.domain} (DR ${r.dr}), ${r.traffic ?? 0}`).join(" | ")
+        ? ev.items.map((r) => `${r.domain} (DR ${r.dr}), Traffic: ${(r.traffic ?? 0).toLocaleString("en-US")}`).join(" | ")
         : "";
       rows.push([
         t.targetDomain,
