@@ -443,6 +443,44 @@ export default function DomainPickerPage() {
 
   useEffect(() => { loadDb(); loadAhrefs(); loadUserBlacklist(); loadInventory(); loadWayback(); loadTraffic(); }, [loadDb, loadAhrefs, loadUserBlacklist, loadInventory, loadWayback, loadTraffic]);
 
+  // Nhận danh sách domain chuyển từ trang Check Backlink (nút "Mở trong Domain
+  // Picker"). Nạp chúng làm rawRows (không có metric Spamzilla → score 0) để
+  // panel bước 3 scope đúng vào chúng; dữ liệu ref đã được lưu sẵn ở store chung.
+  useEffect(() => {
+    let payload: { domains?: unknown; ts?: number } | null = null;
+    try {
+      payload = JSON.parse(localStorage.getItem("dompicker.transfer") || "null");
+    } catch { /* ignore */ }
+    try { localStorage.removeItem("dompicker.transfer"); } catch { /* ignore */ }
+    if (!payload || !Array.isArray(payload.domains) || payload.domains.length === 0) return;
+    // Bỏ qua payload cũ (> 10 phút) để tránh nạp lại khi user tự vào trang.
+    if (payload.ts && Date.now() - payload.ts > 10 * 60 * 1000) return;
+
+    const seen = new Set<string>();
+    const domains: string[] = [];
+    for (const d of payload.domains as unknown[]) {
+      const dom = String(d ?? "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+      if (!/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/.test(dom) || seen.has(dom)) continue;
+      seen.add(dom);
+      domains.push(dom);
+    }
+    if (!domains.length) return;
+
+    const rows: PickerRow[] = domains.map((domain) => ({
+      domain, source: "Check Backlink",
+      tf: 0, cf: 0, bl: 0, rd: 0, da: 0, pa: 0, age: 0,
+      szScore: 0, szDrops: 0, semTraffic: 0, semKeywords: 0,
+      price: "", expires: "", score: 0,
+    }));
+    setRawRows(rows);
+    setFileName(`Check Backlink (${rows.length} domain)`);
+    setJustUploadedTargets(new Set(domains));
+    // Đưa wizard tới bước 3 "Upload Result" (đánh dấu bước 1,2 đã xong).
+    dispatchWizard({ type: "advance", from: 1 });
+    dispatchWizard({ type: "advance", from: 2 });
+    showToast(`✅ Đã nạp ${rows.length} domain từ Check Backlink — chọn lọc ở bước "Upload Result"`);
+  }, [showToast]);
+
   useEffect(() => {
     try {
       const v = localStorage.getItem("ahrefs.viewClearedAt");

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readDb } from "@/lib/backlink-db";
 import { readSettings } from "@/lib/settings";
+import { upsertRows, upsertAssessments } from "@/lib/ahrefs-db";
 
 const DATAFORSEO_ENDPOINT =
   "https://api.dataforseo.com/v3/backlinks/referring_domains/live";
@@ -44,7 +45,8 @@ export async function POST(request: NextRequest) {
       domains,
       minDr = 30,
       limitPerDomain = 100,
-    }: { domains: string[]; minDr: number; limitPerDomain: number } =
+      persist = true,
+    }: { domains: string[]; minDr: number; limitPerDomain: number; persist?: boolean } =
       await request.json();
 
     if (!domains?.length) {
@@ -78,6 +80,10 @@ export async function POST(request: NextRequest) {
 
     const results: DomainResult[] = new Array(targets.length);
     const unmatchedMap = new Map<string, number>(); // root domain chưa có DR → max backlinks
+    // Để persist vào store dùng chung với Domain Picker (ahrefs_results): mọi ref
+    // có DR trong DB (KHÔNG lọc minDr — Picker tự áp ngưỡng) + marker đã check.
+    const refsRows: { targetDomain: string; refDomain: string; domainRating: number }[] = [];
+    const processedTargets = new Set<string>();
     let dfsCost = 0;
 
     // referring_domains/live CHỈ nhận 1 task/request → gọi 1 domain/request,
@@ -108,6 +114,7 @@ export async function POST(request: NextRequest) {
           }
           const result = task.result[0];
           const items: DfsReferringDomain[] = result.items ?? [];
+          processedTargets.add(target); // query thành công → đã check
           // Gộp ref về root + giữ max backlinks/root.
           const refRoots = new Map<string, number>();
           for (const it of items) {
@@ -120,8 +127,10 @@ export async function POST(request: NextRequest) {
             const dr = dbMap.get(ref);
             if (dr == null) {
               unmatchedMap.set(ref, Math.max(unmatchedMap.get(ref) ?? 0, bl));
-            } else if (dr >= minDr) {
-              matched.push({ domain: ref, dr, backlinks: bl });
+            } else {
+              // Ref có DR trong DB → lưu vào store dùng chung (full, không lọc minDr).
+              refsRows.push({ targetDomain: target, refDomain: ref, domainRating: dr });
+              if (dr >= minDr) matched.push({ domain: ref, dr, backlinks: bl });
             }
           }
           matched.sort((a, b) => b.dr - a.dr);
@@ -146,6 +155,28 @@ export async function POST(request: NextRequest) {
     };
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, targets.length) }, () => worker()));
 
+    // Lưu vào store dùng chung với Domain Picker (ahrefs_results + target_assessment)
+    // → Picker thấy ngay kết quả này, KHÔNG cần gọi lại DataforSEO. Không chặn
+    // response nếu persist lỗi.
+    let persisted = false;
+    if (persist && processedTargets.size > 0) {
+      try {
+        if (refsRows.length > 0) await upsertRows(refsRows);
+        await upsertAssessments(
+          [...processedTargets].map((target) => ({
+            targetDomain: target,
+            rating: null,
+            category: null,
+            detail: "DataforSEO checked",
+            excludedAt: null,
+          })),
+        );
+        persisted = true;
+      } catch {
+        persisted = false;
+      }
+    }
+
     const unmatchedRefs = [...unmatchedMap.entries()]
       .map(([domain, backlinks]) => ({ domain, backlinks }))
       .sort((a, b) => b.backlinks - a.backlinks)
@@ -156,6 +187,9 @@ export async function POST(request: NextRequest) {
       cost: dfsCost,
       unmatchedUnique: unmatchedMap.size,
       unmatchedRefs,
+      persisted,
+      refsSaved: refsRows.length,
+      targetsChecked: processedTargets.size,
     });
   } catch (err) {
     return NextResponse.json(

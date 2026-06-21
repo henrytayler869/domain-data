@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef, Fragment } from "react";
+import { useRouter } from "next/navigation";
 import {
   Search,
   ChevronDown,
@@ -42,6 +43,7 @@ type V1SortKey = "domain" | "dbMatches" | "totalRefDomains" | "maxDbDr";
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function AgedDomainPage() {
+  const router = useRouter();
   // ── Form inputs ──────────────────────────────────────────────────────────────
   const [domainsText, setDomainsText] = useState("");
   const [minDr, setMinDr] = useState(30);
@@ -63,6 +65,7 @@ export default function AgedDomainPage() {
   // Ref domain chưa có trong backlink_db (sau khi check) → export để bổ sung DR+Traffic.
   const [unmatchedRefs, setUnmatchedRefs] = useState<{ domain: string; backlinks: number }[]>([]);
   const [importingDr, setImportingDr] = useState(false);
+  const [openingPicker, setOpeningPicker] = useState(false);
 
   // ── Backlink DB ─────────────────────────────────────────────────────────────
   const [dbEntries, setDbEntries] = useState<DbEntry[]>([]);
@@ -141,7 +144,8 @@ export default function AgedDomainPage() {
       const res = await fetch("/api/aged-domain/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ domains, minDr, limitPerDomain }),
+        // persist:true → lưu full ref vào store dùng chung với Domain Picker.
+        body: JSON.stringify({ domains, minDr, limitPerDomain, persist: true }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Phân tích thất bại");
@@ -239,6 +243,53 @@ export default function AgedDomainPage() {
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
     } finally {
       setImportingDr(false);
+    }
+  }
+
+  // Chuyển kết quả Check Backlink sang Domain Picker để chọn lọc.
+  // - Best-effort persist dữ liệu đang hiển thị (marker "đã check" + ref đã match
+  //   trong DB) vào store dùng chung — MIỄN PHÍ, không gọi lại DataforSEO. Bảo
+  //   đảm batch chạy bằng route cũ (chưa lưu) vẫn hiện trong Picker.
+  // - Đẩy danh sách domain qua localStorage → Picker scope panel bước 3 vào chúng.
+  async function openInPicker() {
+    if (!v1Results || v1Results.length === 0) {
+      showToast("Chưa có kết quả để chuyển", true);
+      return;
+    }
+    setOpeningPicker(true);
+    try {
+      const targets = v1Results.map((r) => r.domain);
+      const rows: { targetDomain: string; refDomain: string; domainRating: number }[] = [];
+      const assessments = v1Results.map((r) => ({
+        targetDomain: r.domain,
+        rating: null,
+        category: null,
+        detail: "DataforSEO checked",
+        excludedAt: null,
+      }));
+      for (const r of v1Results) {
+        for (const t of r.topDomains) {
+          if (t.inDb && t.dbDr != null) {
+            rows.push({ targetDomain: r.domain, refDomain: t.domain, domainRating: t.dbDr });
+          }
+        }
+      }
+      try {
+        await fetch("/api/ahrefs-results/db/add", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rows, assessments }),
+        });
+      } catch {
+        // Bỏ qua — vẫn điều hướng; dữ liệu full đã được route analyze lưu nếu chạy code mới.
+      }
+      localStorage.setItem(
+        "dompicker.transfer",
+        JSON.stringify({ domains: targets, ts: Date.now() }),
+      );
+      router.push("/domain-picker");
+    } finally {
+      setOpeningPicker(false);
     }
   }
 
@@ -360,6 +411,16 @@ export default function AgedDomainPage() {
               )}
             </div>
             <div className="flex items-center gap-2 flex-wrap">
+              <Button
+                size="sm"
+                className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-white"
+                onClick={openInPicker}
+                disabled={openingPicker || !v1Results?.length}
+                title="Chuyển các domain đã check sang Domain Picker (dùng chung dữ liệu, không check lại) để chọn lọc"
+              >
+                {openingPicker ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ExternalLink className="h-3.5 w-3.5" />}
+                Mở trong Domain Picker ({v1Results?.length ?? 0})
+              </Button>
               {unmatchedRefs.length > 0 && (
                 <Button
                   size="sm" variant="outline"
