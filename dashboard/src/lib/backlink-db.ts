@@ -33,6 +33,30 @@ export async function readDb(): Promise<DbEntry[]> {
   return all;
 }
 
+// Chỉ trả ref domain CÓ traffic (đang điền cho DR 70-89) — dùng cho điều kiện 2
+// của Domain Picker. Payload nhỏ (vài trăm dòng).
+export async function readTrafficMap(): Promise<{ domain: string; traffic: number }[]> {
+  const sb = supabase();
+  const all: { domain: string; traffic: number }[] = [];
+  const PAGE = 1000;
+  let offset = 0;
+  while (true) {
+    const { data, error } = await sb
+      .from(TABLE)
+      .select("domain,traffic")
+      .not("traffic", "is", null)
+      .range(offset, offset + PAGE - 1);
+    if (error) throw new Error(error.message);
+    if (!data || data.length === 0) break;
+    for (const r of data as { domain: string; traffic: number | null }[]) {
+      all.push({ domain: r.domain, traffic: Number(r.traffic) || 0 });
+    }
+    if (data.length < PAGE) break;
+    offset += PAGE;
+  }
+  return all;
+}
+
 export async function writeDb(entries: DbEntry[]): Promise<void> {
   const sb = supabase();
 

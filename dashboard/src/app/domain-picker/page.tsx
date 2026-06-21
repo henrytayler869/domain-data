@@ -53,6 +53,35 @@ import {
 
 type SortKey = "score" | "domain" | "source" | "tf" | "cf" | "rd" | "da" | "age" | "szScore" | "szDrops" | "semTraffic";
 
+// ─── Đánh giá backlink mạnh của 1 target ────────────────────────────────────
+// Điều kiện 1: có ≥1 ref DR > 90.
+// Điều kiện 2 (nếu KHÔNG có DR>90): ref DR 70-89 có traffic ≥ 1M.
+const STRONG_TRAFFIC_MIN = 1_000_000;
+interface BacklinkEvidence {
+  cond: 0 | 1 | 2;
+  items: { domain: string; dr: number; traffic: number | null }[];
+}
+function backlinkEvidence(
+  refs: { domain: string; dr: number }[],
+  trafficMap: Map<string, number>,
+): BacklinkEvidence {
+  const dr90 = refs.filter((r) => r.dr > 90);
+  if (dr90.length) {
+    return { cond: 1, items: dr90.map((r) => ({ domain: r.domain, dr: r.dr, traffic: null })) };
+  }
+  const dr7089 = refs
+    .map((r) => ({ domain: r.domain, dr: r.dr, traffic: trafficMap.get(r.domain.toLowerCase()) ?? 0 }))
+    .filter((r) => r.dr >= 70 && r.dr <= 89 && r.traffic >= STRONG_TRAFFIC_MIN)
+    .sort((a, b) => b.traffic - a.traffic);
+  if (dr7089.length) return { cond: 2, items: dr7089 };
+  return { cond: 0, items: [] };
+}
+function fmtTraffic(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
+  if (n >= 1_000) return Math.round(n / 1_000) + "K";
+  return String(n);
+}
+
 interface ToastItem {
   id: number;
   message: string;
@@ -144,6 +173,8 @@ export default function DomainPickerPage() {
   };
   const [waybackResults, setWaybackResults] = useState<WaybackRow[]>([]);
   const [waybackRuns, setWaybackRuns] = useState<WaybackRun[]>([]);
+  // Ref domain (lowercase) → organic traffic, cho điều kiện 2 (DR 70-89 + traffic ≥ 1M).
+  const [trafficMap, setTrafficMap] = useState<Map<string, number>>(new Map());
   const [waybackStarting, setWaybackStarting] = useState(false);
   const [waybackExpanded, setWaybackExpanded] = useState<Set<string>>(new Set());
   const [ahrefsSortDir, setAhrefsSortDir] = useState<1 | -1>(-1);
@@ -273,6 +304,19 @@ export default function DomainPickerPage() {
     } catch { /* ignore */ }
   }, []);
 
+  // Ref domain → traffic (DR 70-89 đã điền) cho điều kiện 2 đánh giá backlink.
+  const loadTraffic = useCallback(async () => {
+    try {
+      const res = await fetch("/api/backlink-db/traffic");
+      const data = await res.json();
+      const m = new Map<string, number>();
+      for (const r of (data.rows ?? []) as { domain: string; traffic: number }[]) {
+        m.set(r.domain.toLowerCase(), r.traffic);
+      }
+      setTrafficMap(m);
+    } catch { /* ignore */ }
+  }, []);
+
   const startWaybackCheck = useCallback(async (targets: string[]) => {
     if (!targets.length) return;
     setWaybackStarting(true);
@@ -397,7 +441,7 @@ export default function DomainPickerPage() {
     [inventory]
   );
 
-  useEffect(() => { loadDb(); loadAhrefs(); loadUserBlacklist(); loadInventory(); loadWayback(); }, [loadDb, loadAhrefs, loadUserBlacklist, loadInventory, loadWayback]);
+  useEffect(() => { loadDb(); loadAhrefs(); loadUserBlacklist(); loadInventory(); loadWayback(); loadTraffic(); }, [loadDb, loadAhrefs, loadUserBlacklist, loadInventory, loadWayback, loadTraffic]);
 
   useEffect(() => {
     try {
@@ -1906,13 +1950,16 @@ export default function DomainPickerPage() {
                       <SortTh label="Phân loại" col="category" current={ahrefsSortKey} dir={ahrefsSortDir} onSort={() => handleAhrefsSort("category")} />
                       <SortTh label="Checked" col="checkedAt" current={ahrefsSortKey} dir={ahrefsSortDir} onSort={() => handleAhrefsSort("checkedAt")} />
                       <SortTh label="Refs" col="refsCount" current={ahrefsSortKey} dir={ahrefsSortDir} onSort={() => handleAhrefsSort("refsCount")} />
+                      <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide whitespace-nowrap" title="ĐK1: ref DR>90 · ĐK2: ref DR 70-89 traffic≥1M">Backlink mạnh</th>
                       <th className="w-12" />
                     </tr>
                   </thead>
                   <tbody>
                     {filteredAhrefs
                       .slice(0, 200)
-                      .map((t) => (
+                      .map((t) => {
+                      const ev = backlinkEvidence(t.refs, trafficMap);
+                      return (
                         <tr key={t.targetDomain} className={cn(
                           "border-b border-border/30 hover:bg-muted/30 group align-top",
                           selectedTargets.has(t.targetDomain) && "bg-blue-50/50 dark:bg-blue-950/30"
@@ -1960,6 +2007,30 @@ export default function DomainPickerPage() {
                           <td className="px-3 py-2">
                             <RefList refs={t.refs} />
                           </td>
+                          <td className="px-3 py-2 text-xs max-w-[320px]">
+                            {ev.cond === 1 ? (
+                              <div className="space-y-0.5">
+                                <span className="inline-block rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 px-1.5 py-0.5 text-[10px] font-medium">
+                                  ✅ ĐK1 · {ev.items.length} ref DR&gt;90
+                                </span>
+                                <div className="font-mono text-[11px] text-muted-foreground leading-snug">
+                                  {ev.items.slice(0, 6).map((r) => `${r.domain} (DR ${r.dr})`).join(" | ")}
+                                  {ev.items.length > 6 && ` … +${ev.items.length - 6}`}
+                                </div>
+                              </div>
+                            ) : ev.cond === 2 ? (
+                              <div className="space-y-0.5">
+                                <span className="inline-block rounded bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 px-1.5 py-0.5 text-[10px] font-medium">
+                                  🟡 ĐK2 · {ev.items.length} ref DR70-89 ≥1M
+                                </span>
+                                <div className="font-mono text-[11px] text-muted-foreground leading-snug">
+                                  {ev.items.map((r) => `${r.domain} (DR ${r.dr}), ${fmtTraffic(r.traffic ?? 0)}`).join(" | ")}
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="opacity-40">—</span>
+                            )}
+                          </td>
                           <td className="px-3 py-2 text-right">
                             <button
                               onClick={() => removeAhrefsTarget(t.targetDomain)}
@@ -1969,7 +2040,8 @@ export default function DomainPickerPage() {
                             </button>
                           </td>
                         </tr>
-                      ))}
+                      );
+                      })}
                   </tbody>
                 </table>
                 {filteredAhrefs.length > 200 && (
