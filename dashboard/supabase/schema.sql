@@ -40,7 +40,7 @@ create table if not exists backlink_db (
 create index if not exists backlink_db_dr_idx
   on backlink_db (dr desc);
 
--- Organic traffic (Ahrefs) — chỉ điền cho 1 dải DR nhất định, dùng sau. Idempotent.
+-- Organic traffic (Ahrefs) — điền cho dải DR 70-89 (dùng sau). Idempotent.
 alter table backlink_db add column if not exists traffic bigint;
 
 -- ─── Ahrefs Result DB (kết quả check Ahrefs từ Aged Domain) ─────────────────
