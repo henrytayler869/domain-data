@@ -24,7 +24,7 @@ const dashboardItems = [
 const catcherItems = [
   { title: "Kho Domain", href: "/inventory", icon: Boxes },
   { title: "Domain Picker", href: "/domain-picker", icon: Filter },
-  { title: "Aged Domain", href: "/aged-domain", icon: Archive },
+  { title: "Check Backlink", href: "/aged-domain", icon: Archive },
   { title: "Trend Domain", href: "/trend-domain/pipeline", icon: TrendingUp },
 ];
 
