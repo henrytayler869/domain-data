@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { upsertEntries, DbEntry } from "@/lib/backlink-db";
 
-// POST body: { entries: { domain: string, dr: number }[] }
+// POST body: { entries: { domain: string, dr: number, traffic?: number }[] }
 export async function POST(request: NextRequest) {
   try {
     const { entries: toAdd }: { entries: DbEntry[] } = await request.json();

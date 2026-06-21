@@ -10,6 +10,7 @@ const TABLE = "backlink_db";
 export interface DbEntry {
   domain: string;
   dr: number;
+  traffic?: number | null;
 }
 
 export async function readDb(): Promise<DbEntry[]> {
@@ -90,10 +91,15 @@ export async function upsertEntries(entries: DbEntry[]): Promise<{ added: number
 
   const BATCH = 500;
   for (let i = 0; i < entries.length; i += BATCH) {
-    const slice = entries.slice(i, i + BATCH).map((e) => ({
-      domain: e.domain.toLowerCase().trim(),
-      dr: Number(e.dr) || 0,
-    }));
+    const slice = entries.slice(i, i + BATCH).map((e) => {
+      const row: { domain: string; dr: number; traffic?: number } = {
+        domain: e.domain.toLowerCase().trim(),
+        dr: Number(e.dr) || 0,
+      };
+      // Chỉ set traffic khi có giá trị → không ghi đè traffic cũ bằng null.
+      if (e.traffic != null && Number.isFinite(Number(e.traffic))) row.traffic = Number(e.traffic);
+      return row;
+    });
     const { error } = await sb.from(TABLE).upsert(slice, { onConflict: "domain" });
     if (error) throw new Error(error.message);
   }

@@ -28,6 +28,7 @@ import type { DomainResult } from "@/app/api/aged-domain/analyze/route";
 interface DbEntry {
   domain: string;
   dr: number;
+  traffic?: number | null;
 }
 
 interface ToastItem {
@@ -58,6 +59,10 @@ export default function AgedDomainPage() {
   const [v1SortDir, setV1SortDir] = useState<1 | -1>(-1);
 
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+
+  // Ref domain chưa có trong backlink_db (sau khi check) → export để bổ sung DR+Traffic.
+  const [unmatchedRefs, setUnmatchedRefs] = useState<{ domain: string; backlinks: number }[]>([]);
+  const [importingDr, setImportingDr] = useState(false);
 
   // ── Backlink DB ─────────────────────────────────────────────────────────────
   const [dbEntries, setDbEntries] = useState<DbEntry[]>([]);
@@ -130,6 +135,7 @@ export default function AgedDomainPage() {
     setV1Results(null);
     setV1Cost(null);
     setExpandedRows(new Set());
+    setUnmatchedRefs([]);
 
     try {
       const res = await fetch("/api/aged-domain/analyze", {
@@ -141,6 +147,7 @@ export default function AgedDomainPage() {
       if (!res.ok) throw new Error(data.error ?? "Phân tích thất bại");
       setV1Results(data.results ?? []);
       setV1Cost(data.cost ?? null);
+      setUnmatchedRefs(Array.isArray(data.unmatchedRefs) ? data.unmatchedRefs : []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Lỗi không xác định");
     } finally {
@@ -175,25 +182,63 @@ export default function AgedDomainPage() {
 
   // ─── CSV import ───────────────────────────────────────────────────────────────
 
-  async function importCsv() {
-    const lines = dbCsvText.trim().split("\n");
+  // Parse "domain,dr[,traffic]" — bỏ header + dòng dr không hợp lệ.
+  function parseDrTrafficCsv(text: string): DbEntry[] {
     const entries: DbEntry[] = [];
-    for (const line of lines) {
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.trim()) continue;
       const parts = line.split(",").map((s) => s.trim());
-      if (parts.length >= 2) {
-        const domain = parts[0].replace(/^["']|["']$/g, "");
-        const dr = parseInt(parts[1]);
-        if (domain && !isNaN(dr)) entries.push({ domain, dr });
-      }
+      const domain = (parts[0] ?? "").replace(/^["']|["']$/g, "").toLowerCase();
+      if (!/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/.test(domain)) continue;
+      const dr = parseInt(parts[1] ?? "", 10);
+      if (isNaN(dr) || dr < 0 || dr > 100) continue;
+      const trafficRaw = (parts[2] ?? "").replace(/[",]/g, "").replace(/traffic:/i, "").trim();
+      const traffic = trafficRaw ? Math.round(parseFloat(trafficRaw)) : null;
+      entries.push({ domain, dr, traffic: Number.isFinite(traffic as number) ? traffic : null });
     }
-    if (!entries.length) { showToast("❌ Không parse được dữ liệu CSV", true); return; }
+    return entries;
+  }
+
+  async function importCsv() {
+    const entries = parseDrTrafficCsv(dbCsvText);
+    if (!entries.length) { showToast("❌ Không parse được dữ liệu CSV (cần domain,dr[,traffic])", true); return; }
     try {
       const data = await addToDb(entries);
       setDbCsvText("");
       setDbImportOpen(false);
-      showToast(`✅ Import ${data?.added ?? 0} domain mới (${entries.length} dòng)`);
+      showToast(`✅ Import ${data?.added ?? 0} mới · cập nhật ${entries.length} dòng (DR+Traffic)`);
     } catch (err) {
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    }
+  }
+
+  // Export ref domain chưa có DR (sau khi check) → CSV domain,dr,traffic (để trống dr/traffic).
+  function exportUnmatched() {
+    if (!unmatchedRefs.length) return;
+    const csv = ["domain,dr,traffic", ...unmatchedRefs.map((r) => `${r.domain},,`)].join("\n");
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `backlink-refs-no-dr-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast(`✅ Export ${unmatchedRefs.length} ref chưa có DR → điền dr+traffic rồi Import`);
+  }
+
+  // Import file CSV domain,dr,traffic → cập nhật backlink_db (DR + Traffic).
+  async function importDrTrafficFile(file: File) {
+    setImportingDr(true);
+    try {
+      const entries = parseDrTrafficCsv(await file.text());
+      if (!entries.length) { showToast("❌ File không có dòng hợp lệ (domain,dr[,traffic])", true); return; }
+      const data = await addToDb(entries);
+      const withTraffic = entries.filter((e) => e.traffic != null).length;
+      showToast(`✅ Import ${entries.length} ref (DR) · ${withTraffic} có Traffic · ${data?.added ?? 0} mới`);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    } finally {
+      setImportingDr(false);
     }
   }
 
@@ -212,9 +257,9 @@ export default function AgedDomainPage() {
 
       {/* ── Header ─────────────────────────────────────────────────────────────── */}
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Aged Domain — Phân tích Backlink</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Aged Domain — Check Backlink</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Paste domain → phân tích Referring Domains → lọc domain đạt điều kiện DR.
+          Paste domain → DataforSEO check backlink từng domain → đối chiếu DB (DR/Traffic) → export ref chưa có DR để bổ sung.
         </p>
       </div>
 
@@ -314,10 +359,34 @@ export default function AgedDomainPage() {
                 </Badge>
               )}
             </div>
-            <p className="text-xs text-muted-foreground">
-              <span className="font-medium text-blue-600 dark:text-blue-400">DB Match</span>
-              {" "}= Referring Domain có trong DB với DR ≥ {minDr}
-            </p>
+            <div className="flex items-center gap-2 flex-wrap">
+              {unmatchedRefs.length > 0 && (
+                <Button
+                  size="sm" variant="outline"
+                  className="gap-1.5 text-amber-700 border-amber-400/60 hover:bg-amber-50 dark:hover:bg-amber-950"
+                  onClick={exportUnmatched}
+                  title="Export ref domain chưa có trong DB (CSV domain,dr,traffic) — điền DR+Traffic rồi Import"
+                >
+                  <Upload className="h-3.5 w-3.5 rotate-180" />
+                  Export ref chưa có DR ({unmatchedRefs.length})
+                </Button>
+              )}
+              <label className="cursor-pointer">
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  className="hidden"
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) importDrTrafficFile(f); e.target.value = ""; }}
+                />
+                <span className={cn(
+                  "inline-flex items-center gap-1.5 rounded-md border border-emerald-400/60 text-emerald-700 dark:hover:bg-emerald-950 hover:bg-emerald-50 px-2.5 h-8 text-xs font-medium",
+                  importingDr && "opacity-60 pointer-events-none",
+                )}>
+                  {importingDr ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                  {importingDr ? "Đang import…" : "Import DR + Traffic"}
+                </span>
+              </label>
+            </div>
           </div>
 
           {/* Table */}
