@@ -19,3 +19,6 @@ storage
 
 # Local Ahrefs ref-DR CSVs (import source, not for git)
 backlinkDataforSEO/
+
+# Local n8n workflows (not for git)
+n8n/

@@ -20,8 +20,9 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  // Apply to everything except: /login, /api/auth/*, Next.js internals, and common static files.
+  // Apply to everything except: /login, /api/auth/*, /api/n8n/* (token-authed
+  // endpoints for external automation), Next.js internals, and static files.
   matcher: [
-    "/((?!login|api/auth|_next/static|_next/image|favicon\\.ico|robots\\.txt|.*\\.(?:png|jpg|jpeg|gif|svg|ico|webp|woff2?|ttf|css|js|map)$).*)",
+    "/((?!login|api/auth|api/n8n|_next/static|_next/image|favicon\\.ico|robots\\.txt|.*\\.(?:png|jpg|jpeg|gif|svg|ico|webp|woff2?|ttf|css|js|map)$).*)",
   ],
 };
