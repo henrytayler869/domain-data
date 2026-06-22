@@ -9,11 +9,12 @@ import { markExcluded } from "@/lib/ahrefs-db";
  *   dataset and upserts into wayback_results in the same call. Idempotent —
  *   safe to poll repeatedly; ingestion happens at most once.
  *
- *   Flagged domains (betting/adult) are auto-excluded in target_assessment so
- *   they drop out of the picker without a manual "Loại trừ" pass. Harmless for
- *   inventory-owned domains — the inventory view doesn't filter on excluded_at.
+ *   Flagged domains (betting/adult) AND domains with no Wayback snapshots are
+ *   auto-excluded in target_assessment so they drop out of the picker without a
+ *   manual "Loại trừ" pass. Harmless for inventory-owned domains — the inventory
+ *   view doesn't filter on excluded_at.
  *
- * Response: { run, ingested: { count, autoExcluded } | null }
+ * Response: { run, ingested: { count, autoExcluded, flaggedCount, noSnapshotCount } | null }
  */
 export async function GET(
   _request: NextRequest,
@@ -40,24 +41,43 @@ export async function GET(
       finished_at: live.finishedAt ?? dbRow.finishedAt,
     });
 
-    let ingested: { count: number; autoExcluded: number; autoExcludedDomains: string[] } | null = null;
+    let ingested: {
+      count: number;
+      autoExcluded: number;
+      autoExcludedDomains: string[];
+      flaggedCount: number;
+      noSnapshotCount: number;
+    } | null = null;
     if (live.status === "SUCCEEDED" && live.datasetId && !dbRow.ingestedAt) {
       const items = await fetchWaybackResults(live.datasetId);
       const { count } = await upsertResults(items);
-      // Auto-exclude flagged domains so they vanish from the picker without
-      // a manual "Loại trừ" pass. The domain list is returned so the client
-      // can also prune its justUploadedTargets bypass set — otherwise rows
-      // uploaded in the same session would keep showing despite excluded_at.
+      // Auto-exclude domains that aren't worth picking, so they vanish without a
+      // manual "Loại trừ" pass. The domain list is returned so the client can
+      // also prune its justUploadedTargets bypass set — otherwise rows uploaded
+      // in the same session would keep showing despite excluded_at.
+      //   • flagged: betting/adult content history.
+      //   • no snapshot: 0 Wayback snapshots (check succeeded, no archive history
+      //     → domain has no aged value). Errored checks are left for manual review.
       const flagged = items
         .filter((it) => it.hasBetting || it.hasAdult)
         .map((it) => it.domain.toLowerCase().trim());
+      const noSnapshot = items
+        .filter((it) => !it.hasBetting && !it.hasAdult && !it.errorReason && (it.snapshotCount ?? 0) === 0)
+        .map((it) => it.domain.toLowerCase().trim());
+      const toExclude = Array.from(new Set([...flagged, ...noSnapshot]));
       let autoExcluded = 0;
-      if (flagged.length > 0) {
-        const ex = await markExcluded(flagged);
+      if (toExclude.length > 0) {
+        const ex = await markExcluded(toExclude);
         autoExcluded = ex.count;
       }
       await updateRun(runId, { ingested_at: new Date().toISOString() });
-      ingested = { count, autoExcluded, autoExcludedDomains: flagged };
+      ingested = {
+        count,
+        autoExcluded,
+        autoExcludedDomains: toExclude,
+        flaggedCount: flagged.length,
+        noSnapshotCount: noSnapshot.length,
+      };
     } else if (["FAILED", "TIMED-OUT", "ABORTED"].includes(live.status) && !dbRow.error) {
       await updateRun(runId, { error: `Apify status: ${live.status}` });
     }

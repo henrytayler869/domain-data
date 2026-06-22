@@ -390,9 +390,14 @@ export default function DomainPickerPage() {
       // Refresh both lists so newly ingested results show up.
       if (data.ingested?.count) {
         const ex = data.ingested.autoExcluded ?? 0;
+        const fl = data.ingested.flaggedCount ?? 0;
+        const ns = data.ingested.noSnapshotCount ?? 0;
+        const parts: string[] = [];
+        if (fl > 0) parts.push(`${fl} flagged`);
+        if (ns > 0) parts.push(`${ns} no snapshot`);
         showToast(
           ex > 0
-            ? `✅ Wayback ingested ${data.ingested.count} kết quả · 🚫 auto loại trừ ${ex} flagged`
+            ? `✅ Wayback ingested ${data.ingested.count} kết quả · 🚫 auto loại trừ ${ex} (${parts.join(" + ")})`
             : `✅ Wayback ingested ${data.ingested.count} kết quả`,
         );
         if (ex > 0) {
