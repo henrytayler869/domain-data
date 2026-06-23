@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { TargetSummary } from "@/lib/ahrefs-db";
+import { parseUnifiedCsv } from "@/lib/picker-csv";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -87,6 +88,7 @@ export default function AgedDomainPage() {
   const [lookupText, setLookupText] = useState("");
   const [lookupRows, setLookupRows] = useState<LookupRow[] | null>(null);
   const [lookupLoading, setLookupLoading] = useState(false);
+  const [importingEval, setImportingEval] = useState(false);
   const [expandedLookup, setExpandedLookup] = useState<Set<string>>(new Set());
   const [lookupFilter, setLookupFilter] = useState<"all" | "tot" | "tb" | "bad" | "none">("all");
   const [copiedLookup, setCopiedLookup] = useState(false);
@@ -217,6 +219,39 @@ export default function AgedDomainPage() {
       setLookupLoading(false);
     }
   }, [lookupText, showToast]);
+
+  // Import CSV kết quả đánh giá (định dạng Unified: target_domain,refs,rating,…)
+  // → lưu vào store đánh giá (ahrefs_results + target_assessment). KHÔNG auto
+  // loại trừ / auto Wayback (khác với Picker Upload Result) — chỉ bổ sung đánh giá.
+  async function importEvalCsv(file: File) {
+    setImportingEval(true);
+    try {
+      const unified = parseUnifiedCsv(await file.text());
+      if (!unified.length) { showToast("❌ CSV không có dòng hợp lệ (cần cột target_domain + refs/rating)", true); return; }
+      const rows: { targetDomain: string; refDomain: string; domainRating: number }[] = [];
+      const assessments: { targetDomain: string; rating: string | null; category: string | null; detail: string | null }[] = [];
+      for (const u of unified) {
+        for (const r of u.refs) rows.push({ targetDomain: u.targetDomain, refDomain: r.domain, domainRating: r.dr });
+        if (u.rating || u.category || u.detail) {
+          assessments.push({ targetDomain: u.targetDomain, rating: u.rating || null, category: u.category || null, detail: u.detail || null });
+        }
+      }
+      if (!rows.length && !assessments.length) { showToast("❌ Không có dữ liệu để import", true); return; }
+      const res = await fetch("/api/ahrefs-results/db/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows, assessments }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Import thất bại");
+      showToast(`✅ Import ${unified.length} domain · ${assessments.length} đánh giá · ${rows.length} ref`);
+      if (lookupText.trim() && lookupRows) await runLookup(); // refresh bảng đang xem
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    } finally {
+      setImportingEval(false);
+    }
+  }
 
   // Lọc kết quả tra cứu theo đánh giá.
   const displayedLookup = (lookupRows ?? []).filter((row) => {
@@ -410,10 +445,27 @@ export default function AgedDomainPage() {
             rows={3}
             className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-y focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
-          <Button onClick={runLookup} disabled={lookupLoading || !lookupText.trim()} className="gap-2 sm:w-36">
-            {lookupLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-            {lookupLoading ? "Đang tra…" : "Tra cứu"}
-          </Button>
+          <div className="flex flex-col gap-2 sm:w-44">
+            <Button onClick={runLookup} disabled={lookupLoading || !lookupText.trim()} className="gap-2">
+              {lookupLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+              {lookupLoading ? "Đang tra…" : "Tra cứu"}
+            </Button>
+            <label className="cursor-pointer">
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                className="hidden"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) importEvalCsv(f); e.target.value = ""; }}
+              />
+              <span className={cn(
+                "inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-emerald-400/60 text-emerald-700 dark:hover:bg-emerald-950 hover:bg-emerald-50 px-2.5 h-9 text-xs font-medium",
+                importingEval && "opacity-60 pointer-events-none",
+              )}>
+                {importingEval ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                {importingEval ? "Đang import…" : "Import đánh giá (CSV)"}
+              </span>
+            </label>
+          </div>
         </div>
 
         {lookupRows !== null && (
