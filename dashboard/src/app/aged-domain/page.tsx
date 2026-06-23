@@ -84,6 +84,7 @@ export default function AgedDomainPage() {
   const [lookupRows, setLookupRows] = useState<LookupRow[] | null>(null);
   const [lookupLoading, setLookupLoading] = useState(false);
   const [expandedLookup, setExpandedLookup] = useState<Set<string>>(new Set());
+  const [lookupFilter, setLookupFilter] = useState<"all" | "tot" | "tb" | "bad" | "none">("all");
 
   // ── Toasts ──────────────────────────────────────────────────────────────────
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -195,6 +196,39 @@ export default function AgedDomainPage() {
     }
   }, [lookupText, showToast]);
 
+  // Lọc kết quả tra cứu theo đánh giá.
+  const displayedLookup = (lookupRows ?? []).filter((row) => {
+    if (lookupFilter === "all") return true;
+    const r = (row.rating || "").toUpperCase();
+    const rated = !!(row.rating && row.rating.trim());
+    if (lookupFilter === "none") return !rated;             // chưa đánh giá
+    if (lookupFilter === "tot") return r.includes("TỐT");   // đánh giá tốt
+    if (lookupFilter === "tb") return r.includes("TRUNG BÌNH");
+    if (lookupFilter === "bad") return r.includes("RỦI RO") || r.includes("XẤU");
+    return true;
+  });
+
+  // Export kết quả tra cứu (đang lọc) → CSV.
+  function exportLookupCsv() {
+    if (!displayedLookup.length) { showToast("Không có dòng để export", true); return; }
+    const esc = (v: unknown) => { const s = String(v ?? ""); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    const header = "domain,rating,category,max_dr,refs_count,backlink_condition,refs,detail";
+    const lines = displayedLookup.map((r) => {
+      const cond = r.cond === 1 ? "ĐK1" : r.cond === 2 ? "ĐK2" : "";
+      const refsStr = r.refs.map((x) => `${x.domain} (DR ${x.dr})`).join("; ");
+      return [r.domain, r.rating ?? "", r.category ?? "", r.found ? r.maxDr : "", r.found ? r.refsCount : "", cond, refsStr, r.detail ?? ""].map(esc).join(",");
+    });
+    const csv = ["﻿" + header, ...lines].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `lookup-danh-gia-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast(`✅ Export ${displayedLookup.length} domain`);
+  }
+
   // ─── CSV import ───────────────────────────────────────────────────────────────
 
   // Parse "domain,dr[,traffic]" — bỏ header + dòng dr không hợp lệ.
@@ -271,7 +305,29 @@ export default function AgedDomainPage() {
         </div>
 
         {lookupRows !== null && (
-          <div className="mt-4 rounded-lg border overflow-hidden">
+          <>
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground">
+              {displayedLookup.length} / {lookupRows.length} domain
+            </span>
+            <select
+              value={lookupFilter}
+              onChange={(e) => setLookupFilter(e.target.value as typeof lookupFilter)}
+              className="h-8 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
+              title="Lọc theo đánh giá"
+            >
+              <option value="all">Tất cả</option>
+              <option value="tot">✅ Đánh giá tốt (TỐT)</option>
+              <option value="tb">⚠️ TRUNG BÌNH</option>
+              <option value="bad">⚠️/❌ Rủi ro / Xấu</option>
+              <option value="none">Chưa đánh giá</option>
+            </select>
+            <Button size="sm" variant="outline" className="gap-1.5 ml-auto" onClick={exportLookupCsv} disabled={!displayedLookup.length}>
+              <Upload className="h-3.5 w-3.5 rotate-180" />
+              Export CSV
+            </Button>
+          </div>
+          <div className="mt-2 rounded-lg border overflow-hidden">
             <table className="w-full text-sm">
               <thead className="bg-muted/50 border-b">
                 <tr>
@@ -285,9 +341,9 @@ export default function AgedDomainPage() {
                 </tr>
               </thead>
               <tbody>
-                {lookupRows.length === 0 ? (
-                  <tr><td colSpan={7} className="text-center py-8 text-muted-foreground text-sm">Không có domain</td></tr>
-                ) : lookupRows.map((row) => {
+                {displayedLookup.length === 0 ? (
+                  <tr><td colSpan={7} className="text-center py-8 text-muted-foreground text-sm">Không có domain khớp bộ lọc</td></tr>
+                ) : displayedLookup.map((row) => {
                   const expanded = expandedLookup.has(row.domain);
                   return (
                     <Fragment key={row.domain}>
@@ -347,6 +403,7 @@ export default function AgedDomainPage() {
               </tbody>
             </table>
           </div>
+          </>
         )}
       </div>
 
