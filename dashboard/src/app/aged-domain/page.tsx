@@ -18,7 +18,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { TargetSummary } from "@/lib/ahrefs-db";
-import { valuateByRefs } from "@/lib/valuation";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -46,6 +45,8 @@ interface LookupRow {
   refs: { domain: string; dr: number }[];
   cond: 0 | 1 | 2;
   evItems: { domain: string; dr: number; traffic: number | null }[];
+  purchased: boolean;           // có trong Kho Domain chưa
+  expectedPrice: number | null; // giá dự kiến đã set bên Kho (null = chưa set)
 }
 
 // Backlink mạnh: ĐK1 = ref DR>90; ĐK2 = ref DR70-89 traffic ≥ 1M.
@@ -155,26 +156,35 @@ export default function AgedDomainPage() {
     if (!domains.length) { showToast("❌ Không có domain hợp lệ trong ô tra cứu", true); return; }
     setLookupLoading(true);
     try {
-      const [sumRes, trafRes] = await Promise.all([
+      const [sumRes, trafRes, invRes] = await Promise.all([
         fetch("/api/ahrefs-results/db/by-targets", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ targets: domains }),
         }),
         fetch("/api/backlink-db/traffic"),
+        fetch("/api/inventory"),
       ]);
       const sumData = await sumRes.json();
       const trafData = await trafRes.json();
+      const invData = await invRes.json();
       const summaries: TargetSummary[] = Array.isArray(sumData) ? sumData : [];
       const map = new Map(summaries.map((s) => [s.targetDomain.toLowerCase(), s]));
       const trafficMap = new Map<string, number>();
       for (const r of (trafData?.rows ?? []) as { domain: string; traffic: number }[]) {
         trafficMap.set(r.domain.toLowerCase(), r.traffic);
       }
+      // Kho Domain → trạng thái Đã mua + giá dự kiến (expectedSellPrice).
+      const invMap = new Map<string, number | null>();
+      for (const e of (Array.isArray(invData) ? invData : []) as { domain: string; expectedSellPrice: number | null }[]) {
+        invMap.set(e.domain.toLowerCase(), e.expectedSellPrice ?? null);
+      }
       const rows: LookupRow[] = domains.map((domain) => {
+        const purchased = invMap.has(domain);
+        const expectedPrice = purchased ? (invMap.get(domain) ?? null) : null;
         const s = map.get(domain);
         if (!s) {
-          return { domain, found: false, rating: null, category: null, detail: null, refsCount: 0, maxDr: 0, refs: [], cond: 0, evItems: [] };
+          return { domain, found: false, rating: null, category: null, detail: null, refsCount: 0, maxDr: 0, refs: [], cond: 0, evItems: [], purchased, expectedPrice };
         }
         const ev = backlinkEvidence(s.refs, trafficMap);
         return {
@@ -188,6 +198,8 @@ export default function AgedDomainPage() {
           refs: s.refs,
           cond: ev.cond,
           evItems: ev.items,
+          purchased,
+          expectedPrice,
         };
       });
       setLookupRows(rows);
@@ -227,14 +239,15 @@ export default function AgedDomainPage() {
     setTimeout(() => setCopiedLookup(false), 1500);
   }
 
-  // Export kết quả tra cứu (đang lọc) → CSV: Domain | Ref Domain (DR) | Giá.
+  // Export kết quả tra cứu (đang lọc) → CSV: Domain | Ref Domain (DR) | Giá dự kiến.
+  // Giá dự kiến lấy từ Kho Domain (expectedSellPrice); chưa set thì để trống.
   function exportLookupCsv() {
     if (!displayedLookup.length) { showToast("Không có dòng để export", true); return; }
     const esc = (v: unknown) => { const s = String(v ?? ""); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-    const header = "Domain,Ref Domain (DR),Giá";
+    const header = "Domain,Ref Domain (DR),Giá dự kiến";
     const lines = displayedLookup.map((r) => {
       const refsStr = r.refs.map((x) => `${x.domain} (DR ${x.dr})`).join("; ");
-      const price = r.found ? valuateByRefs(r.refs, r.domain) : "";
+      const price = r.expectedPrice != null ? r.expectedPrice : "";
       return [r.domain, refsStr, price].map(esc).join(",");
     });
     const csv = ["﻿" + header, ...lines].join("\n");
@@ -356,16 +369,18 @@ export default function AgedDomainPage() {
                 <tr>
                   <th className="px-3 py-2 w-8" />
                   <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Domain</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Trạng thái</th>
                   <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Đánh giá</th>
                   <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Phân loại</th>
                   <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Max DR</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Giá dự kiến</th>
                   <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Refs</th>
                   <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Backlink mạnh</th>
                 </tr>
               </thead>
               <tbody>
                 {displayedLookup.length === 0 ? (
-                  <tr><td colSpan={7} className="text-center py-8 text-muted-foreground text-sm">Không có domain khớp bộ lọc</td></tr>
+                  <tr><td colSpan={9} className="text-center py-8 text-muted-foreground text-sm">Không có domain khớp bộ lọc</td></tr>
                 ) : displayedLookup.map((row) => {
                   const expanded = expandedLookup.has(row.domain);
                   return (
@@ -383,10 +398,18 @@ export default function AgedDomainPage() {
                         </td>
                         <td className="px-3 py-2 font-mono text-xs">{row.domain}</td>
                         <td className="px-3 py-2">
+                          {row.purchased ? (
+                            <span className="inline-flex items-center gap-0.5 rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 px-1.5 py-0.5 text-[10px] font-medium"><Check className="h-2.5 w-2.5" /> Đã mua</span>
+                          ) : (
+                            <span className="inline-block rounded bg-muted text-muted-foreground px-1.5 py-0.5 text-[10px] font-medium">Chưa mua</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2">
                           {row.found ? <RatingBadge rating={row.rating} /> : <span className="text-xs text-muted-foreground italic">chưa có đánh giá</span>}
                         </td>
                         <td className="px-3 py-2 text-xs text-muted-foreground max-w-[200px]">{row.category || <span className="opacity-40">—</span>}</td>
                         <td className="px-3 py-2">{row.found ? <DrBadge dr={row.maxDr} small /> : <span className="opacity-40">—</span>}</td>
+                        <td className="px-3 py-2 text-xs whitespace-nowrap">{row.expectedPrice != null ? <span className="font-medium">${row.expectedPrice}</span> : <span className="opacity-40">—</span>}</td>
                         <td className="px-3 py-2 text-xs text-muted-foreground">{row.found ? row.refsCount.toLocaleString() : "—"}</td>
                         <td className="px-3 py-2 text-xs">
                           {row.cond === 1 ? (
@@ -398,7 +421,7 @@ export default function AgedDomainPage() {
                       </tr>
                       {expanded && row.found && (
                         <tr className="bg-muted/10 border-b border-border/30">
-                          <td colSpan={7} className="px-6 py-3 text-xs space-y-2">
+                          <td colSpan={9} className="px-6 py-3 text-xs space-y-2">
                             {row.detail && (
                               <p className="text-muted-foreground leading-snug whitespace-pre-wrap max-w-[700px]"><strong>Chi tiết:</strong> {row.detail}</p>
                             )}
