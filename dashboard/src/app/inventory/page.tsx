@@ -196,26 +196,42 @@ export default function InventoryPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [invRes, ahrefsRes, blRes, wRes, wbResRes, wbRunsRes] = await Promise.all([
+      // KHÔNG quét toàn bộ ahrefs_results (~chục nghìn dòng = ~15s). Kho chỉ cần
+      // refs cho domain đang sở hữu → lấy inventory trước rồi query refs theo list.
+      const [invRes, blRes, wRes, wbResRes, wbRunsRes] = await Promise.all([
         fetch("/api/inventory"),
-        fetch("/api/ahrefs-results/db"),
         fetch("/api/ref-blacklist"),
         fetch("/api/withdrawals"),
         fetch("/api/wayback/results"),
         fetch("/api/wayback/runs"),
       ]);
       const invData = await invRes.json();
-      const ahrefsData = await ahrefsRes.json();
       const blData = await blRes.json();
       const wData = await wRes.json();
       const wbResData = await wbResRes.json();
       const wbRunsData = await wbRunsRes.json();
+      const entriesArr: { domain: string }[] = Array.isArray(invData) ? invData : [];
       setEntries(Array.isArray(invData) ? invData : []);
-      setAhrefsSummary(Array.isArray(ahrefsData) ? ahrefsData : []);
       setUserBlacklist(Array.isArray(blData) ? blData : []);
       setWithdrawals(Array.isArray(wData) ? wData : []);
       setWaybackResults(wbResData.rows ?? []);
       setWaybackRuns(wbRunsData.runs ?? []);
+
+      // Refs chỉ cho domain trong kho — nhanh hơn nhiều so với quét cả bảng.
+      const domains = entriesArr.map((e) => e.domain).filter(Boolean);
+      if (domains.length) {
+        try {
+          const refsRes = await fetch("/api/ahrefs-results/db/by-targets", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ targets: domains }),
+          });
+          const refsData = await refsRes.json();
+          setAhrefsSummary(Array.isArray(refsData) ? refsData : []);
+        } catch { setAhrefsSummary([]); }
+      } else {
+        setAhrefsSummary([]);
+      }
     } catch { /* ignore */ }
     setLoading(false);
   }, []);

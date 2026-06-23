@@ -151,7 +151,11 @@ export default function AgedDomainPage() {
     setLookupLoading(true);
     try {
       const [sumRes, trafRes] = await Promise.all([
-        fetch("/api/ahrefs-results/db"),
+        fetch("/api/ahrefs-results/db/by-targets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ targets: domains }),
+        }),
         fetch("/api/backlink-db/traffic"),
       ]);
       const sumData = await sumRes.json();

@@ -159,6 +159,68 @@ export async function readTargetSummary(): Promise<TargetSummary[]> {
   return Array.from(map.values()).sort((a, b) => b.refsCount - a.refsCount);
 }
 
+/**
+ * Như readTargetSummary nhưng CHỈ cho 1 danh sách target cụ thể — query lọc
+ * `target_domain IN (...)` thay vì quét toàn bảng ahrefs_results (~chục nghìn
+ * dòng). Dùng cho Kho Domain / tra cứu nhiều domain (chỉ cần vài trăm target).
+ */
+export async function readTargetSummaryFor(targetsRaw: string[]): Promise<TargetSummary[]> {
+  const targets = Array.from(new Set(
+    targetsRaw.map((t) => t.toLowerCase().trim()).filter(Boolean),
+  ));
+  if (!targets.length) return [];
+
+  const sb = supabase();
+  const CHUNK = 150; // tránh URL quá dài cho .in()
+  const refRows: DbRow[] = [];
+  const assessRows: AssessmentDbRow[] = [];
+  for (let i = 0; i < targets.length; i += CHUNK) {
+    const slice = targets.slice(i, i + CHUNK);
+    const [{ data: refData, error: refErr }, { data: aData, error: aErr }] = await Promise.all([
+      sb.from(TABLE).select("*").in("target_domain", slice),
+      sb.from(ASSESS_TABLE).select("*").in("target_domain", slice),
+    ]);
+    if (refErr) throw new Error(refErr.message);
+    if (aErr) throw new Error(aErr.message);
+    if (refData) refRows.push(...(refData as DbRow[]));
+    if (aData) assessRows.push(...(aData as AssessmentDbRow[]));
+  }
+  const assessMap = new Map(assessRows.map((r) => [r.target_domain, r]));
+
+  const map = new Map<string, TargetSummary>();
+  const ensure = (targetDomain: string, checkedAt: string): TargetSummary => {
+    let cur = map.get(targetDomain);
+    if (!cur) {
+      cur = { targetDomain, refsCount: 0, maxDr: 0, checkedAt, refs: [], rating: null, category: null, detail: null, excluded: false };
+      map.set(targetDomain, cur);
+    }
+    return cur;
+  };
+  for (const r of refRows) {
+    const cur = ensure(r.target_domain, r.checked_at);
+    cur.refsCount += 1;
+    if (r.domain_rating > cur.maxDr) cur.maxDr = r.domain_rating;
+    if (r.checked_at > cur.checkedAt) cur.checkedAt = r.checked_at;
+    cur.refs.push({ domain: r.ref_domain, dr: r.domain_rating });
+  }
+  for (const [domain, a] of assessMap.entries()) {
+    if (!map.has(domain) && (a.excluded_at || a.detail === "DataforSEO checked")) {
+      ensure(domain, a.updated_at);
+    }
+  }
+  for (const [domain, summary] of map.entries()) {
+    const a = assessMap.get(domain);
+    if (a) {
+      summary.rating = a.rating;
+      summary.category = a.category;
+      summary.detail = a.detail;
+      summary.excluded = !!a.excluded_at;
+    }
+  }
+  for (const s of map.values()) s.refs.sort((a, b) => b.dr - a.dr);
+  return Array.from(map.values()).sort((a, b) => b.refsCount - a.refsCount);
+}
+
 // ─── Assessment upsert ───────────────────────────────────────────────────────
 
 export async function upsertAssessments(
