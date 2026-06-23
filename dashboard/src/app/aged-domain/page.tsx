@@ -1,18 +1,21 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, Fragment } from "react";
 import {
   Search,
   ChevronDown,
+  ChevronRight,
   Database,
   Trash2,
   Plus,
   X,
   Upload,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import type { TargetSummary } from "@/lib/ahrefs-db";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -28,6 +31,41 @@ interface ToastItem {
   isError: boolean;
 }
 
+// Một dòng kết quả tra cứu đánh giá theo domain.
+interface LookupRow {
+  domain: string;
+  found: boolean;
+  rating: string | null;
+  category: string | null;
+  detail: string | null;
+  refsCount: number;
+  maxDr: number;
+  refs: { domain: string; dr: number }[];
+  cond: 0 | 1 | 2;
+  evItems: { domain: string; dr: number; traffic: number | null }[];
+}
+
+// Backlink mạnh: ĐK1 = ref DR>90; ĐK2 = ref DR70-89 traffic ≥ 1M.
+const STRONG_TRAFFIC_MIN = 1_000_000;
+function backlinkEvidence(
+  refs: { domain: string; dr: number }[],
+  trafficMap: Map<string, number>,
+): { cond: 0 | 1 | 2; items: { domain: string; dr: number; traffic: number | null }[] } {
+  const dr90 = refs.filter((r) => r.dr > 90);
+  if (dr90.length) return { cond: 1, items: dr90.map((r) => ({ domain: r.domain, dr: r.dr, traffic: null })) };
+  const dr7089 = refs
+    .map((r) => ({ domain: r.domain, dr: r.dr, traffic: trafficMap.get(r.domain.toLowerCase()) ?? 0 }))
+    .filter((r) => r.dr >= 70 && r.dr <= 89 && r.traffic >= STRONG_TRAFFIC_MIN)
+    .sort((a, b) => b.traffic - a.traffic);
+  if (dr7089.length) return { cond: 2, items: dr7089 };
+  return { cond: 0, items: [] };
+}
+function fmtTraffic(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
+  if (n >= 1_000) return Math.round(n / 1_000) + "K";
+  return String(n);
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function AgedDomainPage() {
@@ -40,6 +78,12 @@ export default function AgedDomainPage() {
   const [dbImportOpen, setDbImportOpen] = useState(false);
   const [dbSearch, setDbSearch] = useState("");
   const [backfilling, setBackfilling] = useState(false);
+
+  // ── Tra cứu đánh giá nhiều domain ─────────────────────────────────────────────
+  const [lookupText, setLookupText] = useState("");
+  const [lookupRows, setLookupRows] = useState<LookupRow[] | null>(null);
+  const [lookupLoading, setLookupLoading] = useState(false);
+  const [expandedLookup, setExpandedLookup] = useState<Set<string>>(new Set());
 
   // ── Toasts ──────────────────────────────────────────────────────────────────
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -90,6 +134,62 @@ export default function AgedDomainPage() {
     await loadDb();
     showToast("🗑️ Đã xóa toàn bộ Backlink DB");
   }, [dbEntries.length, loadDb, showToast]);
+
+  // ─── Tra cứu đánh giá nhiều domain ─────────────────────────────────────────────
+  // Dán list domain → đối chiếu store đánh giá (ahrefs_results + target_assessment)
+  // → xem lại rating/category/refs/DR + ĐK1/ĐK2 cho từng domain (kể cả đã mua/đã loại).
+  const runLookup = useCallback(async () => {
+    const seen = new Set<string>();
+    const domains: string[] = [];
+    for (const line of lookupText.split(/[\n,;\s]+/)) {
+      const d = line.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+      if (!/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/.test(d) || seen.has(d)) continue;
+      seen.add(d);
+      domains.push(d);
+    }
+    if (!domains.length) { showToast("❌ Không có domain hợp lệ trong ô tra cứu", true); return; }
+    setLookupLoading(true);
+    try {
+      const [sumRes, trafRes] = await Promise.all([
+        fetch("/api/ahrefs-results/db"),
+        fetch("/api/backlink-db/traffic"),
+      ]);
+      const sumData = await sumRes.json();
+      const trafData = await trafRes.json();
+      const summaries: TargetSummary[] = Array.isArray(sumData) ? sumData : [];
+      const map = new Map(summaries.map((s) => [s.targetDomain.toLowerCase(), s]));
+      const trafficMap = new Map<string, number>();
+      for (const r of (trafData?.rows ?? []) as { domain: string; traffic: number }[]) {
+        trafficMap.set(r.domain.toLowerCase(), r.traffic);
+      }
+      const rows: LookupRow[] = domains.map((domain) => {
+        const s = map.get(domain);
+        if (!s) {
+          return { domain, found: false, rating: null, category: null, detail: null, refsCount: 0, maxDr: 0, refs: [], cond: 0, evItems: [] };
+        }
+        const ev = backlinkEvidence(s.refs, trafficMap);
+        return {
+          domain,
+          found: true,
+          rating: s.rating,
+          category: s.category,
+          detail: s.detail,
+          refsCount: s.refsCount,
+          maxDr: s.maxDr,
+          refs: s.refs,
+          cond: ev.cond,
+          evItems: ev.items,
+        };
+      });
+      setLookupRows(rows);
+      const foundN = rows.filter((r) => r.found).length;
+      showToast(`✅ Tra cứu ${rows.length} domain · ${foundN} có đánh giá · ${rows.length - foundN} chưa có`);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    } finally {
+      setLookupLoading(false);
+    }
+  }, [lookupText, showToast]);
 
   // ─── CSV import ───────────────────────────────────────────────────────────────
 
@@ -143,8 +243,108 @@ export default function AgedDomainPage() {
         </p>
       </div>
 
+      {/* ── Tra cứu đánh giá nhiều domain ─────────────────────────────────────── */}
+      <div className="rounded-xl border bg-card p-5 shadow-sm">
+        <div className="flex items-center gap-2 mb-2">
+          <Search className="h-4 w-4 text-primary" />
+          <h2 className="text-sm font-semibold uppercase tracking-wide">Tra cứu đánh giá (nhiều domain)</h2>
+        </div>
+        <p className="text-xs text-muted-foreground mb-3">
+          Dán nhiều domain (mỗi dòng / phẩy / cách) → xem lại <strong>đánh giá + ref/DR + ĐK1/ĐK2</strong> đã lưu cho từng domain (kể cả đã mua / đã loại trừ).
+        </p>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
+          <textarea
+            value={lookupText}
+            onChange={(e) => setLookupText(e.target.value)}
+            placeholder={"example.com\nanotherdomain.net\n..."}
+            rows={3}
+            className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-y focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+          <Button onClick={runLookup} disabled={lookupLoading || !lookupText.trim()} className="gap-2 sm:w-36">
+            {lookupLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+            {lookupLoading ? "Đang tra…" : "Tra cứu"}
+          </Button>
+        </div>
 
-
+        {lookupRows !== null && (
+          <div className="mt-4 rounded-lg border overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50 border-b">
+                <tr>
+                  <th className="px-3 py-2 w-8" />
+                  <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Domain</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Đánh giá</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Phân loại</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Max DR</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Refs</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Backlink mạnh</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lookupRows.length === 0 ? (
+                  <tr><td colSpan={7} className="text-center py-8 text-muted-foreground text-sm">Không có domain</td></tr>
+                ) : lookupRows.map((row) => {
+                  const expanded = expandedLookup.has(row.domain);
+                  return (
+                    <Fragment key={row.domain}>
+                      <tr
+                        className={cn("border-b border-border/30 hover:bg-muted/20 cursor-pointer align-top", !row.found && "opacity-60")}
+                        onClick={() => setExpandedLookup((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(row.domain)) next.delete(row.domain); else next.add(row.domain);
+                          return next;
+                        })}
+                      >
+                        <td className="px-3 py-2 text-muted-foreground">
+                          {row.found ? (expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />) : null}
+                        </td>
+                        <td className="px-3 py-2 font-mono text-xs">{row.domain}</td>
+                        <td className="px-3 py-2">
+                          {row.found ? <RatingBadge rating={row.rating} /> : <span className="text-xs text-muted-foreground italic">chưa có đánh giá</span>}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-muted-foreground max-w-[200px]">{row.category || <span className="opacity-40">—</span>}</td>
+                        <td className="px-3 py-2">{row.found ? <DrBadge dr={row.maxDr} small /> : <span className="opacity-40">—</span>}</td>
+                        <td className="px-3 py-2 text-xs text-muted-foreground">{row.found ? row.refsCount.toLocaleString() : "—"}</td>
+                        <td className="px-3 py-2 text-xs">
+                          {row.cond === 1 ? (
+                            <span className="inline-block rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 px-1.5 py-0.5 text-[10px] font-medium">✅ ĐK1 · {row.evItems.length} ref DR&gt;90</span>
+                          ) : row.cond === 2 ? (
+                            <span className="inline-block rounded bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 px-1.5 py-0.5 text-[10px] font-medium">🟡 ĐK2 · {row.evItems.length} ref ≥1M</span>
+                          ) : <span className="opacity-40">—</span>}
+                        </td>
+                      </tr>
+                      {expanded && row.found && (
+                        <tr className="bg-muted/10 border-b border-border/30">
+                          <td colSpan={7} className="px-6 py-3 text-xs space-y-2">
+                            {row.detail && (
+                              <p className="text-muted-foreground leading-snug whitespace-pre-wrap max-w-[700px]"><strong>Chi tiết:</strong> {row.detail}</p>
+                            )}
+                            {row.cond === 2 && row.evItems.length > 0 && (
+                              <p className="font-mono text-[11px] text-muted-foreground">
+                                ĐK2: {row.evItems.map((r) => `${r.domain} (DR ${r.dr}), ${fmtTraffic(r.traffic ?? 0)}`).join(" | ")}
+                              </p>
+                            )}
+                            {row.refs.length > 0 ? (
+                              <div className="flex flex-wrap gap-1.5">
+                                {row.refs.slice(0, 60).map((r) => (
+                                  <span key={r.domain} className="inline-flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[11px]">
+                                    {r.domain} <DrBadge dr={r.dr} small />
+                                  </span>
+                                ))}
+                                {row.refs.length > 60 && <span className="text-muted-foreground">… +{row.refs.length - 60}</span>}
+                              </div>
+                            ) : <p className="text-muted-foreground italic">Không có ref khớp DB</p>}
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
       {/* ── Backlink DB Panel ──────────────────────────────────────────────────── */}
       <div className="rounded-xl border bg-card shadow-sm">
@@ -358,6 +558,23 @@ export default function AgedDomainPage() {
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
+
+function RatingBadge({ rating }: { rating: string | null }) {
+  if (!rating) return <span className="text-xs text-muted-foreground italic">—</span>;
+  const r = rating.toUpperCase();
+  const color =
+    r.includes("RẤT XẤU") ? "bg-red-200 dark:bg-red-950 text-red-800 dark:text-red-300"
+    : r.includes("XẤU") ? "bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-300"
+    : r.includes("RỦI RO") ? "bg-orange-100 dark:bg-orange-950 text-orange-700 dark:text-orange-300"
+    : r.includes("TRUNG BÌNH") ? "bg-yellow-100 dark:bg-yellow-950 text-yellow-700 dark:text-yellow-300"
+    : r.includes("TỐT") ? "bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300"
+    : "bg-muted text-muted-foreground";
+  return (
+    <span className={cn("inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap", color)}>
+      {rating}
+    </span>
+  );
+}
 
 function DrBadge({ dr, small = false }: { dr: number; small?: boolean }) {
   const color =
