@@ -101,6 +101,13 @@ export default function InventoryPage() {
     }
     return m;
   }, [ahrefsSummary, blacklistSet]);
+  // Đánh giá LIVE từ target_assessment (ahrefs store) — ưu tiên hơn snapshot lúc
+  // mua trong domain_inventory (có thể null nếu mua trước khi có đánh giá).
+  const assessByDomain = useMemo(() => {
+    const m = new Map<string, { rating: string | null; category: string | null }>();
+    for (const t of ahrefsSummary) m.set(t.targetDomain, { rating: t.rating, category: t.category });
+    return m;
+  }, [ahrefsSummary]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [valuating, setValuating] = useState(false);
   const [sellFormOpen, setSellFormOpen] = useState(false);
@@ -1773,9 +1780,9 @@ export default function InventoryPage() {
                           <span className="text-xs opacity-40">—</span>
                         )}
                       </td>
-                      <td className="px-3 py-2"><RatingBadge rating={e.rating} /></td>
+                      <td className="px-3 py-2"><RatingBadge rating={assessByDomain.get(e.domain)?.rating ?? e.rating} /></td>
                       <td className="px-3 py-2 text-xs text-muted-foreground max-w-[200px]">
-                        {e.category || <span className="opacity-40">—</span>}
+                        {(assessByDomain.get(e.domain)?.category ?? e.category) || <span className="opacity-40">—</span>}
                       </td>
                       <td className="px-3 py-2">
                         <RefList refs={refsByDomain.get(e.domain) ?? []} />
