@@ -94,6 +94,7 @@ export default function DomainPickerPage() {
   // ── File / parsed rows ──────────────────────────────────────────────────────
   const [fileName, setFileName] = useState<string | null>(null);
   const [rawRows, setRawRows] = useState<PickerRow[]>([]);
+  const [pasteText, setPasteText] = useState("");
   const [parseError, setParseError] = useState<string | null>(null);
   const [parsing, setParsing] = useState(false);
 
@@ -134,13 +135,6 @@ export default function DomainPickerPage() {
   const [checkedTargets, setCheckedTargets] = useState<Set<string>>(new Set());
   const [ahrefsSearch, setAhrefsSearch] = useState("");
   const [ahrefsUploading, setAhrefsUploading] = useState(false);
-  // Nguồn dữ liệu ref ở bước "Upload Result": Ahrefs (CSV) hoặc DataforSEO (API).
-  const [resultSource, setResultSource] = useState<"ahrefs" | "dataforseo">("ahrefs");
-  const [ingestingDfs, setIngestingDfs] = useState(false);
-  // Ref domain DataforSEO trả về nhưng chưa có DR trong backlink_db — export
-  // để user check DR thủ công rồi upload lại.
-  const [dfsUnmatched, setDfsUnmatched] = useState<{ domain: string; backlinks: number }[]>([]);
-  const [importingDr, setImportingDr] = useState(false);
   const [excludeChecked, setExcludeChecked] = useState(true);
   const [copiedAhrefsTargets, setCopiedAhrefsTargets] = useState(false);
   const [applyRefBlacklist, setApplyRefBlacklist] = useState(true);
@@ -629,121 +623,53 @@ export default function DomainPickerPage() {
         ...assessments.map((a) => a.targetDomain),
       ]);
       setJustUploadedTargets(uploadedTargets);
+
+      // Phân loại theo rating: GIỮ ✅ TỐT + ⚠️ TRUNG BÌNH, LOẠI TRỪ phần còn lại.
+      const goodTargets: string[] = [];
+      const badTargets: string[] = [];
+      for (const a of assessments) {
+        const r = a.rating || "";
+        if (r.includes("TỐT") || r.includes("TRUNG BÌNH")) goodTargets.push(a.targetDomain);
+        else if (r) badTargets.push(a.targetDomain);
+      }
+
+      // Auto-loại trừ domain không "Tốt".
+      if (badTargets.length) {
+        try {
+          await fetch("/api/ahrefs-results/db/exclude", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ targets: badTargets }),
+          });
+          setJustUploadedTargets((prev) => {
+            const next = new Set(prev);
+            for (const t of badTargets) next.delete(t);
+            return next;
+          });
+        } catch { /* ignore — vẫn tiếp tục */ }
+      }
+
       await loadAhrefs();
       const refStat = data.refs;
-      const assessStat = data.assessments;
       const parts: string[] = [];
-      if (refStat?.uniqueTargets) parts.push(`${refStat.uniqueTargets} target · ${refStat.total} ref rows`);
-      if (assessStat?.total) parts.push(`${assessStat.total} assessment`);
-      showToast(`✅ Upload OK · ${parts.join(" · ") || "no data"}`);
-      // Auto-advance to step 4 — user is now reviewing & deciding.
+      if (refStat?.uniqueTargets) parts.push(`${refStat.uniqueTargets} target · ${refStat.total} ref`);
+      parts.push(`giữ ${goodTargets.length} Tốt`);
+      if (badTargets.length) parts.push(`loại ${badTargets.length}`);
+      showToast(`✅ Upload OK · ${parts.join(" · ")}`);
+
+      // Auto-advance to step 4 và TỰ ĐỘNG đẩy domain Tốt qua Wayback.
       dispatchWizard({ type: "advance", from: 3 });
+      if (goodTargets.length) {
+        startWaybackCheck(goodTargets);
+      } else {
+        showToast("⚠️ Không có domain Tốt nào để đẩy qua Wayback", true);
+      }
     } catch (err) {
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
     } finally {
       setAhrefsUploading(false);
     }
-  }, [loadAhrefs, showToast]);
-
-  // DataforSEO ingest: lấy ref domain cho list domain ĐÃ LỌC (qualifiedRows —
-  // đã bỏ domain đã check Ahrefs/DataforSEO), khớp đúng số hiển thị ở bước 2 và
-  // không tốn credit check lại. Server đối sánh DR từ backlink_db.
-  const ingestDataforseo = useCallback(async () => {
-    const targets = qualifiedRows.map((r) => r.domain);
-    if (targets.length === 0) {
-      showToast("Không có domain nào để check (đã lọc hết / đều đã check)", true);
-      return;
-    }
-    if (!confirm(
-      `Chạy DataforSEO cho ${targets.length} domain?\n` +
-      `Mỗi domain tốn credit DataforSEO. Ref domain sẽ được đối sánh DR từ dữ liệu đã thu thập (backlink_db).`,
-    )) return;
-    setIngestingDfs(true);
-    try {
-      const res = await fetch("/api/ahrefs-results/db/ingest-dataforseo", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ targets }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "DataforSEO ingest thất bại");
-      // Các target vừa ingest luôn hiển thị (vượt qua viewClearedAt bypass).
-      setJustUploadedTargets(new Set(targets.map((t) => t.toLowerCase())));
-      await loadAhrefs();
-      // Lưu ref chưa có DR để export.
-      setDfsUnmatched(Array.isArray(data.unmatchedRefs) ? data.unmatchedRefs : []);
-      const refStat = data.refs;
-      const parts = [`${data.targetsRequested} target`];
-      if (refStat?.total) parts.push(`${refStat.total} ref rows khớp DR`);
-      parts.push(`${data.refsMatched}/${data.refsSeen} ref match`);
-      if (data.unmatchedUnique) parts.push(`${data.unmatchedUnique} ref chưa có DR`);
-      if (data.dataforseoCost) parts.push(`$${Number(data.dataforseoCost).toFixed(4)} DfS`);
-      showToast(`✅ DataforSEO OK · ${parts.join(" · ")}`);
-      if (Array.isArray(data.errors) && data.errors.length) {
-        showToast(`⚠️ ${data.errors.length} batch lỗi: ${String(data.errors[0]).slice(0, 60)}`, true);
-      }
-      dispatchWizard({ type: "advance", from: 3 });
-    } catch (err) {
-      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
-    } finally {
-      setIngestingDfs(false);
-    }
-  }, [qualifiedRows, loadAhrefs, showToast]);
-
-  // Export ref domain DataforSEO chưa có DR → CSV "domain,dr,backlinks".
-  // User điền cột dr rồi upload lại ở Aged Domain → Backlink DB → Import CSV
-  // (đọc domain,dr; cột backlinks bỏ qua). Sau đó re-run DataforSEO sẽ match.
-  const exportUnmatchedRefs = useCallback(() => {
-    if (dfsUnmatched.length === 0) return;
-    const header = "domain,dr,backlinks";
-    const rows = dfsUnmatched.map((r) => `${r.domain},,${r.backlinks}`);
-    const csv = [header, ...rows].join("\n");
-    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    a.download = `dataforseo-refs-no-dr-${ts}.csv`;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    showToast(`✅ Export ${dfsUnmatched.length} ref chưa có DR → điền cột dr rồi bấm "Import DR"`);
-  }, [dfsUnmatched, showToast]);
-
-  // Import lại CSV ref domain + DR (sau khi check thủ công) vào backlink_db.
-  // Chấp nhận domain,dr[,backlinks] — đọc domain + dr, bỏ dòng dr trống/không hợp lệ.
-  const importBacklinkDr = useCallback(async (file: File) => {
-    setImportingDr(true);
-    try {
-      const text = await file.text();
-      const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-      const entries: { domain: string; dr: number }[] = [];
-      for (const line of lines) {
-        const parts = line.split(",");
-        const domain = (parts[0] ?? "").trim().toLowerCase().replace(/^["']|["']$/g, "");
-        const dr = parseInt((parts[1] ?? "").trim(), 10);
-        // Bỏ header + dòng dr trống/không hợp lệ.
-        if (!/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/.test(domain)) continue;
-        if (isNaN(dr) || dr < 0 || dr > 100) continue;
-        entries.push({ domain, dr });
-      }
-      if (entries.length === 0) {
-        showToast("❌ Không có dòng hợp lệ (cần domain,dr với dr 0–100)", true);
-        return;
-      }
-      const res = await fetch("/api/aged-domain/db/add", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ entries }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Import thất bại");
-      showToast(`✅ Import ${entries.length} ref + DR vào backlink_db (tổng ${data.total}) — chạy lại DataforSEO để khớp`);
-    } catch (err) {
-      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
-    } finally {
-      setImportingDr(false);
-    }
-  }, [showToast]);
+  }, [loadAhrefs, showToast, startWaybackCheck]);
 
   const removeAhrefsTarget = useCallback(async (domain: string) => {
     await fetch(`/api/ahrefs-results/db/${encodeURIComponent(domain)}`, { method: "DELETE" });
@@ -1249,6 +1175,32 @@ export default function DomainPickerPage() {
     }
   }, [showToast]);
 
+  // Đầu vào thứ 2: paste danh sách domain (không cần Spamzilla CSV) → rawRows
+  // tối thiểu (score 0). Dùng để filter "đã check" + copy chạy n8n.
+  const handlePasteDomains = useCallback(() => {
+    const seen = new Set<string>();
+    const domains: string[] = [];
+    for (const line of pasteText.split(/[\n,;\s]+/)) {
+      const d = line.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+      if (!/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/.test(d) || seen.has(d)) continue;
+      seen.add(d);
+      domains.push(d);
+    }
+    if (!domains.length) { showToast("❌ Không có domain hợp lệ trong ô paste", true); return; }
+    const rows: PickerRow[] = domains.map((domain) => ({
+      domain, source: "Paste",
+      tf: 0, cf: 0, bl: 0, rd: 0, da: 0, pa: 0, age: 0,
+      szScore: 0, szDrops: 0, semTraffic: 0, semKeywords: 0,
+      price: "", expires: "", score: 0,
+    }));
+    setRawRows(rows);
+    setFileName(`Paste (${rows.length} domain)`);
+    setParseError(null);
+    setPasteText("");
+    showToast(`✅ Nạp ${rows.length.toLocaleString()} domain từ ô paste`);
+    dispatchWizard({ type: "advance", from: 1 });
+  }, [pasteText, showToast]);
+
   // ─── Copy domains / Export CSV ───────────────────────────────────────────────
 
   const copyDomains = useCallback(async () => {
@@ -1340,9 +1292,27 @@ export default function DomainPickerPage() {
           </div>
         )}
 
+        {/* Đầu vào thứ 2: paste danh sách domain */}
+        <div className="rounded-lg border border-dashed border-border bg-muted/20 p-3 mb-4">
+          <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+            <span className="text-xs font-medium text-muted-foreground">Hoặc paste danh sách domain (mỗi dòng / phẩy / cách)</span>
+            <Button size="sm" variant="outline" className="gap-1.5" onClick={handlePasteDomains} disabled={!pasteText.trim()}>
+              <Plus className="h-3.5 w-3.5" />
+              Nạp domain
+            </Button>
+          </div>
+          <textarea
+            value={pasteText}
+            onChange={(e) => setPasteText(e.target.value)}
+            placeholder={"example.com\nanotherdomain.net\n..."}
+            rows={4}
+            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+        </div>
+
         {fileName && !parseError && (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-            <Stat label="File" value={fileName} mono />
+            <Stat label="Nguồn" value={fileName} mono />
             <Stat label="Tổng dòng" value={rawRows.length.toLocaleString()} />
             <Stat label="Qualified (threshold)" value={qualifiedRows.length.toLocaleString()} accent />
             <Stat label="Hiển thị Top" value={displayedRows.length.toLocaleString()} />
@@ -1745,100 +1715,31 @@ export default function DomainPickerPage() {
               )}
             </div>
 
-            {/* Nguồn dữ liệu: Ahrefs (CSV) | DataforSEO (API) */}
-            <div className="inline-flex rounded-md border border-border overflow-hidden mb-3 text-xs">
-              <button
-                type="button"
-                onClick={() => setResultSource("ahrefs")}
-                className={cn(
-                  "px-3 py-1.5 font-medium transition-colors",
-                  resultSource === "ahrefs" ? "bg-orange-600 text-white" : "bg-background hover:bg-muted",
-                )}
-              >
-                Ahrefs (CSV)
-              </button>
-              <button
-                type="button"
-                onClick={() => setResultSource("dataforseo")}
-                className={cn(
-                  "px-3 py-1.5 font-medium transition-colors border-l border-border",
-                  resultSource === "dataforseo" ? "bg-sky-600 text-white" : "bg-background hover:bg-muted",
-                )}
-              >
-                DataforSEO (API)
-              </button>
-            </div>
-
+            {/* Upload kết quả đánh giá — CSV unified (Ahrefs hoặc DataforSEO từ n8n).
+                Không gọi DataforSEO/Ahref trực tiếp trên Webapp nữa. */}
+            <p className="text-xs text-muted-foreground mb-2">
+              Upload file CSV kết quả từ n8n (cột: target_domain, refs, rating…). Domain rating <strong>✅ TỐT</strong> / <strong>⚠️ TRUNG BÌNH</strong> được giữ; còn lại tự loại trừ và domain Tốt tự đẩy qua Wayback.
+            </p>
             <div className="flex flex-wrap items-end gap-2 mb-4">
-              {resultSource === "ahrefs" ? (
-                <label className="cursor-pointer">
-                  <input
-                    type="file"
-                    accept=".csv,text/csv"
-                    className="hidden"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) uploadAhrefsCsv(f);
-                      e.target.value = "";
-                    }}
-                  />
-                  <span className={cn(
-                    "inline-flex items-center gap-2 rounded-md bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 text-sm font-medium shadow-sm",
-                    ahrefsUploading && "opacity-60 pointer-events-none"
-                  )}>
-                    {ahrefsUploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
-                    {ahrefsUploading ? "Đang upload..." : "Upload Ahrefs CSV"}
-                  </span>
-                </label>
-              ) : (
-                <Button
-                  size="sm"
-                  className="gap-1.5 bg-sky-600 hover:bg-sky-700 text-white"
-                  onClick={ingestDataforseo}
-                  disabled={ingestingDfs || qualifiedRows.length === 0}
-                  title={
-                    qualifiedRows.length === 0
-                      ? "Không có domain để check (đã lọc hết / đều đã check)"
-                      : `Lấy ref qua DataforSEO cho ${qualifiedRows.length} domain (sau lọc), đối sánh DR từ backlink_db`
-                  }
-                >
-                  {ingestingDfs ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Database className="h-3.5 w-3.5" />}
-                  {ingestingDfs ? "Đang chạy DataforSEO…" : `Chạy DataforSEO (${qualifiedRows.length})`}
-                </Button>
-              )}
-              {resultSource === "dataforseo" && dfsUnmatched.length > 0 && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="gap-1.5 text-amber-700 border-amber-400/60 hover:bg-amber-50 dark:hover:bg-amber-950"
-                  onClick={exportUnmatchedRefs}
-                  title="Export ref domain chưa có DR (CSV domain,dr,backlinks) — điền cột dr rồi bấm Import DR"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  Export ref chưa có DR ({dfsUnmatched.length})
-                </Button>
-              )}
-              {resultSource === "dataforseo" && (
-                <label className="cursor-pointer">
-                  <input
-                    type="file"
-                    accept=".csv,text/csv"
-                    className="hidden"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) importBacklinkDr(f);
-                      e.target.value = "";
-                    }}
-                  />
-                  <span className={cn(
-                    "inline-flex items-center gap-1.5 rounded-md border border-emerald-400/60 text-emerald-700 dark:hover:bg-emerald-950 hover:bg-emerald-50 px-2.5 h-7 text-[0.8rem] font-medium",
-                    importingDr && "opacity-60 pointer-events-none",
-                  )}>
-                    {importingDr ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
-                    {importingDr ? "Đang import…" : "Import DR (CSV)"}
-                  </span>
-                </label>
-              )}
+              <label className="cursor-pointer">
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) uploadAhrefsCsv(f);
+                    e.target.value = "";
+                  }}
+                />
+                <span className={cn(
+                  "inline-flex items-center gap-2 rounded-md bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 text-sm font-medium shadow-sm",
+                  ahrefsUploading && "opacity-60 pointer-events-none"
+                )}>
+                  {ahrefsUploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                  {ahrefsUploading ? "Đang upload..." : "Upload Result CSV (Ahrefs / DataforSEO)"}
+                </span>
+              </label>
               <Button
                 size="sm" variant="outline"
                 className="gap-1.5"

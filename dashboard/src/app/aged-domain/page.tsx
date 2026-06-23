@@ -1,28 +1,18 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef, Fragment } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useCallback, useEffect, useRef } from "react";
 import {
   Search,
   ChevronDown,
-  ChevronRight,
   Database,
   Trash2,
   Plus,
   X,
   Upload,
-  ArrowUpDown,
-  ExternalLink,
-  Loader2,
-  CheckCircle2,
-  AlertCircle,
-  Info,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import type { DomainResult } from "@/app/api/aged-domain/analyze/route";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -38,38 +28,12 @@ interface ToastItem {
   isError: boolean;
 }
 
-type V1SortKey = "domain" | "dbMatches" | "totalRefDomains" | "maxDbDr";
-
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function AgedDomainPage() {
-  const router = useRouter();
-  // ── Form inputs ──────────────────────────────────────────────────────────────
-  const [domainsText, setDomainsText] = useState("");
-  const [minDr, setMinDr] = useState(30);
-  const [limitPerDomain, setLimitPerDomain] = useState(100);
-  const [minQualified, setMinQualified] = useState(0); // 0 = show all
-
-  // ── Analysis state ───────────────────────────────────────────────────────────
-  const [loading, setLoading] = useState(false);
-  const [v1Results, setV1Results] = useState<DomainResult[] | null>(null);
-  const [v1Cost, setV1Cost] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  // ── Sort & expand ────────────────────────────────────────────────────────────
-  const [v1SortKey, setV1SortKey] = useState<V1SortKey>("dbMatches");
-  const [v1SortDir, setV1SortDir] = useState<1 | -1>(-1);
-
-  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
-
-  // Ref domain chưa có trong backlink_db (sau khi check) → export để bổ sung DR+Traffic.
-  const [unmatchedRefs, setUnmatchedRefs] = useState<{ domain: string; backlinks: number }[]>([]);
-  const [importingDr, setImportingDr] = useState(false);
-  const [openingPicker, setOpeningPicker] = useState(false);
-
   // ── Backlink DB ─────────────────────────────────────────────────────────────
   const [dbEntries, setDbEntries] = useState<DbEntry[]>([]);
-  const [dbOpen, setDbOpen] = useState(false);
+  const [dbOpen, setDbOpen] = useState(true);
   const [dbManualDomain, setDbManualDomain] = useState("");
   const [dbManualDr, setDbManualDr] = useState("");
   const [dbCsvText, setDbCsvText] = useState("");
@@ -127,63 +91,6 @@ export default function AgedDomainPage() {
     showToast("🗑️ Đã xóa toàn bộ Backlink DB");
   }, [dbEntries.length, loadDb, showToast]);
 
-  // ─── Analyze (V1 — DataforSEO) ───────────────────────────────────────────────
-
-  const analyzeV1 = useCallback(async () => {
-    const domains = domainsText.split("\n").map((d) => d.trim()).filter(Boolean);
-    if (!domains.length) return;
-
-    setLoading(true);
-    setError(null);
-    setV1Results(null);
-    setV1Cost(null);
-    setExpandedRows(new Set());
-    setUnmatchedRefs([]);
-
-    try {
-      const res = await fetch("/api/aged-domain/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // persist:true → lưu full ref vào store dùng chung với Domain Picker.
-        body: JSON.stringify({ domains, minDr, limitPerDomain, persist: true }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Phân tích thất bại");
-      setV1Results(data.results ?? []);
-      setV1Cost(data.cost ?? null);
-      setUnmatchedRefs(Array.isArray(data.unmatchedRefs) ? data.unmatchedRefs : []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Lỗi không xác định");
-    } finally {
-      setLoading(false);
-    }
-  }, [domainsText, minDr, limitPerDomain]);
-
-
-  const handleAnalyze = analyzeV1;
-
-  // ─── Sort helper ──────────────────────────────────────────────────────────────
-
-  function handleV1Sort(key: V1SortKey) {
-    if (v1SortKey === key) setV1SortDir((d) => (d === 1 ? -1 : 1));
-    else { setV1SortKey(key); setV1SortDir(-1); }
-  }
-
-  // ─── Filtered + sorted results ────────────────────────────────────────────────
-
-  const displayedV1 = v1Results
-    ? [...v1Results]
-        .filter((r) => r.dbMatches >= minQualified)
-        .sort((a, b) => {
-          const getVal = (r: DomainResult) =>
-            v1SortKey === "maxDbDr" ? r.maxDbDr : (r[v1SortKey as keyof DomainResult] ?? 0);
-          const av = getVal(a) as number | string;
-          const bv = getVal(b) as number | string;
-          if (typeof av === "number" && typeof bv === "number") return (av - bv) * v1SortDir;
-          return String(av).localeCompare(String(bv)) * v1SortDir;
-        })
-    : [];
-
   // ─── CSV import ───────────────────────────────────────────────────────────────
 
   // Parse "domain,dr[,traffic]" — bỏ header + dòng dr không hợp lệ.
@@ -216,90 +123,11 @@ export default function AgedDomainPage() {
     }
   }
 
-  // Export ref domain chưa có DR (sau khi check) → CSV domain,dr,traffic (để trống dr/traffic).
-  function exportUnmatched() {
-    if (!unmatchedRefs.length) return;
-    const csv = ["domain,dr,traffic", ...unmatchedRefs.map((r) => `${r.domain},,`)].join("\n");
-    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `backlink-refs-no-dr-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.csv`;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    showToast(`✅ Export ${unmatchedRefs.length} ref chưa có DR → điền dr+traffic rồi Import`);
-  }
-
-  // Import file CSV domain,dr,traffic → cập nhật backlink_db (DR + Traffic).
-  async function importDrTrafficFile(file: File) {
-    setImportingDr(true);
-    try {
-      const entries = parseDrTrafficCsv(await file.text());
-      if (!entries.length) { showToast("❌ File không có dòng hợp lệ (domain,dr[,traffic])", true); return; }
-      const data = await addToDb(entries);
-      const withTraffic = entries.filter((e) => e.traffic != null).length;
-      showToast(`✅ Import ${entries.length} ref (DR) · ${withTraffic} có Traffic · ${data?.added ?? 0} mới`);
-    } catch (err) {
-      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
-    } finally {
-      setImportingDr(false);
-    }
-  }
-
-  // Chuyển kết quả Check Backlink sang Domain Picker để chọn lọc.
-  // - Best-effort persist dữ liệu đang hiển thị (marker "đã check" + ref đã match
-  //   trong DB) vào store dùng chung — MIỄN PHÍ, không gọi lại DataforSEO. Bảo
-  //   đảm batch chạy bằng route cũ (chưa lưu) vẫn hiện trong Picker.
-  // - Đẩy danh sách domain qua localStorage → Picker scope panel bước 3 vào chúng.
-  async function openInPicker() {
-    if (!v1Results || v1Results.length === 0) {
-      showToast("Chưa có kết quả để chuyển", true);
-      return;
-    }
-    setOpeningPicker(true);
-    try {
-      const targets = v1Results.map((r) => r.domain);
-      const rows: { targetDomain: string; refDomain: string; domainRating: number }[] = [];
-      const assessments = v1Results.map((r) => ({
-        targetDomain: r.domain,
-        rating: null,
-        category: null,
-        detail: "DataforSEO checked",
-        excludedAt: null,
-      }));
-      for (const r of v1Results) {
-        for (const t of r.topDomains) {
-          if (t.inDb && t.dbDr != null) {
-            rows.push({ targetDomain: r.domain, refDomain: t.domain, domainRating: t.dbDr });
-          }
-        }
-      }
-      try {
-        await fetch("/api/ahrefs-results/db/add", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ rows, assessments }),
-        });
-      } catch {
-        // Bỏ qua — vẫn điều hướng; dữ liệu full đã được route analyze lưu nếu chạy code mới.
-      }
-      localStorage.setItem(
-        "dompicker.transfer",
-        JSON.stringify({ domains: targets, ts: Date.now() }),
-      );
-      router.push("/domain-picker");
-    } finally {
-      setOpeningPicker(false);
-    }
-  }
-
   // ─── Helpers ─────────────────────────────────────────────────────────────────
 
   const filteredDb = [...dbEntries]
     .filter((e) => !dbSearch || e.domain.includes(dbSearch.toLowerCase()))
     .sort((a, b) => b.dr - a.dr);
-
-  const domainCount = domainsText.split("\n").filter((s) => s.trim()).length;
 
   // ─── Render ───────────────────────────────────────────────────────────────────
 
@@ -308,256 +136,15 @@ export default function AgedDomainPage() {
 
       {/* ── Header ─────────────────────────────────────────────────────────────── */}
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Aged Domain — Check Backlink</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Backlink DB</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Paste domain → DataforSEO check backlink từng domain → đối chiếu DB (DR/Traffic) → export ref chưa có DR để bổ sung.
+          Kho dữ liệu tham chiếu <strong>Domain → DR (+ traffic)</strong> để Domain Picker & n8n đối chiếu backlink.
+          Việc check backlink nay chạy qua <strong>n8n (DataforSEO)</strong> — không gọi API trực tiếp trên web.
         </p>
       </div>
 
-      {/* ── DB empty warning ────────────────────────────────────────────────── */}
-      {dbEntries.length === 0 && (
-        <div className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700 px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
-          <Info className="h-4 w-4 mt-0.5 shrink-0" />
-          <span>
-            <strong>Backlink DB đang trống.</strong>{" "}
-            DataforSEO cần DB để tra cứu DR. Hãy thêm domain tham chiếu (Domain + DR) vào DB,
-            hoặc dùng <strong>Domain Picker</strong> với Ahrefs MCP để lấy DR trực tiếp.
-          </span>
-        </div>
-      )}
 
-      {/* ── Config card ────────────────────────────────────────────────────────── */}
-      <div className="rounded-xl border bg-card p-5 shadow-sm">
-        <p className="text-xs text-muted-foreground mb-4">
-          DataforSEO → danh sách Referring Domains → đối chiếu Backlink DB để lấy DR → lọc.
-          (Option Ahrefs đã chuyển sang <strong>Domain Picker</strong>.)
-        </p>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
-          <div>
-            <label className="block text-xs font-medium text-muted-foreground mb-1">
-              DR tối thiểu
-            </label>
-            <Input type="number" min={0} max={100} value={minDr}
-              onChange={(e) => setMinDr(Number(e.target.value))} />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-muted-foreground mb-1">
-              Ref. domains / target
-            </label>
-            <Input type="number" min={1} max={1000} value={limitPerDomain}
-              onChange={(e) => setLimitPerDomain(Number(e.target.value))} />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-muted-foreground mb-1">
-              DB Matches tối thiểu
-              <span className="ml-1 text-muted-foreground/60">(0 = tất cả)</span>
-            </label>
-            <Input type="number" min={0} value={minQualified}
-              onChange={(e) => setMinQualified(Number(e.target.value))} />
-          </div>
-          <div className="flex flex-col justify-end">
-            <p className="text-xs text-muted-foreground mb-1">
-              {domainCount} domain · DB: {dbEntries.length} entries
-            </p>
-            <Button onClick={handleAnalyze} disabled={loading || !domainCount} className="gap-2 w-full">
-              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-              {loading ? "Đang phân tích..." : "Phân tích"}
-            </Button>
-          </div>
-        </div>
-
-        {/* Domain textarea */}
-        <div>
-          <label className="block text-sm font-medium mb-1">
-            Danh sách Domain{" "}
-            <span className="text-muted-foreground font-normal">(mỗi dòng một domain)</span>
-          </label>
-          <textarea
-            value={domainsText}
-            onChange={(e) => setDomainsText(e.target.value)}
-            rows={6}
-            placeholder={"example.com\nanotherdomain.net\n..."}
-            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 resize-y"
-          />
-        </div>
-      </div>
-
-      {/* ── Error ──────────────────────────────────────────────────────────────── */}
-      {error && (
-        <div className="flex items-center gap-2 rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          <AlertCircle className="h-4 w-4 shrink-0" />
-          {error}
-        </div>
-      )}
-
-      {/* ── Results ────────────────────────────────────────────────────────────── */}
-      {v1Results !== null && (
-        <div className="rounded-xl border bg-card shadow-sm overflow-hidden">
-          {/* Header bar */}
-          <div className="flex items-center justify-between px-5 py-4 border-b flex-wrap gap-2">
-            <div className="flex items-center gap-2">
-              <CheckCircle2 className="h-4 w-4 text-green-500" />
-              <span className="text-sm font-medium">
-                {displayedV1.length} / {v1Results.length} domain
-                {minQualified > 0 && (
-                  <span className="text-muted-foreground"> (DB Matches ≥ {minQualified})</span>
-                )}
-              </span>
-              {v1Cost !== null && (
-                <Badge variant="secondary" className="text-xs">
-                  Cost: ${v1Cost.toFixed(4)}
-                </Badge>
-              )}
-            </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <Button
-                size="sm"
-                className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-white"
-                onClick={openInPicker}
-                disabled={openingPicker || !v1Results?.length}
-                title="Chuyển các domain đã check sang Domain Picker (dùng chung dữ liệu, không check lại) để chọn lọc"
-              >
-                {openingPicker ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ExternalLink className="h-3.5 w-3.5" />}
-                Mở trong Domain Picker ({v1Results?.length ?? 0})
-              </Button>
-              {unmatchedRefs.length > 0 && (
-                <Button
-                  size="sm" variant="outline"
-                  className="gap-1.5 text-amber-700 border-amber-400/60 hover:bg-amber-50 dark:hover:bg-amber-950"
-                  onClick={exportUnmatched}
-                  title="Export ref domain chưa có trong DB (CSV domain,dr,traffic) — điền DR+Traffic rồi Import"
-                >
-                  <Upload className="h-3.5 w-3.5 rotate-180" />
-                  Export ref chưa có DR ({unmatchedRefs.length})
-                </Button>
-              )}
-              <label className="cursor-pointer">
-                <input
-                  type="file"
-                  accept=".csv,text/csv"
-                  className="hidden"
-                  onChange={(e) => { const f = e.target.files?.[0]; if (f) importDrTrafficFile(f); e.target.value = ""; }}
-                />
-                <span className={cn(
-                  "inline-flex items-center gap-1.5 rounded-md border border-emerald-400/60 text-emerald-700 dark:hover:bg-emerald-950 hover:bg-emerald-50 px-2.5 h-8 text-xs font-medium",
-                  importingDr && "opacity-60 pointer-events-none",
-                )}>
-                  {importingDr ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
-                  {importingDr ? "Đang import…" : "Import DR + Traffic"}
-                </span>
-              </label>
-            </div>
-          </div>
-
-          {/* Table */}
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/40 border-b">
-                <tr>
-                  <th className="px-4 py-3 w-8" />
-                  <SortTh label="Domain" col="domain" current={v1SortKey} dir={v1SortDir} onSort={() => handleV1Sort("domain")} />
-                  <SortTh label="DB Matches" col="dbMatches" current={v1SortKey} dir={v1SortDir} onSort={() => handleV1Sort("dbMatches")} />
-                  <SortTh label="Total Ref. Domains" col="totalRefDomains" current={v1SortKey} dir={v1SortDir} onSort={() => handleV1Sort("totalRefDomains")} />
-                  <SortTh label="Max DR (DB)" col="maxDbDr" current={v1SortKey} dir={v1SortDir} onSort={() => handleV1Sort("maxDbDr")} />
-                </tr>
-              </thead>
-              <tbody>
-                {displayedV1.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="text-center py-12 text-muted-foreground text-sm">
-                      Không có domain nào đạt điều kiện DB Matches ≥ {minQualified}
-                    </td>
-                  </tr>
-                ) : (
-                  displayedV1.map((item) => {
-                    const expanded = expandedRows.has(item.domain);
-                    return (
-                      <Fragment key={item.domain}>
-                        <tr
-                          className={cn(
-                            "border-b border-border/50 hover:bg-muted/20 transition-colors cursor-pointer",
-                            item.error && "opacity-60"
-                          )}
-                          onClick={() =>
-                            setExpandedRows((prev) => {
-                              const next = new Set(prev);
-                              expanded ? next.delete(item.domain) : next.add(item.domain);
-                              return next;
-                            })
-                          }
-                        >
-                          <td className="px-4 py-3 text-muted-foreground">
-                            {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                          </td>
-                          <td className="px-4 py-3 font-mono font-medium">
-                            {item.domain}
-                            {item.error && (
-                              <span className="ml-2 text-xs text-destructive">({item.error})</span>
-                            )}
-                          </td>
-                          <td className="px-4 py-3">
-                            <QualifiedBadge count={item.dbMatches} />
-                          </td>
-                          <td className="px-4 py-3 text-muted-foreground">
-                            {item.totalRefDomains.toLocaleString()}
-                          </td>
-                          <td className="px-4 py-3">
-                            <DrBadge dr={item.maxDbDr} />
-                          </td>
-                        </tr>
-                        {expanded && item.topDomains.length > 0 && (
-                          <tr className="bg-muted/20 border-b border-border/30">
-                            <td colSpan={5} className="px-6 py-4">
-                              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                                Top Referring Domains (DataforSEO)
-                              </p>
-                              <div className="flex flex-wrap gap-2">
-                                {item.topDomains.map((td) => (
-                                  <div
-                                    key={td.domain}
-                                    className={cn(
-                                      "flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs",
-                                      td.inDb
-                                        ? "border-blue-300 bg-blue-50 dark:bg-blue-950/40 dark:border-blue-700"
-                                        : "border-border bg-muted/30"
-                                    )}
-                                  >
-                                    {td.dbDr !== null
-                                      ? <DrBadge dr={td.dbDr} small />
-                                      : <span className="inline-flex items-center font-bold rounded-full text-xs px-1.5 py-0.5 bg-muted text-muted-foreground">?</span>
-                                    }
-                                    <span className="font-mono">{td.domain}</span>
-                                    <span className="text-muted-foreground">({td.backlinks} links)</span>
-                                    {td.inDb && (
-                                      <span title="Có trong Backlink DB">
-                                        <Database className="h-3 w-3 text-blue-500" />
-                                      </span>
-                                    )}
-                                    <a
-                                      href={`https://${td.domain}`}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      onClick={(e) => e.stopPropagation()}
-                                      className="text-muted-foreground hover:text-primary"
-                                    >
-                                      <ExternalLink className="h-3 w-3" />
-                                    </a>
-                                  </div>
-                                ))}
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </Fragment>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
 
       {/* ── Backlink DB Panel ──────────────────────────────────────────────────── */}
       <div className="rounded-xl border bg-card shadow-sm">
@@ -578,9 +165,9 @@ export default function AgedDomainPage() {
         {dbOpen && (
           <div className="border-t px-6 pb-6">
             <p className="text-xs text-muted-foreground pt-4 pb-4 leading-relaxed">
-              Cơ sở dữ liệu domain tham chiếu <strong>(Domain, DR)</strong>.
-              Option 1 tra cứu DR của Referring Domains tại đây.
-              Option 2 có thể <strong>tự động enrich</strong> DB sau mỗi lần phân tích.
+              Cơ sở dữ liệu domain tham chiếu <strong>(Domain → DR, traffic)</strong>.
+              Domain Picker & workflow n8n đối chiếu ref domain với DB này để lấy DR/traffic.
+              Bổ sung dữ liệu bằng <strong>Thêm</strong> / <strong>Import CSV</strong> / <strong>Backfill từ Ahrefs</strong>.
             </p>
 
             {/* Action row */}
@@ -712,8 +299,7 @@ export default function AgedDomainPage() {
             {/* DB list */}
             {dbEntries.length === 0 ? (
               <p className="text-center py-8 text-sm text-muted-foreground">
-                DB trống — thêm domain tham chiếu để bắt đầu so sánh (Option 1),
-                hoặc dùng Option 2 để tự động enrich
+                DB trống — thêm domain tham chiếu (Thêm / Import CSV / Backfill từ Ahrefs) để bắt đầu
               </p>
             ) : (
               <div className="rounded-lg border overflow-hidden">
@@ -772,39 +358,6 @@ export default function AgedDomainPage() {
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
-
-function SortTh({ label, col, current, dir, onSort }: {
-  label: string; col: string; current: string; dir: 1 | -1; onSort: () => void;
-}) {
-  const active = current === col;
-  return (
-    <th
-      onClick={onSort}
-      className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide cursor-pointer select-none hover:bg-muted/50 whitespace-nowrap"
-    >
-      <span className="flex items-center gap-1">
-        {label}
-        <ArrowUpDown className={cn("h-3 w-3", active ? "text-primary" : "opacity-30")} />
-        {active && <span className="text-primary">{dir === -1 ? "↓" : "↑"}</span>}
-      </span>
-    </th>
-  );
-}
-
-function QualifiedBadge({ count }: { count: number }) {
-  return (
-    <span className={cn(
-      "inline-flex items-center justify-center min-w-[2.5rem] px-2.5 py-1 rounded-full text-sm font-bold",
-      count >= 5
-        ? "bg-blue-600 text-white"
-        : count >= 1
-          ? "bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300"
-          : "bg-muted text-muted-foreground"
-    )}>
-      {count}
-    </span>
-  );
-}
 
 function DrBadge({ dr, small = false }: { dr: number; small?: boolean }) {
   const color =

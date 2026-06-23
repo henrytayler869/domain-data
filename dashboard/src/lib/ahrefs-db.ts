@@ -212,15 +212,23 @@ export async function listCheckedTargets(): Promise<string[]> {
   // 2) Mọi target có assessment row đều coi là "đã check" — gồm: target bị
   //    loại trừ thủ công (excluded_at), target được rate qua Ahrefs, và target
   //    đã query DataforSEO (marker "DataforSEO checked", kể cả 0 ref khớp).
+  //    NGOẠI LỆ: assessment category='API error' (check thất bại) mà KHÔNG có
+  //    ref row thật → coi như CHƯA check, để filter bước 2 hiện lại cho re-run.
+  const refTargets = new Set(all); // tại đây all mới chỉ chứa target có ref row
   offset = 0;
   while (true) {
     const { data, error } = await sb
       .from(ASSESS_TABLE)
-      .select("target_domain")
+      .select("target_domain,category,excluded_at")
       .range(offset, offset + PAGE - 1);
     if (error) throw new Error(error.message);
     if (!data || data.length === 0) break;
-    for (const r of data) all.add((r as { target_domain: string }).target_domain);
+    for (const r of data as { target_domain: string; category: string | null; excluded_at: string | null }[]) {
+      const isApiError = (r.category ?? "").trim().toLowerCase() === "api error";
+      // API-error + không có ref thật + chưa bị loại trừ thủ công → bỏ qua.
+      if (isApiError && !refTargets.has(r.target_domain) && !r.excluded_at) continue;
+      all.add(r.target_domain);
+    }
     if (data.length < PAGE) break;
     offset += PAGE;
   }
