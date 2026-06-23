@@ -172,17 +172,31 @@ export async function readTargetSummaryFor(targetsRaw: string[]): Promise<Target
 
   const sb = supabase();
   const CHUNK = 150; // tránh URL quá dài cho .in()
+  const PAGE = 1000; // PostgREST trả tối đa 1000 dòng/request → phải phân trang
   const refRows: DbRow[] = [];
   const assessRows: AssessmentDbRow[] = [];
   for (let i = 0; i < targets.length; i += CHUNK) {
     const slice = targets.slice(i, i + CHUNK);
-    const [{ data: refData, error: refErr }, { data: aData, error: aErr }] = await Promise.all([
-      sb.from(TABLE).select("*").in("target_domain", slice),
-      sb.from(ASSESS_TABLE).select("*").in("target_domain", slice),
-    ]);
-    if (refErr) throw new Error(refErr.message);
+    // Ref rows: 1 chunk (150 target) có thể có HÀNG NGHÌN ref → phải phân trang,
+    // nếu không sẽ bị cắt ở 1000 dòng và mất ref của các target cuối chunk.
+    let offset = 0;
+    while (true) {
+      const { data, error } = await sb
+        .from(TABLE)
+        .select("*")
+        .in("target_domain", slice)
+        .order("target_domain", { ascending: true })
+        .range(offset, offset + PAGE - 1);
+      if (error) throw new Error(error.message);
+      if (!data || data.length === 0) break;
+      refRows.push(...(data as DbRow[]));
+      if (data.length < PAGE) break;
+      offset += PAGE;
+    }
+    // Assessments: tối đa 1/target → ≤150 dòng/chunk, không cần phân trang.
+    const { data: aData, error: aErr } = await sb
+      .from(ASSESS_TABLE).select("*").in("target_domain", slice);
     if (aErr) throw new Error(aErr.message);
-    if (refData) refRows.push(...(refData as DbRow[]));
     if (aData) assessRows.push(...(aData as AssessmentDbRow[]));
   }
   const assessMap = new Map(assessRows.map((r) => [r.target_domain, r]));
