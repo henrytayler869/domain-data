@@ -90,6 +90,12 @@ export default function AgedDomainPage() {
   const [expandedLookup, setExpandedLookup] = useState<Set<string>>(new Set());
   const [lookupFilter, setLookupFilter] = useState<"all" | "tot" | "tb" | "bad" | "none">("all");
   const [copiedLookup, setCopiedLookup] = useState(false);
+  // Multi-select + mua (lưu Kho Domain) trong bảng tra cứu.
+  const [selectedLookup, setSelectedLookup] = useState<Set<string>>(new Set());
+  const [purchaseOpen, setPurchaseOpen] = useState(false);
+  const [purchaseRows, setPurchaseRows] = useState<Record<string, string>>({});
+  const [purchaseBulk, setPurchaseBulk] = useState("");
+  const [savingPurchase, setSavingPurchase] = useState(false);
 
   // ── Toasts ──────────────────────────────────────────────────────────────────
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -261,6 +267,80 @@ export default function AgedDomainPage() {
     showToast(`✅ Export ${displayedLookup.length} domain`);
   }
 
+  // ── Select + Đã mua (lưu Kho Domain) ──────────────────────────────────────────
+  const toggleLookupSelect = (domain: string) => {
+    setSelectedLookup((prev) => {
+      const next = new Set(prev);
+      if (next.has(domain)) next.delete(domain); else next.add(domain);
+      return next;
+    });
+  };
+  const toggleLookupSelectAll = () => {
+    setSelectedLookup((prev) => {
+      const visible = displayedLookup.map((r) => r.domain);
+      const allSel = visible.length > 0 && visible.every((d) => prev.has(d));
+      const next = new Set(prev);
+      if (allSel) for (const d of visible) next.delete(d);
+      else for (const d of visible) next.add(d);
+      return next;
+    });
+  };
+
+  // Mở form nhập giá — prefill giá mua cũ nếu domain đã có trong kho.
+  function openPurchaseForm() {
+    if (selectedLookup.size === 0) return;
+    const init: Record<string, string> = {};
+    for (const d of selectedLookup) init[d] = "";
+    setPurchaseRows(init);
+    setPurchaseBulk("");
+    setPurchaseOpen(true);
+  }
+  function applyPurchaseBulk() {
+    const v = purchaseBulk.trim();
+    if (!v) return;
+    setPurchaseRows((prev) => {
+      const next = { ...prev };
+      for (const d of Object.keys(next)) next[d] = v;
+      return next;
+    });
+  }
+  // Lưu vào Kho Domain (giống Domain Picker): snapshot rating/category từ kết quả tra cứu.
+  async function savePurchase() {
+    setSavingPurchase(true);
+    try {
+      const rowByDomain = new Map((lookupRows ?? []).map((r) => [r.domain, r]));
+      const entries = Object.entries(purchaseRows).map(([domain, priceStr]) => {
+        const r = rowByDomain.get(domain);
+        const price = priceStr.trim() === "" ? null : Number(priceStr);
+        return {
+          domain,
+          purchasePrice: isNaN(price as number) ? null : price,
+          source: null,
+          rating: r?.rating ?? null,
+          category: r?.category ?? null,
+          isBackorder: false,
+        };
+      });
+      const res = await fetch("/api/inventory/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entries }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Lưu thất bại");
+      // Cập nhật trạng thái Đã mua ngay trong bảng (giá dự kiến set sau ở Kho).
+      const boughtSet = new Set(entries.map((e) => e.domain));
+      setLookupRows((prev) => prev ? prev.map((r) => boughtSet.has(r.domain) ? { ...r, purchased: true } : r) : prev);
+      setPurchaseOpen(false);
+      setSelectedLookup(new Set());
+      showToast(`✅ Đã lưu ${entries.length} domain vào Kho Domain`);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    } finally {
+      setSavingPurchase(false);
+    }
+  }
+
   // ─── CSV import ───────────────────────────────────────────────────────────────
 
   // Parse "domain,dr[,traffic]" — bỏ header + dòng dr không hợp lệ.
@@ -354,6 +434,16 @@ export default function AgedDomainPage() {
               <option value="bad">⚠️/❌ Rủi ro / Xấu</option>
               <option value="none">Chưa đánh giá</option>
             </select>
+            {selectedLookup.size > 0 && (
+              <Button
+                size="sm"
+                className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"
+                onClick={openPurchaseForm}
+              >
+                <Check className="h-3.5 w-3.5" />
+                Đã mua ({selectedLookup.size})
+              </Button>
+            )}
             <Button size="sm" variant="outline" className="gap-1.5 ml-auto" onClick={copyLookup} disabled={!displayedLookup.length}>
               {copiedLookup ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
               {copiedLookup ? "Đã copy!" : `Copy ${displayedLookup.length} domain`}
@@ -367,6 +457,15 @@ export default function AgedDomainPage() {
             <table className="w-full text-sm">
               <thead className="bg-muted/50 border-b">
                 <tr>
+                  <th className="px-3 py-2 w-8">
+                    <input
+                      type="checkbox"
+                      className="rounded cursor-pointer"
+                      aria-label="Chọn tất cả"
+                      checked={displayedLookup.length > 0 && displayedLookup.every((r) => selectedLookup.has(r.domain))}
+                      onChange={toggleLookupSelectAll}
+                    />
+                  </th>
                   <th className="px-3 py-2 w-8" />
                   <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Domain</th>
                   <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Trạng thái</th>
@@ -380,19 +479,28 @@ export default function AgedDomainPage() {
               </thead>
               <tbody>
                 {displayedLookup.length === 0 ? (
-                  <tr><td colSpan={9} className="text-center py-8 text-muted-foreground text-sm">Không có domain khớp bộ lọc</td></tr>
+                  <tr><td colSpan={10} className="text-center py-8 text-muted-foreground text-sm">Không có domain khớp bộ lọc</td></tr>
                 ) : displayedLookup.map((row) => {
                   const expanded = expandedLookup.has(row.domain);
                   return (
                     <Fragment key={row.domain}>
                       <tr
-                        className={cn("border-b border-border/30 hover:bg-muted/20 cursor-pointer align-top", !row.found && "opacity-60")}
+                        className={cn("border-b border-border/30 hover:bg-muted/20 cursor-pointer align-top", !row.found && "opacity-60", selectedLookup.has(row.domain) && "bg-emerald-50/40 dark:bg-emerald-950/20")}
                         onClick={() => setExpandedLookup((prev) => {
                           const next = new Set(prev);
                           if (next.has(row.domain)) next.delete(row.domain); else next.add(row.domain);
                           return next;
                         })}
                       >
+                        <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            className="rounded cursor-pointer"
+                            aria-label={`Chọn ${row.domain}`}
+                            checked={selectedLookup.has(row.domain)}
+                            onChange={() => toggleLookupSelect(row.domain)}
+                          />
+                        </td>
                         <td className="px-3 py-2 text-muted-foreground">
                           {row.found ? (expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />) : null}
                         </td>
@@ -421,7 +529,7 @@ export default function AgedDomainPage() {
                       </tr>
                       {expanded && row.found && (
                         <tr className="bg-muted/10 border-b border-border/30">
-                          <td colSpan={9} className="px-6 py-3 text-xs space-y-2">
+                          <td colSpan={10} className="px-6 py-3 text-xs space-y-2">
                             {row.detail && (
                               <p className="text-muted-foreground leading-snug whitespace-pre-wrap max-w-[700px]"><strong>Chi tiết:</strong> {row.detail}</p>
                             )}
@@ -645,6 +753,43 @@ export default function AgedDomainPage() {
           </div>
         )}
       </div>
+
+      {/* ── Form nhập giá (Đã mua → lưu Kho Domain) ──────────────────────────── */}
+      {purchaseOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setPurchaseOpen(false)}>
+          <div className="bg-card rounded-xl border shadow-xl w-full max-w-lg max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b flex items-center justify-between">
+              <h3 className="text-sm font-semibold">Đã mua {Object.keys(purchaseRows).length} domain — nhập giá mua ($)</h3>
+              <button onClick={() => setPurchaseOpen(false)} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="px-5 py-3 border-b flex items-center gap-2">
+              <Input type="number" placeholder="Giá chung ($)" value={purchaseBulk} onChange={(e) => setPurchaseBulk(e.target.value)} className="w-36 text-sm" />
+              <Button size="sm" variant="outline" onClick={applyPurchaseBulk} disabled={!purchaseBulk.trim()}>Áp dụng tất cả</Button>
+              <span className="text-xs text-muted-foreground ml-auto">Để trống = chưa rõ giá</span>
+            </div>
+            <div className="flex-1 overflow-auto px-5 py-3 space-y-2">
+              {Object.keys(purchaseRows).map((d) => (
+                <div key={d} className="flex items-center gap-2">
+                  <span className="flex-1 font-mono text-xs truncate" title={d}>{d}</span>
+                  <Input
+                    type="number" placeholder="Giá $"
+                    value={purchaseRows[d]}
+                    onChange={(e) => setPurchaseRows((prev) => ({ ...prev, [d]: e.target.value }))}
+                    className="w-28 text-sm"
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="px-5 py-4 border-t flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setPurchaseOpen(false)}>Hủy</Button>
+              <Button size="sm" onClick={savePurchase} disabled={savingPurchase} className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white">
+                {savingPurchase ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                Lưu Kho Domain
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Toasts ─────────────────────────────────────────────────────────────── */}
       <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none">
