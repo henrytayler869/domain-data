@@ -649,27 +649,39 @@ export default function DomainPickerPage() {
         } catch { /* ignore — vẫn tiếp tục */ }
       }
 
+      // Chỉ đẩy Wayback domain Tốt + CÓ backlink mạnh (ĐK1 hoặc ĐK2). Domain Tốt
+      // nhưng không có ĐK1/ĐK2 vẫn giữ trong picker để review, không tự Wayback.
+      const blSet = new Set(userBlacklist.map((e) => e.domain.toLowerCase()));
+      const refsByDomainMap = new Map(unifiedRows.map((u) => [u.targetDomain, u.refs]));
+      const waybackTargets = goodTargets.filter((d) => {
+        const refs = refsByDomainMap.get(d) ?? [];
+        const cleanRefs = applyRefBlacklist ? refs.filter((r) => !blSet.has(r.domain)) : refs;
+        const cond = backlinkEvidence(cleanRefs, trafficMap).cond;
+        return cond === 1 || cond === 2;
+      });
+
       await loadAhrefs();
       const refStat = data.refs;
       const parts: string[] = [];
       if (refStat?.uniqueTargets) parts.push(`${refStat.uniqueTargets} target · ${refStat.total} ref`);
       parts.push(`giữ ${goodTargets.length} Tốt`);
       if (badTargets.length) parts.push(`loại ${badTargets.length}`);
+      parts.push(`${waybackTargets.length} đủ ĐK1/ĐK2 → Wayback`);
       showToast(`✅ Upload OK · ${parts.join(" · ")}`);
 
-      // Auto-advance to step 4 và TỰ ĐỘNG đẩy domain Tốt qua Wayback.
+      // Auto-advance to step 4 và TỰ ĐỘNG đẩy domain Tốt + ĐK1/ĐK2 qua Wayback.
       dispatchWizard({ type: "advance", from: 3 });
-      if (goodTargets.length) {
-        startWaybackCheck(goodTargets);
+      if (waybackTargets.length) {
+        startWaybackCheck(waybackTargets);
       } else {
-        showToast("⚠️ Không có domain Tốt nào để đẩy qua Wayback", true);
+        showToast("⚠️ Không có domain Tốt + backlink mạnh (ĐK1/ĐK2) để đẩy Wayback", true);
       }
     } catch (err) {
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
     } finally {
       setAhrefsUploading(false);
     }
-  }, [loadAhrefs, showToast, startWaybackCheck]);
+  }, [loadAhrefs, showToast, startWaybackCheck, applyRefBlacklist, userBlacklist, trafficMap]);
 
   const removeAhrefsTarget = useCallback(async (domain: string) => {
     await fetch(`/api/ahrefs-results/db/${encodeURIComponent(domain)}`, { method: "DELETE" });
