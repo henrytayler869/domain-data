@@ -165,7 +165,7 @@ export default function AgedDomainPage() {
     if (!domains.length) { showToast("❌ Không có domain hợp lệ trong ô tra cứu", true); return; }
     setLookupLoading(true);
     try {
-      const [sumRes, trafRes, invRes] = await Promise.all([
+      const [sumRes, trafRes, invRes, blRes] = await Promise.all([
         fetch("/api/ahrefs-results/db/by-targets", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -173,16 +173,22 @@ export default function AgedDomainPage() {
         }),
         fetch("/api/backlink-db/traffic"),
         fetch("/api/inventory"),
+        fetch("/api/ref-blacklist"),
       ]);
       const sumData = await sumRes.json();
       const trafData = await trafRes.json();
       const invData = await invRes.json();
+      const blData = await blRes.json();
       const summaries: TargetSummary[] = Array.isArray(sumData) ? sumData : [];
       const map = new Map(summaries.map((s) => [s.targetDomain.toLowerCase(), s]));
       const trafficMap = new Map<string, number>();
       for (const r of (trafData?.rows ?? []) as { domain: string; traffic: number }[]) {
         trafficMap.set(r.domain.toLowerCase(), r.traffic);
       }
+      // Ref Domain Blacklist — lọc giống Kho Domain để 2 chỗ thống nhất maxDR/refs/ĐK.
+      const blSet = new Set(
+        (Array.isArray(blData) ? blData : []).map((e: { domain?: string }) => (e.domain ?? "").toLowerCase()),
+      );
       // Kho Domain → trạng thái Đã mua + giá dự kiến (expectedSellPrice).
       const invMap = new Map<string, number | null>();
       for (const e of (Array.isArray(invData) ? invData : []) as { domain: string; expectedSellPrice: number | null }[]) {
@@ -195,16 +201,18 @@ export default function AgedDomainPage() {
         if (!s) {
           return { domain, found: false, rating: null, category: null, detail: null, refsCount: 0, maxDr: 0, refs: [], cond: 0, evItems: [], purchased, expectedPrice };
         }
-        const ev = backlinkEvidence(s.refs, trafficMap);
+        // Lọc blacklist (s.refs đã sort DR desc → cleanRefs[0] là max DR).
+        const cleanRefs = s.refs.filter((r) => !blSet.has(r.domain.toLowerCase()));
+        const ev = backlinkEvidence(cleanRefs, trafficMap);
         return {
           domain,
           found: true,
           rating: s.rating,
           category: s.category,
           detail: s.detail,
-          refsCount: s.refsCount,
-          maxDr: s.maxDr,
-          refs: s.refs,
+          refsCount: cleanRefs.length,
+          maxDr: cleanRefs.length ? cleanRefs[0].dr : 0,
+          refs: cleanRefs,
           cond: ev.cond,
           evItems: ev.items,
           purchased,
