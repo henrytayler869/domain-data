@@ -152,11 +152,12 @@ export default function AgedDomainPage() {
   // ─── Tra cứu đánh giá nhiều domain ─────────────────────────────────────────────
   // Dán list domain → đối chiếu store đánh giá (ahrefs_results + target_assessment)
   // → xem lại rating/category/refs/DR + ĐK1/ĐK2 cho từng domain (kể cả đã mua/đã loại).
-  const runLookup = useCallback(async () => {
+  const runLookup = useCallback(async (explicitDomains?: string[]) => {
     const seen = new Set<string>();
     const domains: string[] = [];
-    for (const line of lookupText.split(/[\n,;\s]+/)) {
-      const d = line.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    const source = explicitDomains ?? lookupText.split(/[\n,;\s]+/);
+    for (const line of source) {
+      const d = String(line).trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
       if (!/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/.test(d) || seen.has(d)) continue;
       seen.add(d);
       domains.push(d);
@@ -245,7 +246,10 @@ export default function AgedDomainPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Import thất bại");
       showToast(`✅ Import ${unified.length} domain · ${assessments.length} đánh giá · ${rows.length} ref`);
-      if (lookupText.trim() && lookupRows) await runLookup(); // refresh bảng đang xem
+      // Nạp luôn toàn bộ domain vừa import vào bảng tra cứu để xem ngay tất cả.
+      const importedDomains = unified.map((u) => u.targetDomain);
+      setLookupText(importedDomains.join("\n"));
+      await runLookup(importedDomains);
     } catch (err) {
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
     } finally {
@@ -446,7 +450,7 @@ export default function AgedDomainPage() {
             className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-y focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
           <div className="flex flex-col gap-2 sm:w-44">
-            <Button onClick={runLookup} disabled={lookupLoading || !lookupText.trim()} className="gap-2">
+            <Button onClick={() => runLookup()} disabled={lookupLoading || !lookupText.trim()} className="gap-2">
               {lookupLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
               {lookupLoading ? "Đang tra…" : "Tra cứu"}
             </Button>
