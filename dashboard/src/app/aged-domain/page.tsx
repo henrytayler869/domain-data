@@ -11,11 +11,14 @@ import {
   X,
   Upload,
   Loader2,
+  Copy,
+  Check,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { TargetSummary } from "@/lib/ahrefs-db";
+import { valuateByRefs } from "@/lib/valuation";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -85,6 +88,7 @@ export default function AgedDomainPage() {
   const [lookupLoading, setLookupLoading] = useState(false);
   const [expandedLookup, setExpandedLookup] = useState<Set<string>>(new Set());
   const [lookupFilter, setLookupFilter] = useState<"all" | "tot" | "tb" | "bad" | "none">("all");
+  const [copiedLookup, setCopiedLookup] = useState(false);
 
   // ── Toasts ──────────────────────────────────────────────────────────────────
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -208,15 +212,30 @@ export default function AgedDomainPage() {
     return true;
   });
 
-  // Export kết quả tra cứu (đang lọc) → CSV.
+  // Copy nhanh danh sách domain (đang lọc), mỗi dòng 1 domain.
+  async function copyLookup() {
+    if (!displayedLookup.length) return;
+    const text = displayedLookup.map((r) => r.domain).join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const el = document.createElement("textarea");
+      el.value = text; el.style.cssText = "position:fixed;top:-9999px;opacity:0";
+      document.body.appendChild(el); el.select(); document.execCommand("copy"); document.body.removeChild(el);
+    }
+    setCopiedLookup(true);
+    setTimeout(() => setCopiedLookup(false), 1500);
+  }
+
+  // Export kết quả tra cứu (đang lọc) → CSV: Domain | Ref Domain (DR) | Giá.
   function exportLookupCsv() {
     if (!displayedLookup.length) { showToast("Không có dòng để export", true); return; }
     const esc = (v: unknown) => { const s = String(v ?? ""); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-    const header = "domain,rating,category,max_dr,refs_count,backlink_condition,refs,detail";
+    const header = "Domain,Ref Domain (DR),Giá";
     const lines = displayedLookup.map((r) => {
-      const cond = r.cond === 1 ? "ĐK1" : r.cond === 2 ? "ĐK2" : "";
       const refsStr = r.refs.map((x) => `${x.domain} (DR ${x.dr})`).join("; ");
-      return [r.domain, r.rating ?? "", r.category ?? "", r.found ? r.maxDr : "", r.found ? r.refsCount : "", cond, refsStr, r.detail ?? ""].map(esc).join(",");
+      const price = r.found ? valuateByRefs(r.refs, r.domain) : "";
+      return [r.domain, refsStr, price].map(esc).join(",");
     });
     const csv = ["﻿" + header, ...lines].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
@@ -322,7 +341,11 @@ export default function AgedDomainPage() {
               <option value="bad">⚠️/❌ Rủi ro / Xấu</option>
               <option value="none">Chưa đánh giá</option>
             </select>
-            <Button size="sm" variant="outline" className="gap-1.5 ml-auto" onClick={exportLookupCsv} disabled={!displayedLookup.length}>
+            <Button size="sm" variant="outline" className="gap-1.5 ml-auto" onClick={copyLookup} disabled={!displayedLookup.length}>
+              {copiedLookup ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+              {copiedLookup ? "Đã copy!" : `Copy ${displayedLookup.length} domain`}
+            </Button>
+            <Button size="sm" variant="outline" className="gap-1.5" onClick={exportLookupCsv} disabled={!displayedLookup.length}>
               <Upload className="h-3.5 w-3.5 rotate-180" />
               Export CSV
             </Button>
