@@ -624,7 +624,7 @@ export default function DomainPickerPage() {
       ]);
       setJustUploadedTargets(uploadedTargets);
 
-      // Phân loại theo rating: GIỮ ✅ TỐT + ⚠️ TRUNG BÌNH, LOẠI TRỪ phần còn lại.
+      // Phân loại theo rating: ✅ TỐT + ⚠️ TRUNG BÌNH = "Tốt"; còn lại = "xấu".
       const goodTargets: string[] = [];
       const badTargets: string[] = [];
       for (const a of assessments) {
@@ -633,24 +633,7 @@ export default function DomainPickerPage() {
         else if (r) badTargets.push(a.targetDomain);
       }
 
-      // Auto-loại trừ domain không "Tốt".
-      if (badTargets.length) {
-        try {
-          await fetch("/api/ahrefs-results/db/exclude", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ targets: badTargets }),
-          });
-          setJustUploadedTargets((prev) => {
-            const next = new Set(prev);
-            for (const t of badTargets) next.delete(t);
-            return next;
-          });
-        } catch { /* ignore — vẫn tiếp tục */ }
-      }
-
-      // Chỉ đẩy Wayback domain Tốt + CÓ backlink mạnh (ĐK1 hoặc ĐK2). Domain Tốt
-      // nhưng không có ĐK1/ĐK2 vẫn giữ trong picker để review, không tự Wayback.
+      // Domain đủ điều kiện Wayback = Tốt + CÓ backlink mạnh (ĐK1 hoặc ĐK2).
       const blSet = new Set(userBlacklist.map((e) => e.domain.toLowerCase()));
       const refsByDomainMap = new Map(unifiedRows.map((u) => [u.targetDomain, u.refs]));
       const waybackTargets = goodTargets.filter((d) => {
@@ -659,22 +642,44 @@ export default function DomainPickerPage() {
         const cond = backlinkEvidence(cleanRefs, trafficMap).cond;
         return cond === 1 || cond === 2;
       });
+      const waybackSet = new Set(waybackTargets);
+
+      // LOẠI TRỪ mọi domain KHÔNG đủ điều kiện Wayback: vừa domain "xấu", vừa
+      // domain "Tốt" nhưng thiếu backlink mạnh (không ĐK1/ĐK2). Chỉ giữ lại
+      // những domain được đẩy qua Wayback.
+      const excludeTargets = Array.from(new Set([
+        ...badTargets,
+        ...goodTargets.filter((d) => !waybackSet.has(d)),
+      ]));
+      if (excludeTargets.length) {
+        try {
+          await fetch("/api/ahrefs-results/db/exclude", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ targets: excludeTargets }),
+          });
+          setJustUploadedTargets((prev) => {
+            const next = new Set(prev);
+            for (const t of excludeTargets) next.delete(t);
+            return next;
+          });
+        } catch { /* ignore — vẫn tiếp tục */ }
+      }
 
       await loadAhrefs();
       const refStat = data.refs;
       const parts: string[] = [];
       if (refStat?.uniqueTargets) parts.push(`${refStat.uniqueTargets} target · ${refStat.total} ref`);
-      parts.push(`giữ ${goodTargets.length} Tốt`);
-      if (badTargets.length) parts.push(`loại ${badTargets.length}`);
-      parts.push(`${waybackTargets.length} đủ ĐK1/ĐK2 → Wayback`);
+      parts.push(`giữ ${waybackTargets.length} (đủ ĐK → Wayback)`);
+      if (excludeTargets.length) parts.push(`loại ${excludeTargets.length}`);
       showToast(`✅ Upload OK · ${parts.join(" · ")}`);
 
-      // Auto-advance to step 4 và TỰ ĐỘNG đẩy domain Tốt + ĐK1/ĐK2 qua Wayback.
+      // Auto-advance to step 4 và TỰ ĐỘNG đẩy domain đủ điều kiện qua Wayback.
       dispatchWizard({ type: "advance", from: 3 });
       if (waybackTargets.length) {
         startWaybackCheck(waybackTargets);
       } else {
-        showToast("⚠️ Không có domain Tốt + backlink mạnh (ĐK1/ĐK2) để đẩy Wayback", true);
+        showToast("⚠️ Không có domain đủ điều kiện (Tốt + ĐK1/ĐK2) — đã loại trừ tất cả", true);
       }
     } catch (err) {
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
