@@ -555,58 +555,39 @@ export default function DomainPickerPage() {
 
   // ─── Ahrefs Result DB handlers ──────────────────────────────────────────────
 
-  const uploadAhrefsCsv = useCallback(async (file: File) => {
+  const uploadAhrefsCsv = useCallback(async (files: File[]) => {
+    const fileArr = (Array.isArray(files) ? files : [files]).filter(Boolean);
+    if (!fileArr.length) return;
     setAhrefsUploading(true);
     try {
-      const text = await file.text();
-
-      // Try unified format first (6 columns), fall back to legacy 3-column ahrefs format
-      let unifiedRows: ReturnType<typeof parseUnifiedCsv> = [];
-      let legacyRows: ReturnType<typeof parseAhrefsCsv> = [];
-      let unifiedErr: string | null = null;
-      try {
-        unifiedRows = parseUnifiedCsv(text);
-      } catch (e) {
-        unifiedErr = e instanceof Error ? e.message : "parse error";
+      // Parse + GỘP nhiều file (unified 6-cột ưu tiên, fallback legacy 3-cột).
+      const unifiedRows: ReturnType<typeof parseUnifiedCsv> = [];
+      const legacyRows: ReturnType<typeof parseAhrefsCsv> = [];
+      let lastErr: string | null = null;
+      for (const file of fileArr) {
+        const text = await file.text();
+        let u: ReturnType<typeof parseUnifiedCsv> = [];
+        try { u = parseUnifiedCsv(text); } catch (e) { lastErr = e instanceof Error ? e.message : "parse error"; }
+        if (u.length) { unifiedRows.push(...u); continue; }
+        try { legacyRows.push(...parseAhrefsCsv(text)); } catch { /* bỏ qua file này */ }
       }
-      if (!unifiedRows.length) {
-        try {
-          legacyRows = parseAhrefsCsv(text);
-        } catch {
-          // Both parsers failed
-          throw new Error(unifiedErr ?? "CSV không đúng format");
+
+      // Build payload — DEDUPE theo (target,ref) và target để nhiều file chồng
+      // nhau không tạo dòng trùng (gây lỗi upsert ON CONFLICT).
+      const refsMap = new Map<string, { targetDomain: string; refDomain: string; domainRating: number }>();
+      const assessMap = new Map<string, { targetDomain: string; rating: string | null; category: string | null; detail: string | null }>();
+      for (const u of unifiedRows) {
+        for (const r of u.refs) refsMap.set(`${u.targetDomain}|${r.domain}`, { targetDomain: u.targetDomain, refDomain: r.domain, domainRating: r.dr });
+        if (u.rating || u.category || u.detail) {
+          assessMap.set(u.targetDomain, { targetDomain: u.targetDomain, rating: u.rating || null, category: u.category || null, detail: u.detail || null });
         }
       }
-
-      // Build payload from unified rows
-      let refsRows: { targetDomain: string; refDomain: string; domainRating: number }[] = [];
-      let assessments: { targetDomain: string; rating: string | null; category: string | null; detail: string | null }[] = [];
-
-      if (unifiedRows.length) {
-        for (const u of unifiedRows) {
-          for (const r of u.refs) {
-            refsRows.push({ targetDomain: u.targetDomain, refDomain: r.domain, domainRating: r.dr });
-          }
-          if (u.rating || u.category || u.detail) {
-            assessments.push({
-              targetDomain: u.targetDomain,
-              rating: u.rating || null,
-              category: u.category || null,
-              detail: u.detail || null,
-            });
-          }
-        }
-      } else {
-        // legacy format
-        refsRows = legacyRows.map((r) => ({
-          targetDomain: r.targetDomain,
-          refDomain: r.refDomain,
-          domainRating: r.domainRating,
-        }));
-      }
+      for (const r of legacyRows) refsMap.set(`${r.targetDomain}|${r.refDomain}`, { targetDomain: r.targetDomain, refDomain: r.refDomain, domainRating: r.domainRating });
+      const refsRows = Array.from(refsMap.values());
+      const assessments = Array.from(assessMap.values());
 
       if (!refsRows.length && !assessments.length) {
-        throw new Error("CSV không có dòng dữ liệu hợp lệ");
+        throw new Error(lastErr ?? "CSV không có dòng dữ liệu hợp lệ");
       }
 
       const res = await fetch("/api/ahrefs-results/db/add", {
@@ -1742,10 +1723,11 @@ export default function DomainPickerPage() {
                 <input
                   type="file"
                   accept=".csv,text/csv"
+                  multiple
                   className="hidden"
                   onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) uploadAhrefsCsv(f);
+                    const files = Array.from(e.target.files ?? []);
+                    if (files.length) uploadAhrefsCsv(files);
                     e.target.value = "";
                   }}
                 />
@@ -1754,7 +1736,7 @@ export default function DomainPickerPage() {
                   ahrefsUploading && "opacity-60 pointer-events-none"
                 )}>
                   {ahrefsUploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
-                  {ahrefsUploading ? "Đang upload..." : "Upload Result CSV (Ahrefs / DataforSEO)"}
+                  {ahrefsUploading ? "Đang upload..." : "Upload Result CSV (nhiều file · Ahrefs / DataforSEO)"}
                 </span>
               </label>
               <Button
