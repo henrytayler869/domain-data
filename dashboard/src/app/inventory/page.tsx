@@ -37,7 +37,7 @@ export default function InventoryPage() {
   const [entries, setEntries] = useState<InventoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [filterStatus, setFilterStatus] = useState<"all" | "holding" | "sold">("all");
+  const [filterStatus, setFilterStatus] = useState<"all" | "holding" | "sold" | "backorder">("all");
   const [filterExpected, setFilterExpected] = useState<"all" | "yes" | "no">("all");
   const [showArchived, setShowArchived] = useState(false);
   const [archiving, setArchiving] = useState(false);
@@ -396,8 +396,10 @@ export default function InventoryPage() {
   const filtered = useMemo(() => {
     const list = dateFiltered.filter((e) => {
       if (search && !e.domain.includes(search.toLowerCase())) return false;
-      if (filterStatus === "holding" && e.sellPrice != null) return false;
+      // "Đang giữ" = đang sở hữu (chưa bán) — KHÔNG gồm Back Order (chỉ mới đặt, chưa sở hữu).
+      if (filterStatus === "holding" && (e.sellPrice != null || e.isBackorder)) return false;
       if (filterStatus === "sold" && e.sellPrice == null) return false;
+      if (filterStatus === "backorder" && !e.isBackorder) return false;
       if (filterExpected === "yes" && e.expectedSellPrice == null) return false;
       if (filterExpected === "no" && e.expectedSellPrice != null) return false;
       {
@@ -1167,13 +1169,14 @@ export default function InventoryPage() {
         </div>
         <select
           value={filterStatus}
-          onChange={(e) => setFilterStatus(e.target.value as "all" | "holding" | "sold")}
+          onChange={(e) => setFilterStatus(e.target.value as "all" | "holding" | "sold" | "backorder")}
           className="h-8 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
           title="Filter Status"
         >
           <option value="all">Tất cả</option>
           <option value="holding">Đang giữ</option>
           <option value="sold">Đã bán</option>
+          <option value="backorder">🛒 Back Order</option>
         </select>
         <select
           value={filterExpected}
