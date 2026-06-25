@@ -1695,6 +1695,10 @@ export default function InventoryPage() {
                               step="0.01"
                               value={editPrice}
                               onChange={(ev) => setEditPrice(ev.target.value)}
+                              onKeyDown={(ev) => {
+                                if (ev.key === "Enter") saveEdit(e.domain);
+                                else if (ev.key === "Escape") setEditingDomain(null);
+                              }}
                               className="h-7 w-24 text-xs"
                               autoFocus
                             />
