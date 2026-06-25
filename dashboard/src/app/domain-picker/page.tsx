@@ -2058,7 +2058,15 @@ export default function DomainPickerPage() {
           Bước {wizard.step}/{WIZARD_STEPS.length} · {WIZARD_STEPS[wizard.step - 1].label}
         </span>
         <Button
-          onClick={() => dispatchWizard({ type: "advance", from: wizard.step })}
+          onClick={() => {
+            // Bước 1: nếu đã dán domain nhưng chưa bấm "Nạp domain" thì tự nạp
+            // trước khi qua bước 2 (handlePasteDomains tự advance).
+            if (wizard.step === 1 && pasteText.trim() && rawRows.length === 0) {
+              handlePasteDomains();
+            } else {
+              dispatchWizard({ type: "advance", from: wizard.step });
+            }
+          }}
           disabled={wizard.step === 4}
           className="gap-2"
         >
