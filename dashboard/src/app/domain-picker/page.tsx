@@ -590,13 +590,25 @@ export default function DomainPickerPage() {
         throw new Error(lastErr ?? "CSV không có dòng dữ liệu hợp lệ");
       }
 
-      const res = await fetch("/api/ahrefs-results/db/add", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rows: refsRows, assessments }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Upload thất bại");
+      // Chunk payload để tránh 413 "Request Entity Too Large" (Vercel body ~4.5MB)
+      // khi upload nhiều file / nhiều ref. Mỗi request tối đa ~3000 ref row;
+      // assessments (nhỏ, 1/target) gửi kèm chunk đầu.
+      const CHUNK = 3000;
+      const refChunks: Array<typeof refsRows> = [];
+      for (let i = 0; i < refsRows.length; i += CHUNK) refChunks.push(refsRows.slice(i, i + CHUNK));
+      if (!refChunks.length) refChunks.push([]); // vẫn gửi 1 request cho assessments
+      for (let i = 0; i < refChunks.length; i++) {
+        const res = await fetch("/api/ahrefs-results/db/add", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rows: refChunks[i], assessments: i === 0 ? assessments : [] }),
+        });
+        if (!res.ok) {
+          let msg = `Upload thất bại (HTTP ${res.status})`;
+          try { msg = (await res.json()).error ?? msg; } catch { /* body không phải JSON (vd 413 trả text) */ }
+          throw new Error(res.status === 413 ? "Payload quá lớn — thử upload ít file hơn mỗi lần" : msg);
+        }
+      }
       // Remember which targets just landed so the viewClearedAt filter
       // doesn't accidentally hide them (clock skew between client/server).
       const uploadedTargets = new Set<string>([
@@ -648,9 +660,9 @@ export default function DomainPickerPage() {
       }
 
       await loadAhrefs();
-      const refStat = data.refs;
+      const uniqueTargetCount = new Set(refsRows.map((r) => r.targetDomain)).size;
       const parts: string[] = [];
-      if (refStat?.uniqueTargets) parts.push(`${refStat.uniqueTargets} target · ${refStat.total} ref`);
+      if (refsRows.length) parts.push(`${uniqueTargetCount} target · ${refsRows.length} ref`);
       parts.push(`giữ ${waybackTargets.length} (đủ ĐK → Wayback)`);
       if (excludeTargets.length) parts.push(`loại ${excludeTargets.length}`);
       showToast(`✅ Upload OK · ${parts.join(" · ")}`);
