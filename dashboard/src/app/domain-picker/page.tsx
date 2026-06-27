@@ -1014,7 +1014,20 @@ export default function DomainPickerPage() {
         }
       }
 
-      await Promise.all([loadInventory(), loadAhrefs()]);
+      // Patch cục bộ thay vì rescan TOÀN BẢNG ahrefs_results (bottleneck cũ).
+      // Purchase (không backorder) → mark excluded local để biến mất khỏi picker.
+      if (!isBackorder) {
+        const boughtSet = new Set(entries.map((e) => e.domain));
+        setAhrefsSummary((prev) =>
+          prev.map((t) => (boughtSet.has(t.targetDomain) ? { ...t, excluded: true } : t)),
+        );
+        setCheckedTargets((prev) => {
+          const n = new Set(prev);
+          for (const d of boughtSet) n.add(d);
+          return n;
+        });
+      }
+      await loadInventory(); // chỉ reload bảng inventory nhẹ (cập nhật "đã mua")
       setPurchaseFormOpen(false);
       setSelectedTargets(new Set());
       setSelectedDbDomains(new Set());
@@ -1025,7 +1038,7 @@ export default function DomainPickerPage() {
     } finally {
       setSavingPurchase(false);
     }
-  }, [purchaseRows, purchaseFormMode, ahrefsSummary, sourceMap, loadInventory, loadAhrefs, showToast]);
+  }, [purchaseRows, purchaseFormMode, ahrefsSummary, sourceMap, loadInventory, showToast]);
 
   // Effective list for copy/export: selection if any, else all filtered
   const exportableAhrefs = useMemo(() => {

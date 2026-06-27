@@ -173,10 +173,14 @@ export async function readTargetSummaryFor(targetsRaw: string[]): Promise<Target
   const sb = supabase();
   const CHUNK = 150; // tránh URL quá dài cho .in()
   const PAGE = 1000; // PostgREST trả tối đa 1000 dòng/request → phải phân trang
-  const refRows: DbRow[] = [];
-  const assessRows: AssessmentDbRow[] = [];
-  for (let i = 0; i < targets.length; i += CHUNK) {
-    const slice = targets.slice(i, i + CHUNK);
+  const CONCURRENCY = 6; // chạy song song các chunk (trước đây tuần tự = chậm)
+
+  const chunks: string[][] = [];
+  for (let i = 0; i < targets.length; i += CHUNK) chunks.push(targets.slice(i, i + CHUNK));
+
+  // Tải 1 chunk: ref rows (phân trang) + assessments.
+  const fetchChunk = async (slice: string[]) => {
+    const refRows: DbRow[] = [];
     // Ref rows: 1 chunk (150 target) có thể có HÀNG NGHÌN ref → phải phân trang,
     // nếu không sẽ bị cắt ở 1000 dòng và mất ref của các target cuối chunk.
     let offset = 0;
@@ -197,8 +201,25 @@ export async function readTargetSummaryFor(targetsRaw: string[]): Promise<Target
     const { data: aData, error: aErr } = await sb
       .from(ASSESS_TABLE).select("*").in("target_domain", slice);
     if (aErr) throw new Error(aErr.message);
-    if (aData) assessRows.push(...(aData as AssessmentDbRow[]));
-  }
+    return { refRows, assessRows: (aData ?? []) as AssessmentDbRow[] };
+  };
+
+  // Pool concurrency có giới hạn — nhanh hơn tuần tự nhưng không mở quá nhiều
+  // kết nối khi danh sách target rất lớn (bulk lookup).
+  const refRows: DbRow[] = [];
+  const assessRows: AssessmentDbRow[] = [];
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < chunks.length) {
+      const idx = cursor++;
+      const { refRows: rr, assessRows: ar } = await fetchChunk(chunks[idx]);
+      refRows.push(...rr);
+      assessRows.push(...ar);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, chunks.length) }, () => worker()),
+  );
   const assessMap = new Map(assessRows.map((r) => [r.target_domain, r]));
 
   const map = new Map<string, TargetSummary>();

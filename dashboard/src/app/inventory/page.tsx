@@ -56,6 +56,7 @@ export default function InventoryPage() {
 
   // Refs data (from Ahrefs Result DB) + blacklist
   const [ahrefsSummary, setAhrefsSummary] = useState<TargetSummary[]>([]);
+  const [refsLoading, setRefsLoading] = useState(false);
   const [userBlacklist, setUserBlacklist] = useState<RefBlacklistEntry[]>([]);
 
   // Wayback Machine (Apify actor)
@@ -137,11 +138,27 @@ export default function InventoryPage() {
     setTimeout(() => setToasts((p) => p.filter((t) => t.id !== id)), 3500);
   }, []);
 
+  // Refs (Ahrefs Result DB) cho danh sách domain — tải NỀN, không chặn bảng.
+  const loadRefs = useCallback(async (domains: string[]) => {
+    if (!domains.length) { setAhrefsSummary([]); return; }
+    setRefsLoading(true);
+    try {
+      const refsRes = await fetch("/api/ahrefs-results/db/by-targets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targets: domains }),
+      });
+      const refsData = await refsRes.json();
+      setAhrefsSummary(Array.isArray(refsData) ? refsData : []);
+    } catch { setAhrefsSummary([]); }
+    finally { setRefsLoading(false); }
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
+    let domains: string[] = [];
     try {
-      // KHÔNG quét toàn bộ ahrefs_results (~chục nghìn dòng = ~15s). Kho chỉ cần
-      // refs cho domain đang sở hữu → lấy inventory trước rồi query refs theo list.
+      // Dữ liệu lõi (inventory + meta) tải song song và hiển thị bảng NGAY.
       const [invRes, blRes, wRes, wbResRes, wbRunsRes] = await Promise.all([
         fetch("/api/inventory"),
         fetch("/api/ref-blacklist"),
@@ -160,25 +177,12 @@ export default function InventoryPage() {
       setWithdrawals(Array.isArray(wData) ? wData : []);
       setWaybackResults(wbResData.rows ?? []);
       setWaybackRuns(wbRunsData.runs ?? []);
-
-      // Refs chỉ cho domain trong kho — nhanh hơn nhiều so với quét cả bảng.
-      const domains = entriesArr.map((e) => e.domain).filter(Boolean);
-      if (domains.length) {
-        try {
-          const refsRes = await fetch("/api/ahrefs-results/db/by-targets", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ targets: domains }),
-          });
-          const refsData = await refsRes.json();
-          setAhrefsSummary(Array.isArray(refsData) ? refsData : []);
-        } catch { setAhrefsSummary([]); }
-      } else {
-        setAhrefsSummary([]);
-      }
+      domains = entriesArr.map((e) => e.domain).filter(Boolean);
     } catch { /* ignore */ }
     setLoading(false);
-  }, []);
+    // Refs/đánh giá tải nền — bảng đã hiện, cột đánh giá/ref điền sau khi xong.
+    void loadRefs(domains);
+  }, [loadRefs]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -481,6 +485,11 @@ export default function InventoryPage() {
   const confirmBackorderSelected = useCallback(async () => {
     if (selected.size === 0) return;
     const domains = Array.from(selected);
+    const sel = new Set(domains);
+    const snapshot = entries; // revert nếu API lỗi
+    // Optimistic: cập nhật UI ngay, gọi API nền → cảm giác tức thì.
+    setEntries((prev) => prev.map((e) => (sel.has(e.domain) ? { ...e, isBackorder: false } : e)));
+    setSelected(new Set());
     try {
       const res = await fetch("/api/inventory/backorder", {
         method: "POST",
@@ -489,15 +498,12 @@ export default function InventoryPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Lỗi");
-      setEntries((prev) =>
-        prev.map((e) => (selected.has(e.domain) ? { ...e, isBackorder: false } : e)),
-      );
-      setSelected(new Set());
       showToast(`✅ Đã confirm ${domains.length} backorder`);
     } catch (err) {
+      setEntries(snapshot);
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
     }
-  }, [selected, showToast]);
+  }, [selected, entries, showToast]);
 
   // Loại trừ — backorder fail hoặc bất kỳ lý do nào khác để bỏ domain:
   // xóa khỏi inventory + mark excluded trong target_assessment.
@@ -505,6 +511,11 @@ export default function InventoryPage() {
     if (selected.size === 0) return;
     const domains = Array.from(selected);
     if (!confirm(`Loại trừ ${domains.length} domain? Sẽ xóa khỏi kho + ẩn khỏi picker.`)) return;
+    const dropSet = new Set(domains);
+    const snapshot = entries; // revert nếu API lỗi
+    // Optimistic: bỏ khỏi danh sách ngay, gọi API nền.
+    setEntries((prev) => prev.filter((e) => !dropSet.has(e.domain)));
+    setSelected(new Set());
     try {
       const res = await fetch("/api/inventory/exclude", {
         method: "POST",
@@ -513,15 +524,12 @@ export default function InventoryPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Lỗi");
-      // Drop them locally
-      const dropSet = new Set(domains);
-      setEntries((prev) => prev.filter((e) => !dropSet.has(e.domain)));
-      setSelected(new Set());
       showToast(`✅ Đã loại trừ ${data.deletedFromInventory} domain`);
     } catch (err) {
+      setEntries(snapshot);
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
     }
-  }, [selected, showToast]);
+  }, [selected, entries, showToast]);
 
   // Archive / un-archive selected domains. Optimistically updates local state
   // (since /api/inventory doesn't expose a `?refresh` flag) then re-reads.
@@ -529,6 +537,14 @@ export default function InventoryPage() {
     if (selected.size === 0) return;
     const domains = Array.from(selected);
     const verb = archived ? "lưu trữ" : "khôi phục";
+    const sel = new Set(domains);
+    const snapshot = entries; // revert nếu API lỗi
+    const now = new Date().toISOString();
+    // Optimistic: cập nhật UI ngay, gọi API nền.
+    setEntries((prev) =>
+      prev.map((e) => (sel.has(e.domain) ? { ...e, archivedAt: archived ? now : null } : e)),
+    );
+    setSelected(new Set());
     setArchiving(true);
     try {
       const res = await fetch("/api/inventory/archive", {
@@ -538,21 +554,14 @@ export default function InventoryPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Lỗi");
-      // Patch local state so the UI updates immediately without a full reload.
-      const now = new Date().toISOString();
-      setEntries((prev) =>
-        prev.map((e) =>
-          selected.has(e.domain) ? { ...e, archivedAt: archived ? now : null } : e,
-        ),
-      );
-      setSelected(new Set());
       showToast(`✅ Đã ${verb} ${domains.length} domain`);
     } catch (err) {
+      setEntries(snapshot);
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
     } finally {
       setArchiving(false);
     }
-  }, [selected, showToast]);
+  }, [selected, entries, showToast]);
 
   const openSellForm = useCallback(() => {
     if (selected.size === 0) return;
@@ -1021,8 +1030,13 @@ export default function InventoryPage() {
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Kho Domain</h1>
-          <p className="text-sm text-muted-foreground mt-1">
+          <p className="text-sm text-muted-foreground mt-1 flex items-center gap-1.5">
             Danh sách domain đã mua. Click giá để chỉnh sửa.
+            {refsLoading && (
+              <span className="inline-flex items-center gap-1 text-[11px] text-blue-600 dark:text-blue-400">
+                <Loader2 className="h-3 w-3 animate-spin" /> đang tải đánh giá/ref…
+              </span>
+            )}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">

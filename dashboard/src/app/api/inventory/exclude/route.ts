@@ -23,10 +23,13 @@ export async function POST(request: NextRequest) {
         { status: 400 },
       );
     }
-    // Best-effort: do both. If exclude fails, the inventory row is still
-    // gone — caller can re-trigger exclude later via the picker page.
-    const delResult = await deleteEntries(domains);
-    const exResult = await markExcluded(domains);
+    // Best-effort: do both in parallel (độc lập nhau → không cần tuần tự).
+    // If exclude fails, the inventory row is still gone — caller can
+    // re-trigger exclude later via the picker page.
+    const [delResult, exResult] = await Promise.all([
+      deleteEntries(domains),
+      markExcluded(domains),
+    ]);
     return NextResponse.json({
       ok: true,
       deletedFromInventory: delResult.deleted,

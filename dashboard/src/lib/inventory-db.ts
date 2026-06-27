@@ -94,27 +94,40 @@ export async function upsertEntries(entries: AddInput[]): Promise<{ added: numbe
     return { added: 0, total: count ?? 0 };
   }
 
-  const { count: countBefore } = await sb.from(TABLE).select("*", { count: "exact", head: true });
-  const before = countBefore ?? 0;
+  const norm = entries.map((e) => ({ ...e, domain: e.domain.toLowerCase().trim() }));
+  const uniqueDomains = Array.from(new Set(norm.map((e) => e.domain).filter(Boolean)));
+
+  // "added" = số domain CHƯA tồn tại. Tra bằng PK index (.in trên domain) — rẻ
+  // hơn nhiều so với 2 lần count(*) exact quét cả bảng (bottleneck cũ của Lưu kho).
+  const existing = new Set<string>();
+  const LOOKUP = 300;
+  for (let i = 0; i < uniqueDomains.length; i += LOOKUP) {
+    const { data, error } = await sb
+      .from(TABLE).select("domain").in("domain", uniqueDomains.slice(i, i + LOOKUP));
+    if (error) throw new Error(error.message);
+    for (const r of (data ?? []) as { domain: string }[]) existing.add(r.domain);
+  }
 
   const BATCH = 500;
-  for (let i = 0; i < entries.length; i += BATCH) {
-    const slice = entries.slice(i, i + BATCH).map((e) => ({
-      domain: e.domain.toLowerCase().trim(),
+  const now = new Date().toISOString();
+  for (let i = 0; i < norm.length; i += BATCH) {
+    const slice = norm.slice(i, i + BATCH).map((e) => ({
+      domain: e.domain,
       purchase_price: e.purchasePrice,
       notes: e.notes ?? null,
       source: e.source ?? null,
       rating: e.rating ?? null,
       category: e.category ?? null,
       is_backorder: e.isBackorder ?? false,
-      updated_at: new Date().toISOString(),
+      updated_at: now,
     }));
     const { error } = await sb.from(TABLE).upsert(slice, { onConflict: "domain" });
     if (error) throw new Error(error.message);
   }
-  const { count: countAfter } = await sb.from(TABLE).select("*", { count: "exact", head: true });
-  const total = countAfter ?? 0;
-  return { added: total - before, total };
+
+  const added = uniqueDomains.length - existing.size;
+  const { count } = await sb.from(TABLE).select("*", { count: "exact", head: true });
+  return { added, total: count ?? 0 };
 }
 
 // Flip the backorder flag in bulk. Used by "Confirm backorder" UI action.
