@@ -884,6 +884,28 @@ export default function DomainPickerPage() {
     if (selectedTargets.size === 0) return;
     const targets = Array.from(selectedTargets);
     if (!confirm(`Loại trừ ${targets.length} domain? Chúng sẽ bị ẩn khỏi danh sách (đã có người mua, không sở hữu được).`)) return;
+    const targetSet = new Set(targets);
+    const snapshot = ahrefsSummary; // revert nếu API lỗi
+    // Optimistic: ẩn NGAY khỏi danh sách (mark excluded local) + bỏ bypass +
+    // thêm vào checkedTargets. KHÔNG rescan toàn bảng ahrefs_results (~3s = nguyên
+    // nhân dòng đứng yên + nút loading lâu trước đây).
+    setAhrefsSummary((prev) =>
+      prev.map((t) => (targetSet.has(t.targetDomain) ? { ...t, excluded: true } : t)),
+    );
+    setCheckedTargets((prev) => {
+      const n = new Set(prev);
+      for (const t of targets) n.add(t);
+      return n;
+    });
+    // Drop from the just-uploaded bypass set — an explicit "Loại trừ" must
+    // win over the re-upload visibility override, otherwise the row stays.
+    setJustUploadedTargets((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Set(prev);
+      for (const t of targets) next.delete(t);
+      return next;
+    });
+    setSelectedTargets(new Set());
     setExcludingTargets(true);
     try {
       const res = await fetch("/api/ahrefs-results/db/exclude", {
@@ -893,23 +915,14 @@ export default function DomainPickerPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Lỗi");
-      // Drop from the just-uploaded bypass set — an explicit "Loại trừ" must
-      // win over the re-upload visibility override, otherwise the row stays.
-      setJustUploadedTargets((prev) => {
-        if (prev.size === 0) return prev;
-        const next = new Set(prev);
-        for (const t of targets) next.delete(t);
-        return next;
-      });
-      await loadAhrefs();
-      setSelectedTargets(new Set());
       showToast(`✅ Đã loại trừ ${targets.length} domain`);
     } catch (err) {
+      setAhrefsSummary(snapshot); // revert
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
     } finally {
       setExcludingTargets(false);
     }
-  }, [selectedTargets, loadAhrefs, showToast]);
+  }, [selectedTargets, ahrefsSummary, showToast]);
 
   // Mua thật qua Gname API — tiêu tiền thật nên confirm kỹ trước khi gửi.
   // Giá mua lấy từ response của Gname (số tiền bị freeze), không nhập tay.
