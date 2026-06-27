@@ -712,10 +712,17 @@ export default function DomainPickerPage() {
 
   const filteredAhrefs = useMemo(() => {
     const bySearch = ahrefsSummary.filter((t) => {
-      // Scope theo CSV vừa upload: chỉ hiện target thuộc list hiện tại. Khi
-      // chưa upload (set rỗng) thì không scope (hiện toàn bộ để browse DB).
-      if (uploadedDomainSet.size > 0 && !uploadedDomainSet.has(t.targetDomain)) return false;
       const isJustUploaded = justUploadedTargets.has(t.targetDomain);
+      // Scope theo CSV Spamzilla vừa upload: chỉ hiện target thuộc list hiện tại.
+      // Khi chưa upload (set rỗng) thì không scope (hiện toàn bộ để browse DB).
+      // NGOẠI LỆ: domain vừa upload Result CSV (justUploadedTargets) luôn hiện —
+      // chúng có thể KHÔNG nằm trong list Spamzilla (vd check thẳng DataforSEO),
+      // nên không được để scope Spamzilla ẩn mất.
+      if (
+        uploadedDomainSet.size > 0 &&
+        !uploadedDomainSet.has(t.targetDomain) &&
+        !isJustUploaded
+      ) return false;
       // Manually excluded — domain already bought by someone else, hide entirely.
       // BUT re-uploading the domain in the same session means the user wants to
       // re-evaluate, so bypass this filter for just-uploaded targets.
