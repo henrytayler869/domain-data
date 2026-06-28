@@ -397,9 +397,25 @@ export default function InventoryPage() {
     return s;
   }, [waybackRuns]);
 
+  // Tìm kiếm nhiều domain cùng lúc: tách theo xuống dòng / dấu phẩy / ; / khoảng
+  // trắng, dọn protocol/www/path để dán cả URL cũng khớp.
+  const searchTokens = useMemo(() => {
+    return search
+      .split(/[\s,;]+/)
+      .map((s) => s.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, ""))
+      .filter(Boolean);
+  }, [search]);
+  // Nhiều domain → khớp CHÍNH XÁC (dán list để xem đúng các domain đó).
+  const searchSet = useMemo(() => new Set(searchTokens), [searchTokens]);
+
   const filtered = useMemo(() => {
     const list = dateFiltered.filter((e) => {
-      if (search && !e.domain.includes(search.toLowerCase())) return false;
+      // 1 token = gõ tay → khớp 1 phần; nhiều token = dán list → khớp chính xác.
+      if (searchTokens.length === 1) {
+        if (!e.domain.includes(searchTokens[0])) return false;
+      } else if (searchTokens.length > 1) {
+        if (!searchSet.has(e.domain)) return false;
+      }
       // "Đang giữ" = đang sở hữu (chưa bán) — KHÔNG gồm Back Order (chỉ mới đặt, chưa sở hữu).
       if (filterStatus === "holding" && (e.sellPrice != null || e.isBackorder)) return false;
       if (filterStatus === "sold" && e.sellPrice == null) return false;
@@ -441,7 +457,7 @@ export default function InventoryPage() {
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * sortDir;
       return String(av).localeCompare(String(bv)) * sortDir;
     });
-  }, [dateFiltered, search, filterStatus, filterExpected, filterWayback, waybackByDomain, sortKey, sortDir]);
+  }, [dateFiltered, searchTokens, searchSet, filterStatus, filterExpected, filterWayback, waybackByDomain, sortKey, sortDir]);
 
   // Pagination — applied on top of `filtered`
   const totalPages = pageSize > 0 ? Math.max(1, Math.ceil(filtered.length / pageSize)) : 1;
@@ -1175,11 +1191,36 @@ export default function InventoryPage() {
         <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
           <Input
-            placeholder="Tìm domain..."
+            placeholder="Tìm / dán nhiều domain (xuống dòng, dấu phẩy)…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="pl-8 h-8 text-sm"
+            onPaste={(e) => {
+              // Input 1 dòng nuốt mất xuống dòng → tự gộp list dán vào thành
+              // chuỗi cách nhau bằng khoảng trắng để khớp nhiều domain.
+              const text = e.clipboardData.getData("text");
+              if (/[\n\r,;]/.test(text)) {
+                e.preventDefault();
+                const joined = text.split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean).join(" ");
+                setSearch((cur) => (cur.trim() ? cur.trim() + " " : "") + joined);
+              }
+            }}
+            className={cn("pl-8 h-8 text-sm", search && "pr-16")}
           />
+          {search && (
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+              title="Xóa tìm kiếm"
+            >
+              {searchTokens.length > 1 && (
+                <span className="rounded bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300 px-1 font-medium">
+                  {searchTokens.length}
+                </span>
+              )}
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
         <select
           value={filterStatus}
