@@ -238,6 +238,40 @@ export default function DomainPickerPage() {
   // Only counts Ahrefs-checked exclusions; source filter is shown separately.
   const excludedCount = thresholdQualified.length - qualifiedAfterChecked.length;
 
+  // Danh sách chính xác domain bị loại vì "đã check" — để Copy / Export.
+  const excludedList = useMemo(() => {
+    if (!excludeChecked || checkedTargets.size === 0) return [] as string[];
+    return thresholdQualified
+      .filter((r) => checkedTargets.has(r.domain) && !justUploadedTargets.has(r.domain))
+      .map((r) => r.domain);
+  }, [thresholdQualified, excludeChecked, checkedTargets, justUploadedTargets]);
+
+  const copyExcluded = useCallback(async () => {
+    if (!excludedList.length) return;
+    const text = excludedList.join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const el = document.createElement("textarea");
+      el.value = text;
+      el.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0";
+      document.body.appendChild(el); el.focus(); el.select();
+      document.execCommand("copy"); document.body.removeChild(el);
+    }
+    showToast(`✅ Đã copy ${excludedList.length} domain đã check`);
+  }, [excludedList, showToast]);
+
+  const exportExcluded = useCallback(() => {
+    if (!excludedList.length) return;
+    const blob = new Blob(["﻿" + excludedList.join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `excluded-checked-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [excludedList]);
+
   const step2AvailableSources = useMemo(() => {
     const set = new Set<string>();
     for (const r of scoredRows) if (r.source) set.add(r.source);
@@ -281,14 +315,24 @@ export default function DomainPickerPage() {
 
   const loadAhrefs = useCallback(async () => {
     try {
-      const [sumRes, chkRes] = await Promise.all([
-        fetch("/api/ahrefs-results/db"),
-        fetch("/api/ahrefs-results/db/checked"),
-      ]);
+      const sumRes = await fetch("/api/ahrefs-results/db");
       const sumData = await sumRes.json();
-      const chkData = await chkRes.json();
       setAhrefsSummary(Array.isArray(sumData) ? sumData : []);
-      setCheckedTargets(new Set((chkData?.targets ?? []) as string[]));
+    } catch { /* ignore */ }
+  }, []);
+
+  // CHỈ kiểm tra "đã check" cho ĐÚNG các domain vừa upload (bounded), thay vì
+  // tải toàn bộ danh sách đã check của cả DB (quét full bảng → 2-3 phút).
+  const loadCheckedAmong = useCallback(async (domains: string[]) => {
+    if (!domains.length) { setCheckedTargets(new Set()); return; }
+    try {
+      const res = await fetch("/api/ahrefs-results/db/checked", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domains }),
+      });
+      const data = await res.json();
+      setCheckedTargets(new Set((data?.targets ?? []) as string[]));
     } catch { /* ignore */ }
   }, []);
 
@@ -448,6 +492,12 @@ export default function DomainPickerPage() {
   );
 
   useEffect(() => { loadDb(); loadAhrefs(); loadUserBlacklist(); loadInventory(); loadWayback(); loadTraffic(); }, [loadDb, loadAhrefs, loadUserBlacklist, loadInventory, loadWayback, loadTraffic]);
+
+  // Khi danh sách upload/paste đổi → chỉ tra "đã check" cho đúng các domain đó
+  // (nhanh), thay vì tải toàn bộ checked của DB. Chạy mỗi khi rawRows thay đổi.
+  useEffect(() => {
+    loadCheckedAmong(rawRows.map((r) => r.domain).filter(Boolean));
+  }, [rawRows, loadCheckedAmong]);
 
   // Nhận danh sách domain chuyển từ trang Check Backlink (nút "Mở trong Domain
   // Picker"). Nạp chúng làm rawRows (không có metric Spamzilla → score 0) để
@@ -1418,12 +1468,32 @@ export default function DomainPickerPage() {
                 <option value="0">Tất cả</option>
               </select>
               {excludeChecked && excludedCount > 0 && (
-                <Badge
-                  variant="secondary"
-                  className="text-xs bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
-                >
-                  ⊘ Excluded {excludedCount.toLocaleString()} đã check (Ahrefs/DataforSEO)
-                </Badge>
+                <>
+                  <Badge
+                    variant="secondary"
+                    className="text-xs bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                  >
+                    ⊘ Excluded {excludedCount.toLocaleString()} đã check (Ahrefs/DataforSEO)
+                  </Badge>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={copyExcluded}
+                    className="h-6 px-2 text-xs text-amber-700 dark:text-amber-300"
+                    title={`Copy ${excludedCount} domain đã check (bị loại)`}
+                  >
+                    <Copy className="h-3 w-3 mr-1" /> Copy
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={exportExcluded}
+                    className="h-6 px-2 text-xs text-amber-700 dark:text-amber-300"
+                    title={`Export CSV ${excludedCount} domain đã check (bị loại)`}
+                  >
+                    <Download className="h-3 w-3 mr-1" /> CSV
+                  </Button>
+                </>
               )}
               <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none">
                 <input

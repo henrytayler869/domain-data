@@ -334,6 +334,66 @@ export async function listCheckedTargets(): Promise<string[]> {
 }
 
 /**
+ * Như listCheckedTargets nhưng CHỈ kiểm tra trong 1 danh sách target cho trước
+ * (vd domain vừa upload ở Picker). Quét `IN (chunk)` thay vì quét TOÀN BẢNG
+ * ahrefs_results → nhanh hơn rất nhiều (chỉ chạm tới phần giao với list upload).
+ */
+export async function listCheckedAmong(targetsRaw: string[]): Promise<string[]> {
+  const targets = Array.from(new Set(
+    targetsRaw.map((t) => t.toLowerCase().trim()).filter(Boolean),
+  ));
+  if (!targets.length) return [];
+
+  const sb = supabase();
+  const CHUNK = 150;
+  const PAGE = 1000;
+  const CONCURRENCY = 6;
+
+  const chunks: string[][] = [];
+  for (let i = 0; i < targets.length; i += CHUNK) chunks.push(targets.slice(i, i + CHUNK));
+
+  const fetchChunk = async (slice: string[]): Promise<string[]> => {
+    // (a) Target có ref row — bị giới hạn trong slice nên thường nhỏ (chỉ phần
+    //     đã check mới có ref). Vẫn phân trang phòng target nhiều ref.
+    const refSet = new Set<string>();
+    let offset = 0;
+    while (true) {
+      const { data, error } = await sb
+        .from(TABLE).select("target_domain").in("target_domain", slice)
+        .order("target_domain", { ascending: true }).range(offset, offset + PAGE - 1);
+      if (error) throw new Error(error.message);
+      if (!data || data.length === 0) break;
+      for (const r of data as { target_domain: string }[]) refSet.add(r.target_domain);
+      if (data.length < PAGE) break;
+      offset += PAGE;
+    }
+    // (b) Target có assessment hợp lệ (≤150 dòng/chunk). API-error không-ref
+    //     chưa loại trừ thủ công → coi như CHƯA check.
+    const { data: aData, error: aErr } = await sb
+      .from(ASSESS_TABLE).select("target_domain,category,excluded_at").in("target_domain", slice);
+    if (aErr) throw new Error(aErr.message);
+    const out: string[] = Array.from(refSet);
+    for (const r of (aData ?? []) as { target_domain: string; category: string | null; excluded_at: string | null }[]) {
+      const isApiError = (r.category ?? "").trim().toLowerCase() === "api error";
+      if (isApiError && !refSet.has(r.target_domain) && !r.excluded_at) continue;
+      out.push(r.target_domain);
+    }
+    return out;
+  };
+
+  const checked = new Set<string>();
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < chunks.length) {
+      const idx = cursor++;
+      for (const d of await fetchChunk(chunks[idx])) checked.add(d);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, chunks.length) }, () => worker()));
+  return Array.from(checked);
+}
+
+/**
  * Flag targets as manually excluded by setting target_assessment.excluded_at.
  * Used by the "Loại trừ" action and as a piggyback from "Đã mua" so purchased
  * domains stop appearing in the picker.
