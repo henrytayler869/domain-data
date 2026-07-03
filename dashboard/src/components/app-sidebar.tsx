@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { TrendingUp, LayoutDashboard, Database, Filter, Boxes, Settings, LogOut, Users, ShoppingCart, PieChart } from "lucide-react";
+import { TrendingUp, LayoutDashboard, Database, Filter, Boxes, Settings, LogOut, Users, ShoppingCart, PieChart, Sprout } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -25,6 +25,7 @@ const catcherItems = [
   { title: "Kho Domain", href: "/inventory", icon: Boxes },
   { title: "Domain Picker", href: "/domain-picker", icon: Filter },
   { title: "Backlink DB", href: "/aged-domain", icon: Database },
+  { title: "Domain Drop", href: "/expired", icon: Sprout },
   { title: "Trend Domain", href: "/trend-domain/pipeline", icon: TrendingUp },
 ];
 
