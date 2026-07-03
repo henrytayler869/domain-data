@@ -1,0 +1,58 @@
+# Expired Domain Pipeline — config
+# Chỉnh ở đây thay vì hardcode. Credential để trong .env (KHÔNG commit).
+
+db_path: data/pipeline.db
+
+# ── Phase 1: WPL (Wikipedia external links) ──────────────────────────────────
+wpl:
+  wikis:
+    enwiki: https://dumps.wikimedia.org/enwiki/latest/enwiki-latest-externallinks.sql.gz
+    # dewiki: https://dumps.wikimedia.org/dewiki/latest/dewiki-latest-externallinks.sql.gz
+  flush_size: 1000000          # số domain duy nhất/lần flush (RAM). Máy yếu → giảm.
+  skip_domains:
+    - wikipedia.org
+    - wikimedia.org
+    - wikidata.org
+    - wiktionary.org
+    - wikibooks.org
+    - wikinews.org
+    - wikiquote.org
+    - wikisource.org
+    - wikiversity.org
+    - wikivoyage.org
+    - mediawiki.org
+    - wmcloud.org
+    - wmflabs.org
+    - wikimediafoundation.org
+    - toolforge.org
+
+# ── Phase 5: filter (phễu lọc rẻ) ────────────────────────────────────────────
+filter:
+  keep:                         # GIỮ nếu qua BẤT KỲ điều kiện nào
+    min_wp: 1                   # có >=1 link Wikipedia
+    max_cc_rank: 5000000        # authority Common Crawl đủ tốt (rank nhỏ = mạnh)
+    min_age_years: 8            # domain đủ già (first_year <= năm nay - K)
+  weights:                      # trọng số pre_score
+    wp: 2.0
+    cc: 1.5
+    age: 0.15
+    dict: 1.5
+    hyphen: 1.0                 # trừ điểm
+    digit: 0.7                  # trừ điểm
+  wordlist: null                # đường dẫn wordlist để chấm is_dictionary_word (tuỳ chọn)
+
+# ── Phase 6: dataforseo ──────────────────────────────────────────────────────
+dataforseo:
+  max_cost_usd: 5.0             # vượt ngưỡng ước tính -> hỏi xác nhận
+  # login/password ở .env: DFS_LOGIN / DFS_PASSWORD
+
+# ── Phase 7: score ───────────────────────────────────────────────────────────
+score:
+  weights:
+    wp: 1.5
+    cc: 1.0
+    dfs_rank: 1.0
+    refdom: 1.5
+    backlinks: 0.5
+    age: 0.1
+    spam: 2.0                   # trừ điểm
