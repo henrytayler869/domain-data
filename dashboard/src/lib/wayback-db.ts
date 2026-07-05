@@ -110,6 +110,35 @@ export async function readAllResults(): Promise<WaybackRow[]> {
   return all.map(rowToResult);
 }
 
+export interface CheckedDomain { domain: string; flagged: boolean; noSnapshot: boolean }
+
+/**
+ * Danh sách domain ĐÃ check Wayback (chỉ cột nhẹ, không kéo JSONB). Dùng cho Domain
+ * Picker Bước 2 để loại domain đã check / Flagged / no-snapshot.
+ */
+export async function listCheckedDomains(): Promise<CheckedDomain[]> {
+  const sb = supabase();
+  const out: CheckedDomain[] = [];
+  const PAGE = 1000;
+  let offset = 0;
+  while (true) {
+    const { data, error } = await sb
+      .from(RESULTS_TABLE)
+      .select("target_domain,has_betting,has_adult,snapshot_count,error_reason")
+      .range(offset, offset + PAGE - 1);
+    if (error) return out; // bảng có thể chưa tồn tại
+    if (!data || data.length === 0) break;
+    for (const r of data as Pick<ResultsDbRow, "target_domain" | "has_betting" | "has_adult" | "snapshot_count" | "error_reason">[]) {
+      const flagged = !!(r.has_betting || r.has_adult);
+      const noSnapshot = !flagged && (r.snapshot_count ?? 0) === 0;
+      out.push({ domain: String(r.target_domain).toLowerCase(), flagged, noSnapshot });
+    }
+    if (data.length < PAGE) break;
+    offset += PAGE;
+  }
+  return out;
+}
+
 export async function upsertResults(items: WaybackResultItem[]): Promise<{ count: number }> {
   if (!items.length) return { count: 0 };
   const sb = supabase();

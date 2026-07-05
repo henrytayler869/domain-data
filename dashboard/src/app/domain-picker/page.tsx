@@ -13,7 +13,7 @@ import { parseCsv } from "@/lib/picker-csv";
 type Step = 1 | 2 | 3 | 4 | 5;
 const STEPS: { id: Step; label: string }[] = [
   { id: 1, label: "Nhập domain" },
-  { id: 2, label: "Loại đã mua" },
+  { id: 2, label: "Lọc mới" },
   { id: 3, label: "Mua được? + Giá" },
   { id: 4, label: "Wayback" },
   { id: 5, label: "Xuất DataForSEO" },
@@ -74,11 +74,14 @@ export default function DomainPickerPage() {
 
   const [pasteText, setPasteText] = useState("");
   const [raw, setRaw] = useState<string[]>([]);                   // B1
-  const [afterExclude, setAfterExclude] = useState<string[]>([]); // B2 (bỏ đã mua)
-  const [excludedOwned, setExcludedOwned] = useState<string[]>([]);
+  const [afterExclude, setAfterExclude] = useState<string[]>([]); // B2 → domain hoàn toàn mới
+  const [b2, setB2] = useState<{ bought: string[]; flagged: string[]; nosnap: string[]; checked: string[] }>({ bought: [], flagged: [], nosnap: [], checked: [] });
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const [owned, setOwned] = useState<Set<string>>(new Set());
+  const [owned, setOwned] = useState<Set<string>>(new Set());       // đã mua (Kho)
+  const [wbFlagged, setWbFlagged] = useState<Set<string>>(new Set());  // đã check Wayback: flagged
+  const [wbNoSnap, setWbNoSnap] = useState<Set<string>>(new Set());    // đã check: no-snapshot
+  const [wbChecked, setWbChecked] = useState<Set<string>>(new Set());  // MỌI domain đã check Wayback
   const [pricing, setPricing] = useState<Record<string, Price>>({});
 
   const [rdap, setRdap] = useState<Record<string, RdapRow>>({});
@@ -108,6 +111,15 @@ export default function DomainPickerPage() {
     fetch("/api/inventory").then((r) => r.json()).then((d) => {
       setOwned(new Set((Array.isArray(d) ? d : []).map((e: { domain: string }) => String(e.domain).toLowerCase())));
     }).catch(() => {});
+    fetch("/api/wayback/checked").then((r) => r.json()).then((d) => {
+      const fl = new Set<string>(), ns = new Set<string>(), ch = new Set<string>();
+      for (const c of d.checked ?? []) {
+        const dm = String(c.domain).toLowerCase();
+        ch.add(dm);
+        if (c.flagged) fl.add(dm); else if (c.noSnapshot) ns.add(dm);
+      }
+      setWbFlagged(fl); setWbNoSnap(ns); setWbChecked(ch);
+    }).catch(() => {});
   }, []);
 
   // ── Nhận domain từ Domain Drop ("Mở Picker") ──
@@ -124,8 +136,16 @@ export default function DomainPickerPage() {
     const d = parseDomains(pasteText);
     if (!d.length) { toast("Không có domain hợp lệ", true); return; }
     setRaw(d);
-    setAfterExclude(d.filter((x) => !owned.has(x)));
-    setExcludedOwned(d.filter((x) => owned.has(x)));
+    const bought: string[] = [], flagged: string[] = [], nosnap: string[] = [], checked: string[] = [], fresh: string[] = [];
+    for (const dm of d) {
+      if (owned.has(dm)) bought.push(dm);
+      else if (wbFlagged.has(dm)) flagged.push(dm);
+      else if (wbNoSnap.has(dm)) nosnap.push(dm);
+      else if (wbChecked.has(dm)) checked.push(dm);   // đã check trước đó (kể cả clean) → không còn "mới"
+      else fresh.push(dm);
+    }
+    setB2({ bought, flagged, nosnap, checked });
+    setAfterExclude(fresh);
     advance(2);
   };
   const onFile = (f: File | null) => {
@@ -232,14 +252,14 @@ export default function DomainPickerPage() {
     toast(`✅ Copy ${cleanDomains.length} domain Clean`);
   }, [cleanDomains, toast]);
 
-  const reset = () => { setStep(1); setDone(new Set()); setRaw([]); setAfterExclude([]); setExcludedOwned([]); setRdap({}); };
+  const reset = () => { setStep(1); setDone(new Set()); setRaw([]); setAfterExclude([]); setB2({ bought: [], flagged: [], nosnap: [], checked: [] }); setRdap({}); };
 
   // ─── Render ───
   return (
     <div className="flex flex-col gap-5 p-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Domain Picker</h1>
-        <p className="text-sm text-muted-foreground mt-1">Nhập domain → loại đã mua → check mua được &amp; giá → Wayback → xuất Clean cho DataForSEO.</p>
+        <p className="text-sm text-muted-foreground mt-1">Nhập domain → lọc domain mới → check mua được &amp; giá → Wayback → xuất Clean cho DataForSEO.</p>
       </div>
 
       {/* Stepper */}
@@ -284,13 +304,18 @@ export default function DomainPickerPage() {
       {/* ── Bước 2 ── */}
       {step === 2 && (
         <div className="rounded-xl border bg-card p-4 flex flex-col gap-3">
-          <p className="text-sm font-medium">Bước 2 — Loại domain đã có trong Kho (đã mua)</p>
-          <div className="grid grid-cols-3 gap-3">
-            {([["Nhập vào", raw.length, ""], ["Đã mua (loại)", excludedOwned.length, "text-rose-600"], ["Còn lại", afterExclude.length, "text-emerald-600"]] as const).map(([l, v, c]) => (
-              <div key={l} className="rounded-lg border px-4 py-3"><p className="text-xs text-muted-foreground uppercase">{l}</p><p className={cn("text-2xl font-bold", c)}>{v}</p></div>
+          <p className="text-sm font-medium">Bước 2 — Loại domain đã xử lý → chỉ giữ domain HOÀN TOÀN MỚI</p>
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
+            {([["Nhập vào", raw.length, ""],
+               ["Đã mua", b2.bought.length, "text-rose-600"],
+               ["🚨 Flagged", b2.flagged.length, "text-rose-600"],
+               ["No-snap", b2.nosnap.length, "text-amber-600"],
+               ["Đã check", b2.checked.length, "text-amber-600"],
+               ["✨ Mới", afterExclude.length, "text-emerald-600"]] as const).map(([l, v, c]) => (
+              <div key={l} className="rounded-lg border px-3 py-2"><p className="text-[11px] text-muted-foreground uppercase">{l}</p><p className={cn("text-xl font-bold", c)}>{v}</p></div>
             ))}
           </div>
-          {excludedOwned.length > 0 && <p className="text-xs text-muted-foreground break-all">Loại: {excludedOwned.slice(0, 20).join(", ")}{excludedOwned.length > 20 ? ` … +${excludedOwned.length - 20}` : ""}</p>}
+          <p className="text-xs text-muted-foreground">Loại {raw.length - afterExclude.length} domain đã có (mua / flagged / no-snap / đã check) → chỉ <b>{afterExclude.length} domain mới</b> đi tiếp.</p>
           <div className="flex items-center gap-2">
             <Button size="sm" variant="outline" onClick={() => setStep(1)} className="gap-1.5"><ArrowLeft className="h-4 w-4" />Quay lại</Button>
             <Button size="sm" onClick={() => { advance(3); runRdap(afterExclude); }} className="ml-auto gap-1.5" disabled={!afterExclude.length}>Check mua được + giá<ArrowRight className="h-4 w-4" /></Button>
