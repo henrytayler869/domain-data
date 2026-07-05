@@ -4,6 +4,7 @@ import React, { useState, useCallback, useEffect, useMemo, useRef } from "react"
 import { Upload, Loader2, Copy, ArrowRight, ArrowLeft, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { parseCsv } from "@/lib/picker-csv";
 
 // ─── Flow 5 bước ──────────────────────────────────────────────────────────────
 // 1 Nhập domain · 2 Loại đã mua (Kho) · 3 RDAP mua được?+giá · 4 Wayback (loại
@@ -33,6 +34,39 @@ function parseDomains(text: string): string[] {
   return out;
 }
 const tldOf = (d: string) => d.split(".").pop() ?? "";
+const DOMAIN_RE = /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/;
+
+// Trích domain từ nội dung file. Nếu là CSV (Spamzilla export…) → parse đúng, lấy
+// cột domain ("Name"/"Domain", hoặc cột nhiều giá trị giống domain nhất). Ngược lại
+// (dán text thường) → quét token.
+function extractFromFileText(text: string): string[] {
+  const firstLine = text.split(/\r?\n/, 1)[0] ?? "";
+  if (firstLine.includes(",") || firstLine.includes(";") || firstLine.includes("\t")) {
+    try {
+      const rows = parseCsv(text);
+      if (rows.length >= 2) {
+        const header = rows[0].map((h) => h.trim().toLowerCase());
+        let col = header.findIndex((h) => h === "name" || h === "domain");
+        if (col < 0) {
+          // Không thấy header quen → chọn cột có nhiều giá trị giống domain nhất.
+          const sample = rows.slice(1, 300);
+          const counts = rows[0].map((_, i) => sample.filter((r) => DOMAIN_RE.test((r[i] ?? "").trim().toLowerCase())).length);
+          col = counts.indexOf(Math.max(...counts));
+        }
+        if (col >= 0) {
+          const seen = new Set<string>();
+          const out: string[] = [];
+          for (let r = 1; r < rows.length; r++) {
+            const d = (rows[r][col] ?? "").trim().toLowerCase();
+            if (DOMAIN_RE.test(d) && !seen.has(d)) { seen.add(d); out.push(d); }
+          }
+          if (out.length) return out;
+        }
+      }
+    } catch { /* rơi xuống parse text thường */ }
+  }
+  return parseDomains(text);
+}
 
 export default function DomainPickerPage() {
   const [step, setStep] = useState<Step>(1);
@@ -94,7 +128,15 @@ export default function DomainPickerPage() {
     setExcludedOwned(d.filter((x) => owned.has(x)));
     advance(2);
   };
-  const onFile = (f: File | null) => { if (f) f.text().then((t) => setPasteText((p) => (p ? p + "\n" + t : t))); };
+  const onFile = (f: File | null) => {
+    if (!f) return;
+    f.text().then((t) => {
+      const doms = extractFromFileText(t);
+      if (!doms.length) { toast("File không có domain hợp lệ", true); return; }
+      setPasteText((p) => (p.trim() ? p.trim() + "\n" : "") + doms.join("\n"));
+      toast(`✅ Đọc ${doms.length} domain từ file`);
+    });
+  };
 
   // ── B3: RDAP ──
   const runRdap = useCallback(async (domains: string[]) => {
