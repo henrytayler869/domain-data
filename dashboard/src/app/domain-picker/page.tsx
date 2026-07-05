@@ -83,6 +83,7 @@ export default function DomainPickerPage() {
   const [wbNoSnap, setWbNoSnap] = useState<Set<string>>(new Set());    // đã check: no-snapshot
   const [wbChecked, setWbChecked] = useState<Set<string>>(new Set());  // MỌI domain đã check Wayback
   const [pricing, setPricing] = useState<Record<string, Price>>({});
+  const [step1Loading, setStep1Loading] = useState(false);
 
   const [rdap, setRdap] = useState<Record<string, RdapRow>>({});
   const [rdapLoading, setRdapLoading] = useState(false);
@@ -132,20 +133,30 @@ export default function DomainPickerPage() {
   }, []);
 
   // ── B1 → B2 ──
-  const doStep1 = () => {
+  const doStep1 = async () => {
     const d = parseDomains(pasteText);
     if (!d.length) { toast("Không có domain hợp lệ", true); return; }
+    setStep1Loading(true);
     setRaw(d);
+    // Đã check DataForSEO/Ahrefs: query CÓ GIỚI HẠN theo danh sách dán (nhanh),
+    // KHÔNG quét toàn bảng ahrefs_results (full-scan rất chậm).
+    let seoSet = new Set<string>();
+    try {
+      const res = await fetch("/api/ahrefs-results/db/checked", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains: d }) });
+      const dd = await res.json();
+      seoSet = new Set((dd.targets ?? []).map((x: string) => String(x).toLowerCase()));
+    } catch { /* ignore */ }
     const bought: string[] = [], flagged: string[] = [], nosnap: string[] = [], checked: string[] = [], fresh: string[] = [];
     for (const dm of d) {
       if (owned.has(dm)) bought.push(dm);
       else if (wbFlagged.has(dm)) flagged.push(dm);
       else if (wbNoSnap.has(dm)) nosnap.push(dm);
-      else if (wbChecked.has(dm)) checked.push(dm);   // đã check trước đó (kể cả clean) → không còn "mới"
+      else if (wbChecked.has(dm) || seoSet.has(dm)) checked.push(dm); // đã check (Wayback clean / DataForSEO / Ahrefs)
       else fresh.push(dm);
     }
     setB2({ bought, flagged, nosnap, checked });
     setAfterExclude(fresh);
+    setStep1Loading(false);
     advance(2);
   };
   const onFile = (f: File | null) => {
@@ -296,7 +307,7 @@ export default function DomainPickerPage() {
             <input ref={fileRef} type="file" accept=".txt,.csv,text/plain,text/csv" onChange={(e) => onFile(e.target.files?.[0] ?? null)} className="hidden" />
             <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()} className="gap-1.5"><Upload className="h-4 w-4" />Upload file</Button>
             <span className="text-xs text-muted-foreground">{parseDomains(pasteText).length} domain hợp lệ</span>
-            <Button size="sm" onClick={doStep1} className="ml-auto gap-1.5" disabled={!parseDomains(pasteText).length}>Tiếp tục<ArrowRight className="h-4 w-4" /></Button>
+            <Button size="sm" onClick={doStep1} className="ml-auto gap-1.5" disabled={!parseDomains(pasteText).length || step1Loading}>{step1Loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <>Tiếp tục<ArrowRight className="h-4 w-4" /></>}</Button>
           </div>
         </div>
       )}
@@ -315,7 +326,7 @@ export default function DomainPickerPage() {
               <div key={l} className="rounded-lg border px-3 py-2"><p className="text-[11px] text-muted-foreground uppercase">{l}</p><p className={cn("text-xl font-bold", c)}>{v}</p></div>
             ))}
           </div>
-          <p className="text-xs text-muted-foreground">Loại {raw.length - afterExclude.length} domain đã có (mua / flagged / no-snap / đã check) → chỉ <b>{afterExclude.length} domain mới</b> đi tiếp.</p>
+          <p className="text-xs text-muted-foreground">Loại {raw.length - afterExclude.length} domain đã xử lý (đã mua / Flagged / no-snap / đã check Wayback · DataForSEO · Ahrefs) → chỉ <b>{afterExclude.length} domain mới</b> đi tiếp.</p>
           <div className="flex items-center gap-2">
             <Button size="sm" variant="outline" onClick={() => setStep(1)} className="gap-1.5"><ArrowLeft className="h-4 w-4" />Quay lại</Button>
             <Button size="sm" onClick={() => { advance(3); runRdap(afterExclude); }} className="ml-auto gap-1.5" disabled={!afterExclude.length}>Check mua được + giá<ArrowRight className="h-4 w-4" /></Button>
