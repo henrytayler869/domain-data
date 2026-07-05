@@ -94,7 +94,7 @@ def price(tld: str = typer.Option("org", help="TLD (không dấu chấm).")):
     appid, appkey = _gname_creds()
     tld = tld.lower().lstrip(".")
 
-    jp = _post("/api/price", {}, appid, appkey)
+    jp = _post("/api/domain/price", {}, appid, appkey)
     if jp.get("code") != 1:
         if _is_ip_error(jp):
             raise typer.Exit(1)
