@@ -398,6 +398,31 @@ export async function listCheckedAmong(targetsRaw: string[]): Promise<string[]> 
  * Used by the "Loại trừ" action and as a piggyback from "Đã mua" so purchased
  * domains stop appearing in the picker.
  */
+/**
+ * Đọc rating (Tốt/Trung bình/xấu) cho 1 danh sách domain — bounded IN query,
+ * dùng cho Domain Picker Bước 6 (lọc domain đáng mua sau khi N8N/DataForSEO ghi rating).
+ */
+export async function readAssessmentsFor(
+  domains: string[],
+): Promise<{ domain: string; rating: string | null; category: string | null }[]> {
+  const targets = Array.from(new Set(domains.map((d) => d.toLowerCase().trim()).filter(Boolean)));
+  if (!targets.length) return [];
+  const sb = supabase();
+  const out: { domain: string; rating: string | null; category: string | null }[] = [];
+  const CHUNK = 150;
+  for (let i = 0; i < targets.length; i += CHUNK) {
+    const { data, error } = await sb
+      .from(ASSESS_TABLE)
+      .select("target_domain,rating,category")
+      .in("target_domain", targets.slice(i, i + CHUNK));
+    if (error) throw new Error(error.message);
+    for (const r of (data ?? []) as { target_domain: string; rating: string | null; category: string | null }[]) {
+      out.push({ domain: r.target_domain, rating: r.rating, category: r.category });
+    }
+  }
+  return out;
+}
+
 export async function markExcluded(targets: string[]): Promise<{ count: number }> {
   const sb = supabase();
   const normalized = Array.from(

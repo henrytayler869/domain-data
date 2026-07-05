@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
-import { Upload, Loader2, Copy, RotateCcw, Rocket, Send } from "lucide-react";
+import { Upload, Loader2, Copy, RotateCcw, Rocket, Send, ShoppingCart, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { parseCsv } from "@/lib/picker-csv";
@@ -11,13 +11,14 @@ import { parseCsv } from "@/lib/picker-csv";
 // → 3 RDAP mua được? + giá (chỉ giá ≤ $26 đi tiếp) → 4 Wayback (chỉ Clean)
 // → 5 gửi Clean tới DataForSEO (webhook N8N). Tất cả tự chạy sau khi bấm 1 nút.
 
-type Step = 1 | 2 | 3 | 4 | 5;
+type Step = 1 | 2 | 3 | 4 | 5 | 6;
 const STEPS: { id: Step; label: string }[] = [
   { id: 1, label: "Nhập" },
   { id: 2, label: "Lọc mới" },
   { id: 3, label: "Mua được? ≤$26" },
   { id: 4, label: "Wayback" },
   { id: 5, label: "DataForSEO" },
+  { id: 6, label: "Đáng mua" },
 ];
 const MAX_PRICE = 26;
 
@@ -100,6 +101,13 @@ export default function DomainPickerPage() {
   const [webhookStatus, setWebhookStatus] = useState<"idle" | "sending" | "ok" | "error">("idle");
   const [webhookMsg, setWebhookMsg] = useState("");
   const sentRef = useRef(false);
+
+  // Bước 6 — Đáng mua
+  const [ratings, setRatings] = useState<Record<string, string | null>>({});
+  const [loadingRatings, setLoadingRatings] = useState(false);
+  const [selectedBuy, setSelectedBuy] = useState<Set<string>>(new Set());
+  const [buying, setBuying] = useState(false);
+  const [buyNote, setBuyNote] = useState<{ ok: boolean; msg: string } | null>(null);
 
   const [toasts, setToasts] = useState<{ id: number; msg: string; err: boolean }[]>([]);
   const tid = useRef(0);
@@ -187,6 +195,8 @@ export default function DomainPickerPage() {
   const wbByDomain = useMemo(() => { const m = new Map<string, WaybackRow>(); for (const r of wbResults) m.set(r.targetDomain, r); return m; }, [wbResults]);
   const inFlightWb = useMemo(() => { const s = new Set<string>(); for (const r of wbRuns) if (r.status === "READY" || r.status === "RUNNING") for (const d of r.targets) s.add(d); return s; }, [wbRuns]);
   const cleanDomains = useMemo(() => gated.filter((d) => { const wb = wbByDomain.get(d); return !!wb && !wb.hasBetting && !wb.hasAdult && (wb.snapshotCount ?? 0) > 0; }), [gated, wbByDomain]);
+  // Bước 6: chỉ giữ domain rating Tốt / Trung bình (sau khi DataForSEO/N8N ghi rating).
+  const buyList = useMemo(() => cleanDomains.filter((d) => { const r = ratings[d] ?? ""; return r.includes("TỐT") || r.includes("TRUNG BÌNH"); }), [cleanDomains, ratings]);
   const wbStats = useMemo(() => {
     let clean = 0, flagged = 0, nosnap = 0, pending = 0;
     for (const d of gated) {
@@ -211,6 +221,46 @@ export default function DomainPickerPage() {
       toast(`⚠️ Webhook: ${e instanceof Error ? e.message : "lỗi"}`, true);
     }
   }, [toast]);
+
+  // ── Bước 6: lấy rating DataForSEO (N8N ghi vào target_assessment) ──
+  const loadRatings = useCallback(async () => {
+    if (!cleanDomains.length) return;
+    setLoadingRatings(true);
+    try {
+      const res = await fetch("/api/picker/ratings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains: cleanDomains }) });
+      const d = await res.json();
+      const m: Record<string, string | null> = {};
+      let withRating = 0;
+      for (const a of d.assessments ?? []) { m[String(a.domain).toLowerCase()] = a.rating; if (a.rating) withRating++; }
+      setRatings(m);
+      toast(withRating ? `✅ ${withRating} domain đã có rating` : "Chưa có rating — N8N/DataForSEO chưa chạy xong");
+    } catch { /* ignore */ } finally { setLoadingRatings(false); }
+  }, [cleanDomains, toast]);
+
+  const buyDomains = useCallback(async (domains: string[]) => {
+    if (!domains.length) return;
+    if (!confirm(`⚡ MUA THẬT ${domains.length} domain qua Gname? Tiền sẽ bị trừ từ số dư Gname.`)) return;
+    setBuying(true); setBuyNote(null);
+    try {
+      const meta: Record<string, { rating: string | null }> = {};
+      for (const d of domains) meta[d] = { rating: ratings[d] ?? null };
+      const res = await fetch("/api/gname/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains, meta }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      const results: { domain: string; ok: boolean; msg: string }[] = data.results ?? [];
+      const okList = results.filter((r) => r.ok);
+      const failed = results.filter((r) => !r.ok);
+      const insufficient = failed.some((r) => /insufficient|balance|not enough|不足|余额/i.test(r.msg || ""));
+      if (okList.length) toast(`✅ Mua ${okList.length} domain · tổng $${(data.totalCharged ?? 0).toFixed(2)} · đã lưu Kho`);
+      if (insufficient) setBuyNote({ ok: false, msg: `⚠️ KHÔNG ĐỦ TIỀN trong tài khoản Gname — nạp thêm rồi mua lại (${failed.length} domain chưa mua).` });
+      else if (failed.length) setBuyNote({ ok: false, msg: `${failed.length} domain lỗi: ${(failed[0].msg || "").slice(0, 90)}` });
+      else setBuyNote({ ok: true, msg: `Đã mua hết ${okList.length} domain, lưu vào Kho.` });
+      setSelectedBuy(new Set());
+      setOwned((prev) => { const n = new Set(prev); for (const r of okList) n.add(r.domain); return n; });
+    } catch (e) {
+      setBuyNote({ ok: false, msg: e instanceof Error ? e.message : "Lỗi mua" });
+    } finally { setBuying(false); }
+  }, [ratings, toast]);
 
   // ── Auto: Wayback xong → gửi Clean qua webhook (1 lần/run) ──
   useEffect(() => {
@@ -270,7 +320,7 @@ export default function DomainPickerPage() {
     setRunning(false); // đã trigger; Wayback chạy async → effect tự gửi webhook khi xong
   }, [pasteText, owned, wbFlagged, wbNoSnap, wbChecked, pricing, runRdap, startWayback, toast]);
 
-  const reset = () => { setStep(1); setDone(new Set()); setRaw([]); setAfterExclude([]); setGated([]); setB2({ bought: [], flagged: [], nosnap: [], checked: [] }); setRdap({}); setWbStarted(false); setWebhookStatus("idle"); sentRef.current = false; };
+  const reset = () => { setStep(1); setDone(new Set()); setRaw([]); setAfterExclude([]); setGated([]); setB2({ bought: [], flagged: [], nosnap: [], checked: [] }); setRdap({}); setWbStarted(false); setWebhookStatus("idle"); sentRef.current = false; setRatings({}); setSelectedBuy(new Set()); setBuyNote(null); };
 
   const priceStr = (d: string): string => {
     const info = priceOf(rdap[d]?.status, tldOf(d), pricing);
@@ -383,9 +433,59 @@ export default function DomainPickerPage() {
                 <div className="flex items-center gap-2">
                   <Button size="sm" variant="outline" onClick={copyClean} className="gap-1.5"><Copy className="h-3.5 w-3.5" />Copy {cleanDomains.length} Clean</Button>
                   <Button size="sm" variant="outline" onClick={() => sendWebhook(cleanDomains)} disabled={webhookStatus === "sending"} className="gap-1.5"><Send className="h-3.5 w-3.5" />Gửi lại webhook</Button>
+                  <Button size="sm" onClick={() => { setDone((p) => new Set(p).add(5)); setStep(6); loadRatings(); }} className="ml-auto gap-1.5 bg-foreground text-background">→ Đáng mua (Bước 6)</Button>
                 </div>
               )}
             </div>
+          )}
+        </div>
+      )}
+
+      {/* Bước 6 — Đáng mua */}
+      {step === 6 && (
+        <div className="rounded-xl border bg-card p-4 flex flex-col gap-3">
+          <div className="flex items-center gap-2">
+            <p className="text-sm font-medium">Bước 6 — Domain đáng mua (Tốt + Trung bình)</p>
+            <Button size="sm" variant="outline" onClick={loadRatings} disabled={loadingRatings} className="ml-auto gap-1.5 h-8">
+              {loadingRatings ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}Lấy kết quả DataForSEO
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">Rating do DataForSEO/N8N ghi vào (Tốt/Trung bình). Chưa có → bấm &quot;Lấy kết quả&quot; sau khi N8N chạy xong.</p>
+
+          {buyNote && <div className={cn("rounded-md px-3 py-2 text-sm border", buyNote.ok ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-rose-50 text-rose-700 border-rose-300")}>{buyNote.msg}</div>}
+
+          {buyList.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-4 text-center">Chưa có domain Tốt/Trung bình.{cleanDomains.length > 0 ? ` (${cleanDomains.length} Clean đang chờ rating DataForSEO)` : ""}</p>
+          ) : (
+            <>
+              <div className="flex items-center gap-2">
+                <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+                  <input type="checkbox" checked={selectedBuy.size === buyList.length && buyList.length > 0} onChange={(e) => setSelectedBuy(e.target.checked ? new Set(buyList) : new Set())} />
+                  All ({buyList.length})
+                </label>
+                <Button size="sm" disabled={buying || selectedBuy.size === 0} onClick={() => buyDomains(Array.from(selectedBuy))} className="ml-auto gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white">
+                  {buying ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShoppingCart className="h-4 w-4" />}Mua đã chọn ({selectedBuy.size})
+                </Button>
+              </div>
+              <div className="rounded-lg border overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
+                    <tr><th className="px-3 py-2 w-8"></th><th className="px-3 py-2">Domain</th><th className="px-3 py-2">Rating</th><th className="px-3 py-2">Giá</th></tr>
+                  </thead>
+                  <tbody>
+                    {buyList.map((d) => (
+                      <tr key={d} className="border-b last:border-0 hover:bg-muted/30">
+                        <td className="px-3 py-1.5"><input type="checkbox" checked={selectedBuy.has(d)} onChange={() => setSelectedBuy((p) => { const n = new Set(p); if (n.has(d)) n.delete(d); else n.add(d); return n; })} /></td>
+                        <td className="px-3 py-1.5 font-medium"><a href={`https://${d}`} target="_blank" rel="noreferrer" className="hover:underline">{d}</a></td>
+                        <td className="px-3 py-1.5 text-xs">{(ratings[d] ?? "").includes("TỐT") ? <span className="text-emerald-700 font-medium">✅ TỐT</span> : <span className="text-amber-600">⚠️ TRUNG BÌNH</span>}</td>
+                        <td className="px-3 py-1.5 tabular-nums text-xs">{priceStr(d)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-[11px] text-amber-600">⚠️ &quot;Mua&quot; gọi Gname API thật (trừ tiền). Cần chạy nơi IP đã whitelist (VPS). Không đủ tiền → có cảnh báo.</p>
+            </>
           )}
         </div>
       )}
