@@ -30,6 +30,9 @@ export interface ExpiredCandidate {
   preScore: number | null;
   status: ExpiredStatus;
   importedAt: string;
+  rdapStatus: string | null;
+  rdapCheckedAt: string | null;
+  dropEta: string | null;
 }
 
 interface DbRow {
@@ -53,6 +56,9 @@ interface DbRow {
   pre_score: number | null;
   status: string | null;
   imported_at: string;
+  rdap_status: string | null;
+  rdap_checked_at: string | null;
+  drop_eta: string | null;
 }
 
 const num = (v: unknown): number | null =>
@@ -80,6 +86,9 @@ function rowToEntry(r: DbRow): ExpiredCandidate {
     preScore: num(r.pre_score),
     status: (r.status as ExpiredStatus) || "new",
     importedAt: r.imported_at,
+    rdapStatus: r.rdap_status ?? null,
+    rdapCheckedAt: r.rdap_checked_at ?? null,
+    dropEta: r.drop_eta ?? null,
   };
 }
 
@@ -169,4 +178,63 @@ export async function setStatus(domains: string[], status: ExpiredStatus): Promi
   const { error } = await sb.from(TABLE).update({ status }).in("domain", targets);
   if (error) throw new Error(error.message);
   return { updated: targets.length };
+}
+
+/**
+ * Auto-loại trừ domain Flagged/No-snapshot sau khi ingest Wayback: set
+ * status='excluded' CHỈ cho domain đang 'new' (không đụng 'bought'). Domain
+ * không có trong bảng (vd target của Picker) → no-op. Idempotent.
+ */
+export async function excludeFlagged(domains: string[]): Promise<{ updated: number }> {
+  const sb = supabase();
+  const targets = Array.from(new Set(domains.map((d) => d.toLowerCase().trim()).filter(Boolean)));
+  if (!targets.length) return { updated: 0 };
+  const { data, error } = await sb
+    .from(TABLE)
+    .update({ status: "excluded" })
+    .in("domain", targets)
+    .eq("status", "new")
+    .select("domain");
+  if (error) throw new Error(error.message);
+  return { updated: data?.length ?? 0 };
+}
+
+export interface RdapUpdate {
+  domain: string;
+  rdapStatus: string;
+  dropEta: string | null;
+}
+
+/**
+ * Cập nhật kết quả RDAP (trạng thái vòng đời + ngày drop dự kiến). Chỉ set 3 cột
+ * rdap_* — dùng UPDATE theo từng domain (KHÔNG upsert, tránh tạo hàng phantom cho
+ * domain không có sẵn trong bảng). Danh sách domain do caller lấy từ chính bảng này.
+ */
+export async function updateRdap(rows: RdapUpdate[]): Promise<{ updated: number }> {
+  const sb = supabase();
+  const now = new Date().toISOString();
+  const seen = new Set<string>();
+  const clean = rows
+    .map((r) => ({ domain: r.domain.toLowerCase().trim(), rdapStatus: r.rdapStatus, dropEta: r.dropEta }))
+    .filter((r) => r.domain && !seen.has(r.domain) && seen.add(r.domain));
+  if (!clean.length) return { updated: 0 };
+  // Gom domain theo (rdapStatus, dropEta) để bulk-update từng nhóm bằng 1 request
+  // .in(), thay vì mỗi domain 1 request.
+  const groups = new Map<string, { status: string; eta: string | null; domains: string[] }>();
+  for (const r of clean) {
+    const key = `${r.rdapStatus}|${r.dropEta ?? ""}`;
+    if (!groups.has(key)) groups.set(key, { status: r.rdapStatus, eta: r.dropEta, domains: [] });
+    groups.get(key)!.domains.push(r.domain);
+  }
+  for (const g of groups.values()) {
+    const BATCH = 200;
+    for (let i = 0; i < g.domains.length; i += BATCH) {
+      const { error } = await sb
+        .from(TABLE)
+        .update({ rdap_status: g.status, rdap_checked_at: now, drop_eta: g.eta })
+        .in("domain", g.domains.slice(i, i + BATCH));
+      if (error) throw new Error(error.message);
+    }
+  }
+  return { updated: clean.length };
 }

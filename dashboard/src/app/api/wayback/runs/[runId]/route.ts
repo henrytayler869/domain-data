@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getWaybackRunStatus, fetchWaybackResults } from "@/lib/apify-wayback";
 import { getRun, updateRun, upsertResults } from "@/lib/wayback-db";
 import { markExcluded } from "@/lib/ahrefs-db";
+import { excludeFlagged } from "@/lib/expired-db";
 
 /**
  * GET /api/wayback/runs/:runId
@@ -61,14 +62,21 @@ export async function GET(
       const flagged = items
         .filter((it) => it.hasBetting || it.hasAdult)
         .map((it) => it.domain.toLowerCase().trim());
+      // No-snapshot = không có snapshot nào. Actor báo qua errorReason "No snapshots
+      // found" HOẶC snapshotCount=0. Lỗi THẬT (rate-limit/timeout…) thì KHÔNG loại,
+      // để review/thử lại tay.
       const noSnapshot = items
-        .filter((it) => !it.hasBetting && !it.hasAdult && !it.errorReason && (it.snapshotCount ?? 0) === 0)
+        .filter((it) =>
+          !it.hasBetting && !it.hasAdult &&
+          (it.snapshotCount ?? 0) === 0 &&
+          (!it.errorReason || /no\s*snapshots?\s*found/i.test(it.errorReason)))
         .map((it) => it.domain.toLowerCase().trim());
       const toExclude = Array.from(new Set([...flagged, ...noSnapshot]));
       let autoExcluded = 0;
       if (toExclude.length > 0) {
-        const ex = await markExcluded(toExclude);
+        const ex = await markExcluded(toExclude);          // Picker (target_assessment)
         autoExcluded = ex.count;
+        await excludeFlagged(toExclude);                    // Domain Drop (expired_candidates → status='excluded')
       }
       await updateRun(runId, { ingested_at: new Date().toISOString() });
       ingested = {

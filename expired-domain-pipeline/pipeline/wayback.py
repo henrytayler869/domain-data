@@ -51,21 +51,25 @@ class _RateLimiter:
             self._next = now + self.min_interval
 
 
-async def _fetch(client, domain: str, sem, lim: "_RateLimiter", retries: int = 5):
-    import httpx
+async def _fetch(client, domain: str, sem, lim: "_RateLimiter", retries: int = 6):
+    """Trả (first_year, crawl_count, ok). ok=False nếu request KHÔNG bao giờ thành
+    công (429/network sau khi hết retry) → KHÔNG cache để lần sau còn thử lại."""
     async with sem:
         for attempt in range(retries):
             await lim.wait()
             try:
                 r = await client.get(CDX_URL.format(domain=domain), timeout=30.0)
                 if r.status_code == 429:
-                    await asyncio.sleep(min(60, 2 ** attempt))
+                    ra = r.headers.get("Retry-After", "")
+                    delay = float(ra) if ra.isdigit() else min(120, 2 ** attempt)
+                    await asyncio.sleep(delay)
                     continue
                 r.raise_for_status()
-                return parse_cdx_json(r.json())
+                fy, cc = parse_cdx_json(r.json())
+                return fy, cc, True
             except Exception:  # noqa: BLE001 — network/JSON đều retry
                 await asyncio.sleep(min(30, 2 ** attempt))
-        return None, 0
+        return None, 0, False
 
 
 async def _run_gather(domains: list[str], concurrency: int, rps: float, conn):
@@ -74,20 +78,25 @@ async def _run_gather(domains: list[str], concurrency: int, rps: float, conn):
     lim = _RateLimiter(rps)
     now = _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     results: list[tuple] = []
+    failed = 0
     async with httpx.AsyncClient(headers={"User-Agent": "expired-domain-pipeline/0.1"}) as client:
         async def one(d):
-            fy, cc = await _fetch(client, d, sem, lim)
-            return (d, fy, cc, now)
+            fy, cc, ok = await _fetch(client, d, sem, lim)
+            return (d, fy, cc, now, ok)
         coros = [one(d) for d in domains]
         for i in range(0, len(coros), 2000):
             chunk = await asyncio.gather(*coros[i:i + 2000])
-            conn.executemany(
-                "INSERT OR REPLACE INTO wayback(domain,first_year,crawl_count,checked_at) "
-                "VALUES(?,?,?,?)", chunk)
-            conn.commit()
+            # CHỈ cache lần thành công — lần fail (ok=False) để nguyên, lần sau thử lại.
+            ok_rows = [(d, fy, cc, ts) for (d, fy, cc, ts, ok) in chunk if ok]
+            if ok_rows:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO wayback(domain,first_year,crawl_count,checked_at) "
+                    "VALUES(?,?,?,?)", ok_rows)
+                conn.commit()
+            failed += sum(1 for r in chunk if not r[4])
             results.extend(chunk)
             typer.echo(f"  … {min(i + 2000, len(coros)):,}/{len(coros):,}")
-    return results
+    return results, failed
 
 
 def _load_domains(in_file: Optional[str], from_table: Optional[str], conn) -> list[str]:
@@ -105,8 +114,8 @@ def _load_domains(in_file: Optional[str], from_table: Optional[str], conn) -> li
 def check(
     in_: str = typer.Option(None, "--in", help="File domain (mỗi dòng 1)."),
     from_table: str = typer.Option(None, "--from", help="drops | candidates."),
-    concurrency: int = typer.Option(10, help="Số request song song."),
-    rps: float = typer.Option(5.0, help="Request/giây (tránh 429)."),
+    concurrency: int = typer.Option(4, help="Số request song song (archive.org rate-limit gắt → để thấp)."),
+    rps: float = typer.Option(1.0, help="Request/giây (archive.org 429 rất dễ → ~1)."),
     limit: int = typer.Option(0, help="Chỉ check N domain (0=all)."),
     db: str = typer.Option(None),
 ):
@@ -123,6 +132,10 @@ def check(
         typer.echo("Không có domain mới cần check (đã cache hết).")
         return
     typer.echo(f"Wayback: {len(todo):,} domain (concurrency={concurrency}, rps={rps})")
-    asyncio.run(_run_gather(todo, concurrency, rps, conn))
+    _results, failed = asyncio.run(_run_gather(todo, concurrency, rps, conn))
     conn.close()
-    typer.echo("✓ Wayback xong.")
+    ok = len(todo) - failed
+    if failed:
+        typer.echo(f"⚠ Wayback: {ok:,} OK · {failed:,} THẤT BẠI (429/network → CHƯA cache, sẽ thử lại lần sau).")
+    else:
+        typer.echo(f"✓ Wayback xong: {ok:,} OK.")

@@ -10,8 +10,16 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { ExpiredCandidate, ExpiredStatus } from "@/lib/expired-db";
 
-type SortKey = "finalScore" | "wpLinks" | "ccRank" | "referringDomains" | "backlinks" | "spamScore" | "firstYear" | "domain";
+type SortKey = "finalScore" | "wpLinks" | "ccRank" | "referringDomains" | "backlinks" | "spamScore" | "firstYear" | "dropEta" | "domain";
 interface Toast { id: number; msg: string; err: boolean }
+
+// Số ngày còn lại tới drop_eta (âm = đã qua / mua được). null nếu chưa có.
+function daysUntil(iso: string | null): number | null {
+  if (!iso) return null;
+  const t = new Date(iso + "T00:00:00").getTime();
+  return Number.isNaN(t) ? null : Math.ceil((t - Date.now()) / 86_400_000);
+}
+const BUY_WINDOW_DAYS = 14; // "sắp mua được" = còn ≤ 14 ngày
 
 type WaybackRow = {
   targetDomain: string; snapshotCount: number | null; hasBetting: boolean; hasAdult: boolean;
@@ -55,6 +63,8 @@ export default function ExpiredPage() {
   const [waybackResults, setWaybackResults] = useState<WaybackRow[]>([]);
   const [waybackRuns, setWaybackRuns] = useState<WaybackRun[]>([]);
   const [waybackStarting, setWaybackStarting] = useState(false);
+  const [rdapChecking, setRdapChecking] = useState(false);
+  const [pricing, setPricing] = useState<Record<string, { register: number | null; backorder: number | null; deposit: number | null }>>({});
 
   const [importOpen, setImportOpen] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -67,6 +77,8 @@ export default function ExpiredPage() {
   const [minRef, setMinRef] = useState("");
   const [onlyWp, setOnlyWp] = useState(false);
   const [filterWayback, setFilterWayback] = useState<"all" | "clean" | "flagged" | "unchecked">("all");
+  const [filterRdap, setFilterRdap] = useState<"all" | "buyable" | "redemption">("all");
+  const [view, setView] = useState<"all" | "buynow">("all");
   const [sortKey, setSortKey] = useState<SortKey>("finalScore");
   const [sortDir, setSortDir] = useState<1 | -1>(-1);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -88,13 +100,19 @@ export default function ExpiredPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [e, wr, wru] = await Promise.all([
-        fetch("/api/expired"), fetch("/api/wayback/results"), fetch("/api/wayback/runs"),
+      const [e, wr, wru, pr] = await Promise.all([
+        fetch("/api/expired"), fetch("/api/wayback/results"), fetch("/api/wayback/runs"), fetch("/api/gname/pricing"),
       ]);
       const ed = await e.json();
       setEntries(Array.isArray(ed) ? ed : []);
       setWaybackResults((await wr.json()).rows ?? []);
       setWaybackRuns((await wru.json()).runs ?? []);
+      try {
+        const pd = (await pr.json()).pricing ?? [];
+        const m: Record<string, { register: number | null; backorder: number | null; deposit: number | null }> = {};
+        for (const p of pd) m[String(p.tld).toLowerCase()] = { register: p.register, backorder: p.backorder, deposit: p.deposit };
+        setPricing(m);
+      } catch { /* ignore */ }
     } catch { /* ignore */ }
     setLoading(false);
   }, []);
@@ -122,7 +140,11 @@ export default function ExpiredPage() {
     const maxSp = maxSpam.trim() ? Number(maxSpam) : null;
     const minR = minRef.trim() ? Number(minRef) : null;
     const list = entries.filter((e) => {
-      if (filterStatus !== "all" && e.status !== filterStatus) return false;
+      if (view === "buynow") {
+        if (e.status !== "new") return false;
+        const du = daysUntil(e.dropEta);
+        if (!(e.rdapStatus === "available" || (du != null && du <= BUY_WINDOW_DAYS))) return false;
+      } else if (filterStatus !== "all" && e.status !== filterStatus) return false;
       if (searchTokens.length === 1 && !e.domain.includes(searchTokens[0])) return false;
       if (searchTokens.length > 1 && !searchSet.has(e.domain)) return false;
       if (minS != null && (e.finalScore ?? -Infinity) < minS) return false;
@@ -134,6 +156,8 @@ export default function ExpiredPage() {
       if (filterWayback === "flagged" && !flagged) return false;
       if (filterWayback === "clean" && !(wb && !flagged && (wb.snapshotCount ?? 0) > 0)) return false;
       if (filterWayback === "unchecked" && wb) return false;
+      if (filterRdap === "buyable" && !(e.rdapStatus === "available" || e.rdapStatus === "pendingDelete")) return false;
+      if (filterRdap === "redemption" && e.rdapStatus !== "redemptionPeriod") return false;
       return true;
     });
     return [...list].sort((a, b) => {
@@ -144,18 +168,45 @@ export default function ExpiredPage() {
       }
       return String(av).localeCompare(String(bv)) * sortDir;
     });
-  }, [entries, filterStatus, searchTokens, searchSet, minScore, maxSpam, minRef, onlyWp, filterWayback, wbByDomain, sortKey, sortDir]);
+  }, [entries, view, filterStatus, searchTokens, searchSet, minScore, maxSpam, minRef, onlyWp, filterWayback, filterRdap, wbByDomain, sortKey, sortDir]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const safePage = Math.min(page, totalPages - 1);
   const paged = useMemo(() => filtered.slice(safePage * pageSize, (safePage + 1) * pageSize), [filtered, safePage]);
-  useEffect(() => { setPage(0); }, [filterStatus, search, minScore, maxSpam, minRef, onlyWp, filterWayback, sortKey, sortDir]);
+  useEffect(() => { setPage(0); }, [view, filterStatus, search, minScore, maxSpam, minRef, onlyWp, filterWayback, filterRdap, sortKey, sortDir]);
 
   const stats = useMemo(() => {
     let nw = 0, bo = 0, ex = 0;
     for (const e of entries) { if (e.status === "new") nw++; else if (e.status === "bought") bo++; else if (e.status === "excluded") ex++; }
     return { total: entries.length, nw, bo, ex };
   }, [entries]);
+
+  // Domain trong danh sách hiện tại CHƯA check Wayback (bỏ cái đã có kết quả + đang chạy)
+  // → để nút "Check Wayback tất cả" chỉ gửi phần cần, không tốn Apify thừa.
+  const uncheckedInList = useMemo(
+    () => filtered.filter((e) => !wbByDomain.has(e.domain) && !inFlightWb.has(e.domain)).map((e) => e.domain),
+    [filtered, wbByDomain, inFlightWb],
+  );
+
+  // RDAP: domain 'new' chưa tra RDAP (để nút Check RDAP) + domain KHẨN CẤP
+  // (available/pendingDelete = sắp/đang drop → cảnh báo mua ngay).
+  const uncheckedRdap = useMemo(
+    () => entries.filter((e) => e.status === "new" && !e.rdapStatus).map((e) => e.domain),
+    [entries],
+  );
+  const urgent = useMemo(
+    () => entries.filter((e) => e.status === "new" && (e.rdapStatus === "available" || e.rdapStatus === "pendingDelete")),
+    [entries],
+  );
+  // "Mua Ngay" = domain 'new' đã/sắp mua được (available, hoặc còn ≤14 ngày tới drop).
+  const buyable = useMemo(
+    () => entries.filter((e) => {
+      if (e.status !== "new") return false;
+      const du = daysUntil(e.dropEta);
+      return e.rdapStatus === "available" || (du != null && du <= BUY_WINDOW_DAYS);
+    }),
+    [entries],
+  );
 
   const toggle = (d: string) => setSelected((p) => { const n = new Set(p); n.has(d) ? n.delete(d) : n.add(d); return n; });
   const toggleAll = () => setSelected((p) => {
@@ -220,6 +271,100 @@ export default function ExpiredPage() {
     } catch { /* ignore */ }
     setWaybackStarting(false);
   }, [toast]);
+
+  // Gửi TẤT CẢ domain chưa check trong danh sách qua Wayback (Apify). Xác nhận vì tốn phí.
+  const checkAllWayback = useCallback(() => {
+    if (!uncheckedInList.length) { toast("Không có domain nào chưa check trong danh sách."); return; }
+    if (!window.confirm(`Gửi ${uncheckedInList.length} domain (chưa check) qua Wayback bằng Apify (tốn phí)?`)) return;
+    startWayback(uncheckedInList);
+  }, [uncheckedInList, startWayback, toast]);
+
+  // Poll run đang chạy → GET /runs/{id} để cập nhật status Apify + INGEST kết quả.
+  // (Trước đây trang này KHÔNG poll nên Apify xong mà kết quả không về DB.)
+  const pollWaybackRun = useCallback(async (runId: string) => {
+    try {
+      const res = await fetch(`/api/wayback/runs/${encodeURIComponent(runId)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      // Luôn cập nhật danh sách run (READY→SUCCEEDED để nút/đếm đúng).
+      try { const wru = await fetch("/api/wayback/runs"); setWaybackRuns((await wru.json()).runs ?? []); } catch { /* ignore */ }
+      if (data.ingested?.count) {
+        // Refresh cả results (cột Wayback) lẫn entries (status Flagged/No-snap → excluded).
+        try {
+          const [wr, e] = await Promise.all([fetch("/api/wayback/results"), fetch("/api/expired")]);
+          setWaybackResults((await wr.json()).rows ?? []);
+          const ed = await e.json();
+          setEntries(Array.isArray(ed) ? ed : []);
+        } catch { /* ignore */ }
+        const ex = data.ingested.autoExcluded ?? 0;
+        toast(ex > 0 ? `✅ Wayback +${data.ingested.count} · 🚫 loại ${ex}` : `✅ Wayback +${data.ingested.count} kết quả`);
+      }
+    } catch { /* ignore */ }
+  }, [toast]);
+
+  // Tự poll mọi run READY/RUNNING mỗi 10s khi đang ở trang. Run xong (SUCCEEDED)
+  // rớt khỏi danh sách → tự dừng poll.
+  useEffect(() => {
+    const running = waybackRuns.filter((r) => r.status === "READY" || r.status === "RUNNING");
+    if (running.length === 0) return;
+    const id = setInterval(() => { for (const r of running) pollWaybackRun(r.runId); }, 10000);
+    return () => clearInterval(id);
+  }, [waybackRuns, pollWaybackRun]);
+
+  // ─── RDAP: tra trạng thái vòng đời (redemption / pending-delete / available) ───
+  const checkRdapAll = useCallback(async (domains: string[]) => {
+    if (!domains.length) { toast("Không có domain cần tra RDAP."); return; }
+    setRdapChecking(true);
+    const BATCH = 25, CONC = 3;
+    const batches: string[][] = [];
+    for (let i = 0; i < domains.length; i += BATCH) batches.push(domains.slice(i, i + BATCH));
+    let cursor = 0;
+    const agg: Record<string, number> = {};
+    const worker = async () => {
+      while (cursor < batches.length) {
+        const i = cursor++;
+        try {
+          const res = await fetch("/api/expired/rdap", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ domains: batches[i] }),
+          });
+          const data = await res.json();
+          if (res.ok && data.summary) for (const [k, v] of Object.entries(data.summary)) agg[k] = (agg[k] ?? 0) + (v as number);
+        } catch { /* ignore */ }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONC, batches.length) }, () => worker()));
+    const buyable = (agg.pendingDelete ?? 0) + (agg.available ?? 0);
+    toast(buyable > 0 ? `✅ RDAP xong · 🔴 ${buyable} CẦN MUA NGAY` : `✅ RDAP xong · ${domains.length} domain`);
+    await load();
+    setRdapChecking(false);
+  }, [toast, load]);
+
+  // Cột "Ngày mua được": chỉ quan tâm NGÀY + đếm ngược (bỏ chữ expiring/redemption).
+  const rdapCell = (e: ExpiredCandidate) => {
+    if (e.rdapStatus === "available") return <span className="text-emerald-700 font-bold text-xs">🟢 MUA ĐƯỢC</span>;
+    if (e.rdapStatus === "active") return <span className="text-muted-foreground text-xs" title="còn đăng ký (có thể đã gia hạn)">— còn ĐK</span>;
+    const du = daysUntil(e.dropEta);
+    if (du == null) return <span className="text-muted-foreground text-xs">—</span>;
+    if (du <= 0) return <span className="text-emerald-700 font-bold text-xs">🟢 MUA ĐƯỢC</span>;
+    const cls = du <= 5 ? "text-rose-700 font-bold" : du <= BUY_WINDOW_DAYS ? "text-amber-600" : "text-muted-foreground";
+    return (
+      <span className={cn("text-xs tabular-nums", cls)} title={`dự kiến mua được ~${e.dropEta}`}>
+        {e.dropEta} · còn {du}n
+      </span>
+    );
+  };
+
+  // Giá mua Gname theo trạng thái: available → đăng ký; pending/redemption → backorder.
+  const priceCell = (e: ExpiredCandidate) => {
+    const p = pricing[(e.domain.split(".").pop() ?? "").toLowerCase()];
+    if (!p) return <span className="text-muted-foreground text-xs">—</span>;
+    if (e.rdapStatus === "available" && p.register != null)
+      return <span className="text-emerald-700 text-xs tabular-nums">${p.register} <span className="opacity-60">đăng ký</span></span>;
+    if ((e.rdapStatus === "pendingDelete" || e.rdapStatus === "redemptionPeriod" || e.rdapStatus === "expiring") && p.backorder != null)
+      return <span className="text-xs tabular-nums" title={p.deposit != null ? `+ deposit $${p.deposit}` : undefined}>${p.backorder} <span className="opacity-60">BO</span></span>;
+    return <span className="text-muted-foreground text-xs">—</span>;
+  };
 
   // ─── Buy → inventory + status bought ───
   const doBuy = useCallback(async () => {
@@ -350,6 +495,27 @@ export default function ExpiredPage() {
         ))}
       </div>
 
+      {/* Tabs: Tất cả | Mua Ngay */}
+      <div className="flex items-center gap-1 border-b">
+        <button onClick={() => setView("all")} className={cn("px-3 py-1.5 text-sm font-medium border-b-2 -mb-px", view === "all" ? "border-foreground text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>
+          Tất cả <span className="text-xs opacity-70">({entries.length})</span>
+        </button>
+        <button onClick={() => { setView("buynow"); setSortKey("dropEta"); setSortDir(1); }} className={cn("px-3 py-1.5 text-sm font-medium border-b-2 -mb-px", view === "buynow" ? "border-rose-500 text-rose-600" : "border-transparent text-muted-foreground hover:text-foreground")}>
+          🔥 Mua Ngay <span className="text-xs opacity-70">({buyable.length})</span>
+        </button>
+      </div>
+
+      {/* Cảnh báo KHẨN CẤP: domain sắp/đang drop (RDAP pending-delete / available) */}
+      {urgent.length > 0 && (
+        <div className="rounded-lg border-2 border-rose-500 bg-rose-50 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+          <div className="text-sm text-rose-800">
+            <span className="font-bold text-base">🔴 {urgent.length} domain CẦN MUA NGAY</span>
+            <span className="ml-2">— đang <b>pending-delete / available</b> (sắp/đang drop, chủ không cứu lại được nữa).</span>
+          </div>
+          <Button size="sm" className="bg-rose-600 hover:bg-rose-700 text-white" onClick={() => { setView("buynow"); setSortKey("dropEta"); setSortDir(1); }}>Xem ngay</Button>
+        </div>
+      )}
+
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[200px]">
@@ -362,6 +528,9 @@ export default function ExpiredPage() {
         <select value={filterWayback} onChange={(e) => setFilterWayback(e.target.value as typeof filterWayback)} className="h-8 rounded-md border border-input bg-background px-2 text-xs" title="Wayback">
           <option value="all">Wayback: tất cả</option><option value="clean">🟢 Clean</option><option value="flagged">🚨 Flagged</option><option value="unchecked">— Chưa check</option>
         </select>
+        <select value={filterRdap} onChange={(e) => setFilterRdap(e.target.value as typeof filterRdap)} className="h-8 rounded-md border border-input bg-background px-2 text-xs" title="Trạng thái đăng ký (RDAP)">
+          <option value="all">ĐK: tất cả</option><option value="buyable">🔴 Sắp/đang drop</option><option value="redemption">🟠 Redemption</option>
+        </select>
         <Input placeholder="min score" value={minScore} onChange={(e) => setMinScore(e.target.value)} className="h-8 w-24 text-xs" />
         <Input placeholder="max spam" value={maxSpam} onChange={(e) => setMaxSpam(e.target.value)} className="h-8 w-24 text-xs" />
         <Input placeholder="min ref" value={minRef} onChange={(e) => setMinRef(e.target.value)} className="h-8 w-24 text-xs" />
@@ -370,6 +539,18 @@ export default function ExpiredPage() {
         </label>
         <Button size="sm" variant="outline" onClick={exportCsv} className="gap-1.5 h-8"><Download className="h-3.5 w-3.5" />CSV</Button>
         <Button size="sm" variant="outline" onClick={copyList} className="gap-1.5 h-8"><Copy className="h-3.5 w-3.5" />Copy</Button>
+        <Button size="sm" variant="outline" disabled={waybackStarting || uncheckedInList.length === 0}
+          onClick={checkAllWayback}
+          title="Gửi tất cả domain chưa check trong danh sách qua Wayback (Apify)"
+          className="gap-1.5 h-8 text-purple-700 border-purple-400/60">
+          {waybackStarting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "🕰️"} Check Wayback ({uncheckedInList.length})
+        </Button>
+        <Button size="sm" variant="outline" disabled={rdapChecking || uncheckedRdap.length === 0}
+          onClick={() => checkRdapAll(uncheckedRdap)}
+          title="Tra RDAP trạng thái vòng đời (redemption / pending-delete / available)"
+          className="gap-1.5 h-8 text-sky-700 border-sky-400/60">
+          {rdapChecking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "🛰️"} Check RDAP ({uncheckedRdap.length})
+        </Button>
       </div>
 
       {/* Bulk actions */}
@@ -415,6 +596,8 @@ export default function ExpiredPage() {
                 <Th k="spamScore" label="Spam" right />
                 <Th k="firstYear" label="Từ" right />
                 <th className="px-2 py-2">Wayback</th>
+                <Th k="dropEta" label="Ngày mua được" />
+                <th className="px-2 py-2">Giá</th>
                 <th className="px-2 py-2">Trạng thái</th>
               </tr>
             </thead>
@@ -431,13 +614,15 @@ export default function ExpiredPage() {
                   <td className={cn("px-2 py-1.5 text-right tabular-nums", (e.spamScore ?? 0) >= 30 && "text-rose-600")}>{e.spamScore ?? "—"}</td>
                   <td className="px-2 py-1.5 text-right tabular-nums">{e.firstYear ?? "—"}</td>
                   <td className="px-2 py-1.5">{wbCell(e.domain)}</td>
+                  <td className="px-2 py-1.5">{rdapCell(e)}</td>
+                  <td className="px-2 py-1.5">{priceCell(e)}</td>
                   <td className="px-2 py-1.5">
                     <span className={cn("text-xs px-1.5 py-0.5 rounded",
                       e.status === "bought" ? "bg-blue-100 text-blue-700" : e.status === "excluded" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700")}>{e.status}</span>
                   </td>
                 </tr>
               ))}
-              {paged.length === 0 && <tr><td colSpan={11} className="text-center py-10 text-muted-foreground">Không có domain. Import <code>final_*.csv</code> để bắt đầu.</td></tr>}
+              {paged.length === 0 && <tr><td colSpan={13} className="text-center py-10 text-muted-foreground">Không có domain. Import <code>final_*.csv</code> để bắt đầu.</td></tr>}
             </tbody>
           </table>
         )}

@@ -1,37 +1,44 @@
 @echo off
 setlocal
 cd /d "%~dp0"
+
+REM Timestamp cho log (yyyyMMdd_HHmmss)
+for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set TS=%%i
+if not exist data\logs mkdir data\logs
+set LOG=data\logs\daily_%TS%.log
+
 call .venv\Scripts\activate.bat
 
-echo === [%date% %time%] Daily drop pipeline (.org) ===
+echo [%date% %time%] START daily .org pipeline >> "%LOG%" 2>&1
 
 REM 1) Chup snapshot .org hom nay
-python -m pipeline drops pull --tld org
-if errorlevel 1 ( echo *** LOI pull zone *** & goto :end )
+python -m pipeline drops pull --tld org >> "%LOG%" 2>&1
+if errorlevel 1 ( echo *** LOI pull zone *** >> "%LOG%" & goto :rdap )
 
 REM 2) Diff voi hom truoc -> domain vua het han
-python -m pipeline drops diff --tld org
+python -m pipeline drops diff --tld org >> "%LOG%" 2>&1
 if errorlevel 1 (
-  echo Chua du 2 snapshot de diff - hom nay chi chup snapshot. Chay lai daily.bat NGAY MAI.
-  goto :end
+  echo Chua du 2 snapshot de diff - hom nay chi chup snapshot. >> "%LOG%"
+  goto :rdap
 )
 
-REM 3) Loc drops -> candidates (dung WPL da build; ccrank tuy chon)
-python -m pipeline filter run
+REM 3) Loc -> candidates (KHONG chay Wayback CDX free nua — "Check Wayback" = Apify tren trang Domain Drop)
+python -m pipeline filter run >> "%LOG%" 2>&1
 
-REM 4) Wayback chi cho candidate (re), roi loc lai de co tuoi domain
-python -m pipeline wayback check --from candidates --rps 5
-python -m pipeline filter run
+REM 4) Cham diem  5) Day len Supabase (Domain Drop), bo qua domain da co
+python -m pipeline score run --top 2000 >> "%LOG%" 2>&1
+python -m pipeline push run >> "%LOG%" 2>&1
 
-REM 5) Cham diem + xuat final_<date>.csv
-python -m pipeline score run --top 2000
+REM 6) RDAP: refresh trang thai vong doi (redemption/pending-delete/available) cho
+REM MOI domain 'new' -> banner "CAN MUA NGAY" tu bat khi vao pending-delete. Chay
+REM ca khi hom nay khong co drop moi (cac goto :rdap o tren nhay thang xuong day).
+:rdap
+python -m pipeline rdap run >> "%LOG%" 2>&1
 
-REM 6) Day thang len Supabase (Domain Drop), bo qua domain da co trong DB
-python -m pipeline push run
+REM 7) Gia mua Gname (register + backorder) -> gname_pricing. CAN IP may nay da whitelist tren Gname.
+python -m pipeline gname price --tld org >> "%LOG%" 2>&1
 
-echo.
-echo === XONG. Mo trang Domain Drop tren web -> candidate moi da co san (khong can Import tay) ===
+echo [%date% %time%] DONE. Mo trang Domain Drop de xem candidate moi. >> "%LOG%" 2>&1
 
 :end
 endlocal
-pause

@@ -146,7 +146,7 @@ def diff(
         prev = snaps[snaps.index(today) - 1]
     else:
         today, prev = snaps[-1], snaps[-2]
-    drop_date = today.stem  # YYYYMMDD
+    drop_date = today.name.split(".")[0]  # YYYYMMDD (bỏ .txt.gz, không chỉ .gz)
 
     dbp = resolve_path(db) if db else db_path()
     conn = get_conn(dbp)

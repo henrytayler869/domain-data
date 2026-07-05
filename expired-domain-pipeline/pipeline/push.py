@@ -19,9 +19,11 @@ app = typer.Typer(help="push — đẩy candidates lên Supabase (Domain Drop)."
 TABLE = "expired_candidates"
 
 # Cột đẩy lên (KHÔNG gồm status/imported_at → để DB tự default; giữ status cũ nếu domain đã có).
+# first_year/crawl_count (CDX Wayback free) đã BỎ — "Check Wayback" giờ chỉ là Apify
+# actor trên trang Domain Drop; không đẩy dữ liệu CDX archive.org nữa.
 PUSH_COLS = [
     "domain", "tld", "drop_date", "final_score", "wp_links", "cc_rank", "cc_harmonic",
-    "first_year", "crawl_count", "dfs_rank", "referring_domains", "backlinks",
+    "dfs_rank", "referring_domains", "backlinks",
     "spam_score", "length", "has_hyphen", "has_digit", "is_dict_word", "pre_score",
 ]
 _BOOL_COLS = {"has_hyphen", "has_digit", "is_dict_word"}

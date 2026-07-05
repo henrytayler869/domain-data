@@ -7,7 +7,9 @@ from .ccrank import app as ccrank_app
 from .dataforseo import app as dfs_app
 from .drops import app as drops_app
 from .filtering import app as filter_app
+from .gname import app as gname_app
 from .push import app as push_app
+from .rdap import app as rdap_app
 from .score import app as score_app
 from .wayback import app as wayback_app
 from .wpl import app as wpl_app
@@ -24,6 +26,8 @@ app.add_typer(filter_app, name="filter")      # Phase 5
 app.add_typer(dfs_app, name="dataforseo")     # Phase 6
 app.add_typer(score_app, name="score")        # Phase 7
 app.add_typer(push_app, name="push")          # Phase 8 — đẩy lên Supabase (Domain Drop)
+app.add_typer(rdap_app, name="rdap")          # Phase 9 — trạng thái vòng đời (RDAP) → cảnh báo mua
+app.add_typer(gname_app, name="gname")        # Phase 10 — giá mua (register + backorder) Gname
 
 if __name__ == "__main__":
     app()
