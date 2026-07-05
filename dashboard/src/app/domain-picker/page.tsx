@@ -101,6 +101,7 @@ export default function DomainPickerPage() {
   const [webhookStatus, setWebhookStatus] = useState<"idle" | "sending" | "ok" | "error">("idle");
   const [webhookMsg, setWebhookMsg] = useState("");
   const sentRef = useRef(false);
+  const pollRef = useRef(0);
 
   // Bước 6 — Đáng mua
   const [ratings, setRatings] = useState<Record<string, string | null>>({});
@@ -223,6 +224,7 @@ export default function DomainPickerPage() {
       const d = await res.json();
       if (!res.ok) throw new Error(d.error);
       setWebhookStatus("ok"); setWebhookMsg(`Đã gửi ${d.sent} domain tới N8N`); toast(`✅ Gửi ${d.sent} domain → DataForSEO (N8N)`);
+      setDone((p) => new Set(p).add(5)); setStep(6); // auto sang Bước 6 → tự poll kết quả
     } catch (e) {
       setWebhookStatus("error"); setWebhookMsg(e instanceof Error ? e.message : "Lỗi");
       toast(`⚠️ Webhook: ${e instanceof Error ? e.message : "lỗi"}`, true);
@@ -230,19 +232,19 @@ export default function DomainPickerPage() {
   }, [toast]);
 
   // ── Bước 6: lấy rating DataForSEO (N8N ghi vào target_assessment) ──
-  const loadRatings = useCallback(async () => {
-    if (!cleanDomains.length) return;
+  const loadRatings = useCallback(async (domains: string[]) => {
+    if (!domains.length) return;
     setLoadingRatings(true);
     try {
-      const res = await fetch("/api/picker/ratings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains: cleanDomains }) });
+      const res = await fetch("/api/picker/ratings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains }) });
       const d = await res.json();
-      const m: Record<string, string | null> = {};
-      let withRating = 0;
-      for (const a of d.assessments ?? []) { m[String(a.domain).toLowerCase()] = a.rating; if (a.rating) withRating++; }
-      setRatings(m);
-      toast(withRating ? `✅ ${withRating} domain đã có rating` : "Chưa có rating — upload file kết quả hoặc chờ N8N");
+      setRatings((prev) => {
+        const m = { ...prev };
+        for (const a of d.assessments ?? []) m[String(a.domain).toLowerCase()] = a.rating;
+        return m;
+      });
     } catch { /* ignore */ } finally { setLoadingRatings(false); }
-  }, [cleanDomains, toast]);
+  }, []);
 
   // Upload file kết quả Ahrefs/DataForSEO (có cột rating) → ghi target_assessment → lọc Tốt/TB.
   const uploadResult = useCallback((f: File | null) => {
@@ -312,6 +314,19 @@ export default function DomainPickerPage() {
       else { setWebhookStatus("idle"); toast("Không có domain Clean để gửi", true); }
     }
   }, [step, wbStarted, gated, wbByDomain, inFlightWb, sendWebhook, toast]);
+
+  // ── Bước 6 AUTO-POLL: N8N chạy xong ghi rating → tự lấy (mỗi 15s, tối đa ~10 phút) ──
+  useEffect(() => {
+    if (step !== 6 || !cleanDomains.length) return;
+    pollRef.current = 0;
+    loadRatings(cleanDomains);
+    const id = setInterval(() => {
+      pollRef.current += 1;
+      if (pollRef.current >= 40) { clearInterval(id); return; }
+      loadRatings(cleanDomains);
+    }, 15000);
+    return () => clearInterval(id);
+  }, [step, cleanDomains, loadRatings]);
 
   // ── ORCHESTRATOR ──
   const runPipeline = useCallback(async () => {
@@ -470,7 +485,7 @@ export default function DomainPickerPage() {
                 <div className="flex items-center gap-2">
                   <Button size="sm" variant="outline" onClick={copyClean} className="gap-1.5"><Copy className="h-3.5 w-3.5" />Copy {cleanDomains.length} Clean</Button>
                   <Button size="sm" variant="outline" onClick={() => sendWebhook(cleanDomains)} disabled={webhookStatus === "sending"} className="gap-1.5"><Send className="h-3.5 w-3.5" />Gửi lại webhook</Button>
-                  <Button size="sm" onClick={() => { setDone((p) => new Set(p).add(5)); setStep(6); loadRatings(); }} className="ml-auto gap-1.5 bg-foreground text-background">→ Đáng mua (Bước 6)</Button>
+                  <Button size="sm" onClick={() => { setDone((p) => new Set(p).add(5)); setStep(6); }} className="ml-auto gap-1.5 bg-foreground text-background">→ Đáng mua (Bước 6)</Button>
                 </div>
               )}
             </div>
@@ -487,16 +502,21 @@ export default function DomainPickerPage() {
             <Button size="sm" variant="outline" onClick={() => resultFileRef.current?.click()} disabled={uploadingResult} className="ml-auto gap-1.5 h-8">
               {uploadingResult ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}Upload kết quả Ahrefs/DFS
             </Button>
-            <Button size="sm" variant="outline" onClick={loadRatings} disabled={loadingRatings} className="gap-1.5 h-8">
-              {loadingRatings ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}Lấy từ DB
+            <Button size="sm" variant="outline" onClick={() => loadRatings(cleanDomains)} disabled={loadingRatings} className="gap-1.5 h-8">
+              {loadingRatings ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}Lấy lại
             </Button>
           </div>
-          <p className="text-[11px] text-muted-foreground">Upload file kết quả Ahrefs/DataForSEO (cột <code>target_domain</code> + <code>rating</code>) → tự lọc Tốt/Trung bình. Hoặc &quot;Lấy từ DB&quot; nếu rating đã ghi sẵn (N8N).</p>
+          <p className="text-[11px] text-muted-foreground">N8N chạy DataForSEO xong POST rating về <code>/api/picker/ingest-rating</code> → Bước 6 <b>tự lấy (poll 15s)</b>. Hoặc Upload file kết quả thủ công.</p>
 
           {buyNote && <div className={cn("rounded-md px-3 py-2 text-sm border", buyNote.ok ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-rose-50 text-rose-700 border-rose-300")}>{buyNote.msg}</div>}
 
           {buyList.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-4 text-center">Chưa có domain Tốt/Trung bình.{cleanDomains.length > 0 ? ` (${cleanDomains.length} Clean đang chờ rating DataForSEO)` : ""}</p>
+            <div className="py-4 text-center text-sm text-muted-foreground flex items-center justify-center gap-2">
+              {cleanDomains.length > 0 && cleanDomains.some((d) => !(d in ratings)) && <Loader2 className="h-4 w-4 animate-spin text-blue-600" />}
+              {cleanDomains.length > 0
+                ? `Đang chờ kết quả DataForSEO từ N8N cho ${cleanDomains.length} domain Clean (tự cập nhật mỗi 15s)…`
+                : "Chưa có domain — chạy pipeline hoặc upload file kết quả."}
+            </div>
           ) : (
             <>
               <div className="flex items-center gap-2">
