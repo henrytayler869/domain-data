@@ -4,7 +4,7 @@ import React, { useState, useCallback, useEffect, useMemo, useRef } from "react"
 import { Upload, Loader2, Copy, RotateCcw, Rocket, Send, ShoppingCart, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { parseCsv } from "@/lib/picker-csv";
+import { parseCsv, parseUnifiedCsv } from "@/lib/picker-csv";
 
 // ─── Pipeline AUTO 5 bước ─────────────────────────────────────────────────────
 // 1 Nhập → 2 Lọc mới (đã mua/flagged/no-snap/đã check Wayback·DFS·Ahrefs)
@@ -108,6 +108,8 @@ export default function DomainPickerPage() {
   const [selectedBuy, setSelectedBuy] = useState<Set<string>>(new Set());
   const [buying, setBuying] = useState(false);
   const [buyNote, setBuyNote] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [uploadingResult, setUploadingResult] = useState(false);
+  const resultFileRef = useRef<HTMLInputElement>(null);
 
   const [toasts, setToasts] = useState<{ id: number; msg: string; err: boolean }[]>([]);
   const tid = useRef(0);
@@ -195,8 +197,13 @@ export default function DomainPickerPage() {
   const wbByDomain = useMemo(() => { const m = new Map<string, WaybackRow>(); for (const r of wbResults) m.set(r.targetDomain, r); return m; }, [wbResults]);
   const inFlightWb = useMemo(() => { const s = new Set<string>(); for (const r of wbRuns) if (r.status === "READY" || r.status === "RUNNING") for (const d of r.targets) s.add(d); return s; }, [wbRuns]);
   const cleanDomains = useMemo(() => gated.filter((d) => { const wb = wbByDomain.get(d); return !!wb && !wb.hasBetting && !wb.hasAdult && (wb.snapshotCount ?? 0) > 0; }), [gated, wbByDomain]);
-  // Bước 6: chỉ giữ domain rating Tốt / Trung bình (sau khi DataForSEO/N8N ghi rating).
-  const buyList = useMemo(() => cleanDomains.filter((d) => { const r = ratings[d] ?? ""; return r.includes("TỐT") || r.includes("TRUNG BÌNH"); }), [cleanDomains, ratings]);
+  // Bước 6: chỉ giữ domain rating Tốt / Trung bình. Ưu tiên tập Clean của lần chạy;
+  // nếu vào thẳng Bước 6 (upload kết quả rời) thì lấy toàn bộ domain đã có rating.
+  const buyList = useMemo(() => {
+    const isGood = (d: string) => { const r = ratings[d] ?? ""; return r.includes("TỐT") || r.includes("TRUNG BÌNH"); };
+    const base = cleanDomains.length ? cleanDomains : Object.keys(ratings);
+    return base.filter(isGood);
+  }, [cleanDomains, ratings]);
   const wbStats = useMemo(() => {
     let clean = 0, flagged = 0, nosnap = 0, pending = 0;
     for (const d of gated) {
@@ -233,9 +240,39 @@ export default function DomainPickerPage() {
       let withRating = 0;
       for (const a of d.assessments ?? []) { m[String(a.domain).toLowerCase()] = a.rating; if (a.rating) withRating++; }
       setRatings(m);
-      toast(withRating ? `✅ ${withRating} domain đã có rating` : "Chưa có rating — N8N/DataForSEO chưa chạy xong");
+      toast(withRating ? `✅ ${withRating} domain đã có rating` : "Chưa có rating — upload file kết quả hoặc chờ N8N");
     } catch { /* ignore */ } finally { setLoadingRatings(false); }
   }, [cleanDomains, toast]);
+
+  // Upload file kết quả Ahrefs/DataForSEO (có cột rating) → ghi target_assessment → lọc Tốt/TB.
+  const uploadResult = useCallback((f: File | null) => {
+    if (!f) return;
+    f.text().then(async (text) => {
+      let parsed: ReturnType<typeof parseUnifiedCsv> = [];
+      try { parsed = parseUnifiedCsv(text); } catch (e) { toast(`❌ ${e instanceof Error ? e.message : "parse lỗi"}`, true); return; }
+      if (!parsed.length) { toast("File không có dữ liệu (cần cột target_domain + rating)", true); return; }
+      const assessments = parsed.filter((u) => u.rating || u.category || u.detail)
+        .map((u) => ({ targetDomain: u.targetDomain, rating: u.rating || null, category: u.category || null, detail: u.detail || null, excludedAt: null }));
+      const rows: { targetDomain: string; refDomain: string; domainRating: number }[] = [];
+      for (const u of parsed) for (const r of u.refs) rows.push({ targetDomain: u.targetDomain, refDomain: r.domain, domainRating: r.dr });
+      setUploadingResult(true);
+      try {
+        const CHUNK = 3000;
+        const chunks: (typeof rows)[] = [];
+        for (let i = 0; i < rows.length; i += CHUNK) chunks.push(rows.slice(i, i + CHUNK));
+        if (!chunks.length) chunks.push([]);
+        for (let i = 0; i < chunks.length; i++) {
+          const res = await fetch("/api/ahrefs-results/db/add", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rows: chunks[i], assessments: i === 0 ? assessments : [] }) });
+          if (!res.ok) throw new Error((await res.json()).error ?? "upload lỗi");
+        }
+        // cập nhật rating cục bộ ngay (không cần chờ loadRatings)
+        setRatings((prev) => { const m = { ...prev }; for (const u of parsed) m[u.targetDomain] = u.rating || null; return m; });
+        const goods = parsed.filter((u) => (u.rating || "").includes("TỐT") || (u.rating || "").includes("TRUNG BÌNH")).length;
+        toast(`✅ Upload ${assessments.length} rating (${goods} Tốt/TB) · ${rows.length} ref`);
+      } catch (e) { toast(`❌ ${e instanceof Error ? e.message : "lỗi upload"}`, true); }
+      finally { setUploadingResult(false); }
+    });
+  }, [toast]);
 
   const buyDomains = useCallback(async (domains: string[]) => {
     if (!domains.length) return;
@@ -444,13 +481,17 @@ export default function DomainPickerPage() {
       {/* Bước 6 — Đáng mua */}
       {step === 6 && (
         <div className="rounded-xl border bg-card p-4 flex flex-col gap-3">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <p className="text-sm font-medium">Bước 6 — Domain đáng mua (Tốt + Trung bình)</p>
-            <Button size="sm" variant="outline" onClick={loadRatings} disabled={loadingRatings} className="ml-auto gap-1.5 h-8">
-              {loadingRatings ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}Lấy kết quả DataForSEO
+            <input ref={resultFileRef} type="file" accept=".csv,text/csv" onChange={(e) => uploadResult(e.target.files?.[0] ?? null)} className="hidden" />
+            <Button size="sm" variant="outline" onClick={() => resultFileRef.current?.click()} disabled={uploadingResult} className="ml-auto gap-1.5 h-8">
+              {uploadingResult ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}Upload kết quả Ahrefs/DFS
+            </Button>
+            <Button size="sm" variant="outline" onClick={loadRatings} disabled={loadingRatings} className="gap-1.5 h-8">
+              {loadingRatings ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}Lấy từ DB
             </Button>
           </div>
-          <p className="text-[11px] text-muted-foreground">Rating do DataForSEO/N8N ghi vào (Tốt/Trung bình). Chưa có → bấm &quot;Lấy kết quả&quot; sau khi N8N chạy xong.</p>
+          <p className="text-[11px] text-muted-foreground">Upload file kết quả Ahrefs/DataForSEO (cột <code>target_domain</code> + <code>rating</code>) → tự lọc Tốt/Trung bình. Hoặc &quot;Lấy từ DB&quot; nếu rating đã ghi sẵn (N8N).</p>
 
           {buyNote && <div className={cn("rounded-md px-3 py-2 text-sm border", buyNote.ok ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-rose-50 text-rose-700 border-rose-300")}>{buyNote.msg}</div>}
 
