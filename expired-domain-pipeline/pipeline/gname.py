@@ -88,45 +88,60 @@ def ip():
 
 
 @app.command()
-def price(tld: str = typer.Option("org", help="TLD (không dấu chấm).")):
-    """Lấy giá register + backorder cho TLD → lưu Supabase gname_pricing."""
+def price(tld: str = typer.Option("all", help="TLD (vd 'org') hoặc 'all' = toàn bộ.")):
+    """Lấy giá register + backorder → lưu Supabase gname_pricing (mặc định TẤT CẢ TLD)."""
     import httpx
     appid, appkey = _gname_creds()
-    tld = tld.lower().lstrip(".")
+    want = tld.lower().lstrip(".")
 
     jp = _post("/api/domain/price", {}, appid, appkey)
     if jp.get("code") != 1:
         if _is_ip_error(jp):
             raise typer.Exit(1)
-        typer.echo(f"❌ /api/price lỗi: {jp.get('msg')}")
+        typer.echo(f"❌ /api/domain/price lỗi: {jp.get('msg')}")
         raise typer.Exit(1)
-    reg = renew = None
-    for x in jp.get("data") or []:
-        if str(x.get("Tld", "")).lower().lstrip(".") == tld:
-            reg = float(x["Register"]); renew = float(x.get("Renew") or 0)
-            break
 
+    # Map TLD -> kênh backorder RẺ NHẤT.
     jb = _post("/api/backorder/channel", {}, appid, appkey)
-    bo_price = bo_dep = bo_ch = None
+    bo_map: dict[str, tuple] = {}
     if jb.get("code") == 1:
         for ch in jb.get("data") or []:
-            tlds = [str(t).lower().lstrip(".") for t in (ch.get("tlds") or [])]
-            if tld in tlds:
-                p = float(ch.get("price") or 0)
-                if bo_price is None or p < bo_price:
-                    bo_price, bo_dep, bo_ch = p, float(ch.get("deposit") or 0), ch.get("channel_name")
+            p, dep, name = float(ch.get("price") or 0), float(ch.get("deposit") or 0), ch.get("channel_name")
+            for t in (ch.get("tlds") or []):
+                t = str(t).lower().lstrip(".")
+                if t not in bo_map or p < bo_map[t][0]:
+                    bo_map[t] = (p, dep, name)
     elif _is_ip_error(jb):
         raise typer.Exit(1)
 
-    typer.echo(f"{tld}: register=${reg} renew=${renew} | backorder=${bo_price} (deposit ${bo_dep}, {bo_ch})")
+    now = _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    rows = []
+    for x in jp.get("data") or []:
+        t = str(x.get("Tld", "")).lower().lstrip(".")
+        if not t or (want != "all" and t != want):
+            continue
+        bo = bo_map.get(t)
+        rows.append({
+            "tld": t, "register": float(x.get("Register") or 0), "renew": float(x.get("Renew") or 0),
+            "backorder": bo[0] if bo else None, "deposit": bo[1] if bo else None,
+            "channel": bo[2] if bo else None, "updated_at": now,
+        })
+    if not rows:
+        typer.echo(f"Không thấy giá cho TLD '{want}'.")
+        raise typer.Exit(1)
+    for r in rows[:5]:
+        typer.echo(f"  {r['tld']}: register=${r['register']} | backorder=${r['backorder']} (dep ${r['deposit']})")
+    if len(rows) > 5:
+        typer.echo(f"  … tổng {len(rows)} TLD")
 
     url, key = _get_creds()
     H = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json",
          "Prefer": "resolution=merge-duplicates,return=minimal"}
-    row = {"tld": tld, "register": reg, "renew": renew, "backorder": bo_price, "deposit": bo_dep,
-           "channel": bo_ch, "updated_at": _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"}
-    r = httpx.post(f"{url}/rest/v1/gname_pricing?on_conflict=tld", headers=H, json=[row], timeout=30)
-    if r.status_code >= 300:
-        typer.echo(f"⚠️ Lưu Supabase lỗi {r.status_code}: {r.text[:150]}")
-    else:
-        typer.echo(f"✓ Đã lưu giá {tld} vào gname_pricing.")
+    ok = 0
+    for i in range(0, len(rows), 200):
+        r = httpx.post(f"{url}/rest/v1/gname_pricing?on_conflict=tld", headers=H, json=rows[i:i + 200], timeout=30)
+        if r.status_code >= 300:
+            typer.echo(f"⚠️ Lưu Supabase lỗi {r.status_code}: {r.text[:150]}")
+            break
+        ok += len(rows[i:i + 200])
+    typer.echo(f"✓ Đã lưu giá {ok} TLD vào gname_pricing.")

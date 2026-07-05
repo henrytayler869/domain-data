@@ -36,7 +36,7 @@ REM ca khi hom nay khong co drop moi (cac goto :rdap o tren nhay thang xuong day
 python -m pipeline rdap run >> "%LOG%" 2>&1
 
 REM 7) Gia mua Gname (register + backorder) -> gname_pricing. CAN IP may nay da whitelist tren Gname.
-python -m pipeline gname price --tld org >> "%LOG%" 2>&1
+python -m pipeline gname price >> "%LOG%" 2>&1
 
 echo [%date% %time%] DONE. Mo trang Domain Drop de xem candidate moi. >> "%LOG%" 2>&1
 
