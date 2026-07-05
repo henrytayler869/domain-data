@@ -16,11 +16,13 @@ const KEY = "dataforseo";
 export interface Settings {
   dataforseoLogin: string;
   dataforseoPassword: string; // stored server-side only
+  n8nWebhookUrl: string;      // webhook N8N nhận domain Clean → DataForSEO
 }
 
 const envDefaults = (): Settings => ({
   dataforseoLogin: process.env.DATAFORSEO_LOGIN ?? "",
   dataforseoPassword: process.env.DATAFORSEO_PASSWORD ?? "",
+  n8nWebhookUrl: process.env.N8N_WEBHOOK_URL ?? "",
 });
 
 async function readFromSupabase(): Promise<Settings | null> {
@@ -28,10 +30,11 @@ async function readFromSupabase(): Promise<Settings | null> {
   const { data, error } = await sb.from(TABLE).select("value").eq("key", KEY).maybeSingle();
   if (error) throw new Error(error.message);
   const v = (data?.value ?? null) as Partial<Settings> | null;
-  if (!v || (!v.dataforseoLogin && !v.dataforseoPassword)) return null;
+  if (!v || (!v.dataforseoLogin && !v.dataforseoPassword && !v.n8nWebhookUrl)) return null;
   return {
     dataforseoLogin: v.dataforseoLogin ?? "",
     dataforseoPassword: v.dataforseoPassword ?? "",
+    n8nWebhookUrl: v.n8nWebhookUrl ?? "",
   };
 }
 
@@ -68,6 +71,7 @@ async function readLegacyApify(): Promise<Settings | null> {
     return {
       dataforseoLogin: v.dataforseoLogin ?? "",
       dataforseoPassword: v.dataforseoPassword ?? "",
+      n8nWebhookUrl: "",
     };
   } catch {
     return null;
@@ -101,6 +105,7 @@ export async function writeSettings(settings: Partial<Settings>): Promise<void> 
       settings.dataforseoPassword?.trim()
         ? settings.dataforseoPassword
         : current.dataforseoPassword,
+    n8nWebhookUrl: settings.n8nWebhookUrl ?? current.n8nWebhookUrl,
   };
   await writeToSupabase(merged);
 }

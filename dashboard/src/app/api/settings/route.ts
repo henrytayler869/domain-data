@@ -15,6 +15,7 @@ export async function GET() {
       dataforseoLogin: s.dataforseoLogin,
       hasPassword: s.dataforseoPassword.length > 0,
       passwordHint: maskSecret(s.dataforseoPassword),
+      n8nWebhookUrl: s.n8nWebhookUrl,
     });
   } catch (err) {
     return NextResponse.json(
@@ -32,6 +33,7 @@ export async function POST(request: NextRequest) {
     await writeSettings({
       dataforseoLogin: body.dataforseoLogin,
       dataforseoPassword: body.dataforseoPassword,
+      n8nWebhookUrl: body.n8nWebhookUrl,
     });
     return NextResponse.json({ ok: true });
   } catch (err) {

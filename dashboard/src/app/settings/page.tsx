@@ -11,6 +11,7 @@ import {
   Loader2,
   KeyRound,
   Wifi,
+  Webhook,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,6 +23,7 @@ interface SettingsData {
   dataforseoLogin: string;
   hasPassword: boolean;
   passwordHint: string;
+  n8nWebhookUrl: string;
 }
 
 interface TestResult {
@@ -49,6 +51,10 @@ export default function SettingsPage() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
+  const [n8nUrl, setN8nUrl] = useState("");
+  const [savingN8n, setSavingN8n] = useState(false);
+  const [n8nStatus, setN8nStatus] = useState<"idle" | "ok" | "error">("idle");
+
   // ─── Load ─────────────────────────────────────────────────────────────────────
 
   const loadSettings = useCallback(async () => {
@@ -59,6 +65,7 @@ export default function SettingsPage() {
       if (!res.ok) throw new Error(data.error);
       setSaved(data as SettingsData);
       setLogin(data.dataforseoLogin ?? "");
+      setN8nUrl(data.n8nWebhookUrl ?? "");
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "Không tải được settings");
     }
@@ -110,6 +117,15 @@ export default function SettingsPage() {
     } finally {
       setTesting(false);
     }
+  };
+
+  const saveN8n = async () => {
+    setSavingN8n(true); setN8nStatus("idle");
+    try {
+      const res = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ n8nWebhookUrl: n8nUrl.trim() }) });
+      if (!res.ok) throw new Error((await res.json()).error);
+      setN8nStatus("ok"); await loadSettings(); setTimeout(() => setN8nStatus("idle"), 3000);
+    } catch { setN8nStatus("error"); } finally { setSavingN8n(false); }
   };
 
   const isDirty =
@@ -291,6 +307,38 @@ export default function SettingsPage() {
             )}
           </div>
         )}
+      </div>
+
+      {/* N8N Webhook (DataForSEO) card */}
+      <div className="rounded-xl border bg-card shadow-sm">
+        <div className="flex items-center gap-3 px-6 py-4 border-b">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10">
+            <Webhook className="h-5 w-5 text-primary" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold">Webhook N8N — DataForSEO</h2>
+            <p className="text-xs text-muted-foreground">Domain Picker Bước 5: gửi domain Clean tới workflow N8N để check DataForSEO.</p>
+          </div>
+          {saved && (
+            <span className={cn("ml-auto inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border",
+              saved.n8nWebhookUrl ? "text-emerald-600 bg-emerald-50 border-emerald-200" : "text-amber-600 bg-amber-50 border-amber-200")}>
+              <span className={cn("w-1.5 h-1.5 rounded-full inline-block", saved.n8nWebhookUrl ? "bg-emerald-500" : "bg-amber-500")} />
+              {saved.n8nWebhookUrl ? "Đã cấu hình" : "Chưa cấu hình"}
+            </span>
+          )}
+        </div>
+        <div className="px-6 py-5 space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1.5">Webhook URL</label>
+            <Input type="url" value={n8nUrl} onChange={(e) => setN8nUrl(e.target.value)} placeholder="https://n8n.example.com/webhook/xxxxxxxx" />
+            <p className="text-xs text-muted-foreground mt-1.5">Webapp POST <code className="bg-muted px-1 rounded">{`{ domains: [...] }`}</code> tới URL này khi xuất Clean ở Bước 5.</p>
+          </div>
+          {n8nStatus === "ok" && <div className="flex items-center gap-2 text-sm text-emerald-600"><CheckCircle2 className="h-4 w-4" />Đã lưu</div>}
+          {n8nStatus === "error" && <div className="flex items-center gap-2 text-sm text-destructive"><XCircle className="h-4 w-4" />Lưu lỗi</div>}
+          <Button onClick={saveN8n} disabled={savingN8n || n8nUrl.trim() === (saved?.n8nWebhookUrl ?? "")} className="gap-2">
+            {savingN8n ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Lưu
+          </Button>
+        </div>
       </div>
     </div>
   );
