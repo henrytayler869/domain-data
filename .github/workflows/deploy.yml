@@ -32,11 +32,11 @@ jobs:
             --exclude='node_modules' --exclude='.next' --exclude='.vercel' \
             --exclude='.env.local' \
             --exclude='*.log' --exclude='*.bak*' \
-            -e "ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=no" \
+            -e "ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=20" \
             ./dashboard/ "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/domaindata/dashboard/"
 
       - name: Build & restart on VPS
         run: |
-          ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=no \
+          ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
             "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
             'cd /opt/n8n && docker compose build dashboard && docker compose up -d dashboard && docker image prune -f'
