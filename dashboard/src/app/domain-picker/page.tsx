@@ -506,7 +506,7 @@ export default function DomainPickerPage() {
               {loadingRatings ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}Lấy lại
             </Button>
           </div>
-          <p className="text-[11px] text-muted-foreground">N8N chạy DataForSEO xong POST rating về <code>/api/picker/ingest-rating</code> → Bước 6 <b>tự lấy (poll 15s)</b>. Hoặc Upload file kết quả thủ công.</p>
+          <p className="text-[11px] text-muted-foreground">N8N chạy DataForSEO xong POST rating về <code>/api/n8n/ingest-rating</code> → Bước 6 <b>tự lấy (poll 15s)</b>. Hoặc Upload file kết quả thủ công.</p>
 
           {buyNote && <div className={cn("rounded-md px-3 py-2 text-sm border", buyNote.ok ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-rose-50 text-rose-700 border-rose-300")}>{buyNote.msg}</div>}
 
