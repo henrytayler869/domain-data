@@ -72,6 +72,101 @@ export interface GnameRegisterResult {
   msg: string;
 }
 
+export interface GnameCheckResult {
+  domain: string;
+  /** Gname có thể ĐĂNG KÝ NGAY (available) hay không. */
+  available: boolean;
+  /** Domain premium — Gname không cho tự mua giá thường. */
+  premium: boolean;
+  /** Gọi check LỖI (IP chưa whitelist / mạng / rate-limit) — khác với "registered". */
+  error: boolean;
+  code: number;
+  msg: string;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+export interface GnameBackorderChannel {
+  channel_name: string;
+  price: number;
+  deposit: number;
+  tlds: string[];
+}
+
+/** Danh sách kênh backorder của Gname (`/api/backorder/channel`) — giá + deposit + TLD. */
+export async function getBackorderChannels(): Promise<GnameBackorderChannel[]> {
+  const r = await gnamePost("/api/backorder/channel", {});
+  if (r.code !== 1 || !Array.isArray(r.data)) return [];
+  return (r.data as Record<string, unknown>[]).map((ch) => ({
+    channel_name: String(ch.channel_name ?? ch.channel ?? ch.name ?? ""),
+    price: parseFloat(String(ch.price ?? 0)) || 0,
+    deposit: parseFloat(String(ch.deposit ?? 0)) || 0,
+    tlds: Array.isArray(ch.tlds) ? (ch.tlds as unknown[]).map((t) => String(t).toLowerCase().replace(/^\./, "")) : [],
+  }));
+}
+
+/**
+ * Gname trả code -1 cho CẢ "registered" LẪN lỗi (rate-limit, IP). Phân loại theo msg:
+ *   registered — "...has been registered or reserved"
+ *   ratelimit  — "requests are too frequent / try again later" (tạm thời → retry)
+ *   iperror    — IP chưa whitelist / chưa ủy quyền
+ */
+function classifyMsg(msg: string): "registered" | "ratelimit" | "iperror" | "other" {
+  const m = msg.toLowerCase();
+  if (/registered|reserved|已注册|已被注册|已被预留/.test(m)) return "registered";
+  if (/frequent|too many|try again|rate.?limit|频繁|请稍|稍后/.test(m)) return "ratelimit";
+  if (/\bip\b|whitelist|白名单|授权|unauthor|forbidden/.test(m)) return "iperror";
+  return "other";
+}
+
+/**
+ * Check 1 domain qua Gname `/api/domain/check` (có retry cho rate-limit).
+ *   code 1  = available (mua được ngay) · code -3 = premium
+ *   code -1 + msg "registered/reserved" = registered (chưa mua được)
+ *   rate-limit / IP / lỗi khác → error=true (UI hiện ⚠️, không nhầm là registered).
+ */
+export async function checkDomain(domain: string, retries = 3): Promise<GnameCheckResult> {
+  const ym = domain.toLowerCase().trim();
+  const base = { domain: ym, available: false, premium: false, error: false };
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const r = await gnamePost("/api/domain/check", { domain: ym });
+      if (r.code === 1) {
+        const data = (r.data && typeof r.data === "object") ? (r.data as Record<string, unknown>) : {};
+        const premium = data.premium === true || data.premium === 1 || String(data.premium ?? "") === "1";
+        return { ...base, available: true, premium, code: r.code, msg: r.msg };
+      }
+      if (r.code === -3) return { ...base, available: true, premium: true, code: r.code, msg: r.msg };
+      const kind = classifyMsg(String(r.msg ?? ""));
+      if (kind === "registered") return { ...base, available: false, code: r.code, msg: r.msg };
+      if (kind === "ratelimit" && attempt < retries) { await sleep(1200 * (attempt + 1)); continue; }
+      return { ...base, error: true, code: r.code, msg: r.msg };   // iperror / other / hết retry
+    } catch (err) {
+      if (attempt < retries) { await sleep(1200 * (attempt + 1)); continue; }
+      return { ...base, error: true, code: -999, msg: err instanceof Error ? err.message : "Unknown error" };
+    }
+  }
+  return { ...base, error: true, code: -998, msg: "retries exhausted" };
+}
+
+/** Check nhiều domain — concurrency THẤP + giãn nhịp để tránh rate-limit Gname. */
+export async function checkDomainsMany(
+  domains: string[],
+  concurrency = 2,
+): Promise<GnameCheckResult[]> {
+  const out: GnameCheckResult[] = new Array(domains.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < domains.length) {
+      const i = cursor++;
+      out[i] = await checkDomain(domains[i]);
+      await sleep(350);   // giãn nhịp giữa các call của cùng worker
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, domains.length) }, () => worker()));
+  return out;
+}
+
 /**
  * Submit a registration order for one domain.
  * code 1 = accepted (data = frozen amount). code -3 = premium (skipped — we

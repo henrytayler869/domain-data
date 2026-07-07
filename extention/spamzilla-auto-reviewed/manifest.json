@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "SpamZilla Auto Reviewed",
+  "version": "1.3.1",
+  "description": "Tu dong review domain (chi trang 1 -> re-query, hop voi filter loai tru reviewed), lap qua tung filter, gom domain va luu ra file .txt.",
+  "icons": {},
+  "permissions": ["storage"],
+  "content_scripts": [
+    {
+      "matches": ["https://www.spamzilla.io/*", "https://spamzilla.io/*"],
+      "js": ["inject.js"],
+      "world": "MAIN",
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.spamzilla.io/*", "https://spamzilla.io/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

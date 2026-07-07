@@ -23,3 +23,11 @@ backlinkDataforSEO/
 # Local n8n workflows (not for git) — anchored to repo root so it does NOT
 # swallow the app source dir dashboard/src/app/api/n8n/
 /n8n/
+
+# Spamzilla Playwright automation: local browser session + domain exports
+spamzilla/.pw-profile/
+spamzilla/domains_*.txt
+
+# Python bytecode
+__pycache__/
+*.pyc

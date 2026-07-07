@@ -33,11 +33,38 @@ function addDays(base: Date, n: number): string {
   return new Date(base.getTime() + n * 86_400_000).toISOString().slice(0, 10);
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Fetch RDAP có retry cho lỗi TẠM THỜI (429 rate-limit / 5xx / lỗi mạng) — giảm
+ * số domain bị "error" (⚠️) chỉ vì check cả loạt bị rate-limit. 404/200 dùng ngay.
+ */
+async function fetchRdap(url: string, retries = 2): Promise<Response> {
+  let lastRes: Response | null = null;
+  let lastErr: unknown = null;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const res = await fetch(url, { headers: { Accept: "application/rdap+json" } });
+      if (res.status === 404 || res.ok) return res;          // 404 (available) / 200 → dùng luôn
+      lastRes = res;
+      if (res.status === 429 || res.status >= 500) {          // tạm thời → chờ rồi thử lại
+        if (i < retries) { await sleep(700 * (i + 1)); continue; }
+      }
+      return res;                                             // 4xx khác → trả luôn (không retry)
+    } catch (e) {
+      lastErr = e;
+      if (i < retries) await sleep(700 * (i + 1));
+    }
+  }
+  if (lastRes) return lastRes;
+  throw lastErr ?? new Error("RDAP fetch failed");
+}
+
 export async function checkRdap(domain: string): Promise<RdapResult> {
   const d = domain.toLowerCase().trim();
   const now = new Date();
   try {
-    const res = await fetch(rdapUrl(d), { headers: { Accept: "application/rdap+json" } });
+    const res = await fetchRdap(rdapUrl(d));
     if (res.status === 404) {
       return { domain: d, status: "available", expiration: null, dropEta: addDays(now, 0), raw: [] };
     }

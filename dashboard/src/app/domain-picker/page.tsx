@@ -39,13 +39,27 @@ function parseDomains(text: string): string[] {
 const tldOf = (d: string) => d.split(".").pop() ?? "";
 const DOMAIN_RE = /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/;
 
-// giá + có mua được không, theo trạng thái RDAP + bảng giá TLD.
-function priceOf(status: string | undefined, tld: string, pricing: Record<string, Price>): { acquirable: boolean; price: number | null } {
-  const p = pricing[tld];
-  if (!p) return { acquirable: false, price: null };
-  if (status === "available") return { acquirable: true, price: p.register };
-  if (status === "pendingDelete" || status === "redemptionPeriod" || status === "expiring") return { acquirable: true, price: p.backorder };
-  return { acquirable: false, price: null };
+// Kênh backorder Gname (Channel 2 = $26) — giá + deposit + TLD hỗ trợ.
+type BoChannel = { price: number; deposit: number; tlds: string[] };
+
+// Có mua được không + giá, theo trạng thái Gname:
+//   available  → đăng ký (giá register)   registered → backorder Channel 2 ($26)
+function priceOf(
+  status: string | undefined,
+  tld: string,
+  pricing: Record<string, Price>,
+  bo: BoChannel | null,
+): { acquirable: boolean; price: number | null; mode: "register" | "backorder" | "none" } {
+  // available → đăng ký ngay (giá register).
+  if (status === "available") {
+    const reg = pricing[tld]?.register;
+    return reg != null ? { acquirable: true, price: reg, mode: "register" } : { acquirable: false, price: null, mode: "none" };
+  }
+  // registered → backorder qua Channel 2 ($26) nếu TLD được kênh hỗ trợ.
+  if (status === "registered" && bo && bo.tlds.includes(tld)) {
+    return { acquirable: true, price: bo.price, mode: "backorder" };
+  }
+  return { acquirable: false, price: null, mode: "none" };
 }
 
 function extractFromFileText(text: string): string[] {
@@ -92,6 +106,7 @@ export default function DomainPickerPage() {
   const [wbNoSnap, setWbNoSnap] = useState<Set<string>>(new Set());
   const [wbChecked, setWbChecked] = useState<Set<string>>(new Set());
   const [pricing, setPricing] = useState<Record<string, Price>>({});
+  const [boChannel, setBoChannel] = useState<BoChannel | null>(null);
 
   const [rdap, setRdap] = useState<Record<string, RdapRow>>({});
   const [wbResults, setWbResults] = useState<WaybackRow[]>([]);
@@ -110,6 +125,7 @@ export default function DomainPickerPage() {
   const [buying, setBuying] = useState(false);
   const [buyNote, setBuyNote] = useState<{ ok: boolean; msg: string } | null>(null);
   const [uploadingResult, setUploadingResult] = useState(false);
+  const [pollExhausted, setPollExhausted] = useState(false);
   const resultFileRef = useRef<HTMLInputElement>(null);
 
   const [toasts, setToasts] = useState<{ id: number; msg: string; err: boolean }[]>([]);
@@ -155,13 +171,13 @@ export default function DomainPickerPage() {
     });
   };
 
-  // ── RDAP: trả về map (không dựa state để tránh stale) ──
+  // ── Gname check (mua được?): trả về map (không dựa state để tránh stale) ──
   const runRdap = useCallback(async (domains: string[]): Promise<Record<string, RdapRow>> => {
     const acc: Record<string, RdapRow> = {};
     const BATCH = 25;
     for (let i = 0; i < domains.length; i += BATCH) {
       try {
-        const res = await fetch("/api/rdap/check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains: domains.slice(i, i + BATCH) }) });
+        const res = await fetch("/api/gname/check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains: domains.slice(i, i + BATCH) }) });
         for (const r of (await res.json()).results ?? []) acc[r.domain] = r;
         setRdap({ ...acc });
       } catch { /* ignore */ }
@@ -319,10 +335,11 @@ export default function DomainPickerPage() {
   useEffect(() => {
     if (step !== 6 || !cleanDomains.length) return;
     pollRef.current = 0;
+    setPollExhausted(false);
     loadRatings(cleanDomains);
     const id = setInterval(() => {
       pollRef.current += 1;
-      if (pollRef.current >= 40) { clearInterval(id); return; }
+      if (pollRef.current >= 40) { clearInterval(id); setPollExhausted(true); return; }
       loadRatings(cleanDomains);
     }, 15000);
     return () => clearInterval(id);
@@ -358,11 +375,20 @@ export default function DomainPickerPage() {
     if (!Object.keys(pr).length) {
       try { const d = await (await fetch("/api/gname/pricing")).json(); pr = {}; for (const p of d.pricing ?? []) pr[String(p.tld).toLowerCase()] = { register: p.register, backorder: p.backorder, deposit: p.deposit }; setPricing(pr); } catch { /* ignore */ }
     }
+    // đảm bảo có kênh backorder (Channel 2 = $26) cho domain registered
+    let bo = boChannel;
+    if (!bo) {
+      try {
+        const ch = await (await fetch("/api/gname/channels")).json();
+        const c2 = (ch.channels ?? []).find((c: { channel_name: string }) => c.channel_name === "Channel 2");
+        if (c2) { bo = { price: c2.price, deposit: c2.deposit, tlds: c2.tlds }; setBoChannel(bo); }
+      } catch { /* ignore */ }
+    }
 
-    // B3: RDAP (mua được) + giá → gate ≤ $26
+    // B3: Gname check (mua được?) + giá → gate ≤ $26 (available=đăng ký, registered=backorder Ch.2)
     setStep(3);
     const rd = await runRdap(fresh);
-    const g = fresh.filter((d) => { const info = priceOf(rd[d]?.status, tldOf(d), pr); return info.acquirable && info.price != null && info.price <= MAX_PRICE; });
+    const g = fresh.filter((d) => { const info = priceOf(rd[d]?.status, tldOf(d), pr, bo); return info.acquirable && info.price != null && info.price <= MAX_PRICE; });
     setGated(g); setDone((p) => new Set(p).add(3));
     if (!g.length) { toast("Không domain nào mua được & giá ≤ $26", true); setRunning(false); return; }
 
@@ -370,25 +396,27 @@ export default function DomainPickerPage() {
     setStep(4); setWbStarted(true);
     await startWayback(g);
     setRunning(false); // đã trigger; Wayback chạy async → effect tự gửi webhook khi xong
-  }, [pasteText, owned, wbFlagged, wbNoSnap, wbChecked, pricing, runRdap, startWayback, toast]);
+  }, [pasteText, owned, wbFlagged, wbNoSnap, wbChecked, pricing, boChannel, runRdap, startWayback, toast]);
 
   const reset = () => { setStep(1); setDone(new Set()); setRaw([]); setAfterExclude([]); setGated([]); setB2({ bought: [], flagged: [], nosnap: [], checked: [] }); setRdap({}); setWbStarted(false); setWebhookStatus("idle"); sentRef.current = false; setRatings({}); setSelectedBuy(new Set()); setBuyNote(null); };
 
   const priceStr = (d: string): string => {
-    const info = priceOf(rdap[d]?.status, tldOf(d), pricing);
+    const info = priceOf(rdap[d]?.status, tldOf(d), pricing, boChannel);
     if (info.price == null) return "—";
-    const tag = rdap[d]?.status === "available" ? "đăng ký" : "BO";
-    return `$${info.price} ${tag}${info.price <= MAX_PRICE ? "" : " ✗"}`;
+    return `$${info.price} ${info.mode === "register" ? "đăng ký" : "BO"}${info.price <= MAX_PRICE ? "" : " ✗"}`;
   };
   const rdapBadge = (d: string) => {
-    const st = rdap[d]?.status; const eta = rdap[d]?.dropEta;
+    const st = rdap[d]?.status;
     if (!st) return <span className="text-muted-foreground text-xs">…</span>;
     if (st === "available") return <span className="text-emerald-700 font-bold text-xs">🟢 MUA ĐƯỢC</span>;
-    if (st === "pendingDelete") return <span className="text-rose-700 font-bold text-xs">🔴 ≤5 ngày</span>;
-    if (st === "redemptionPeriod") return <span className="text-amber-600 text-xs">🟠 {eta ?? "redemption"}</span>;
-    if (st === "expiring") return <span className="text-yellow-600 text-xs">🟡 {eta ?? "hết hạn"}</span>;
-    if (st === "active") return <span className="text-muted-foreground text-xs">⚪ còn ĐK</span>;
-    return <span className="text-muted-foreground text-xs">⚠️</span>;
+    if (st === "premium") return <span className="text-purple-600 text-xs" title="Domain premium — Gname không cho tự mua giá thường">⭐ Premium</span>;
+    if (st === "registered") {
+      const info = priceOf(st, tldOf(d), pricing, boChannel);
+      return info.mode === "backorder"
+        ? <span className="text-amber-600 font-bold text-xs" title="Backorder qua Gname Channel 2 ($26, deposit $3 hoàn lại nếu không bắt được)">🟠 BACKORDER</span>
+        : <span className="text-muted-foreground text-xs">⚪ đã đăng ký</span>;
+    }
+    return <span className="text-orange-500 text-xs" title="Gname check lỗi (IP chưa whitelist / rate-limit / mạng) — bấm 'Làm lại' để thử lại.">⚠️ Gname lỗi</span>;
   };
   const wbBadge = (d: string) => {
     if (!gated.includes(d)) return <span className="text-muted-foreground text-xs">— loại</span>;
@@ -511,11 +539,18 @@ export default function DomainPickerPage() {
           {buyNote && <div className={cn("rounded-md px-3 py-2 text-sm border", buyNote.ok ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-rose-50 text-rose-700 border-rose-300")}>{buyNote.msg}</div>}
 
           {buyList.length === 0 ? (
-            <div className="py-4 text-center text-sm text-muted-foreground flex items-center justify-center gap-2">
-              {cleanDomains.length > 0 && cleanDomains.some((d) => !(d in ratings)) && <Loader2 className="h-4 w-4 animate-spin text-blue-600" />}
-              {cleanDomains.length > 0
-                ? `Đang chờ kết quả DataForSEO từ N8N cho ${cleanDomains.length} domain Clean (tự cập nhật mỗi 15s)…`
-                : "Chưa có domain — chạy pipeline hoặc upload file kết quả."}
+            <div className="py-4 text-center text-sm flex items-center justify-center gap-2">
+              {cleanDomains.length === 0 ? (
+                <span className="text-muted-foreground">Chưa có domain — chạy pipeline hoặc upload file kết quả.</span>
+              ) : cleanDomains.some((d) => !(d in ratings)) ? (
+                pollExhausted ? (
+                  <span className="text-rose-600">{`Hết thời gian chờ — còn ${cleanDomains.filter((d) => !(d in ratings)).length}/${cleanDomains.length} domain chưa có kết quả. Kiểm tra N8N (node Ingest Rating) rồi bấm "Lấy lại".`}</span>
+                ) : (
+                  <><Loader2 className="h-4 w-4 animate-spin text-blue-600" /><span className="text-muted-foreground">{`Đang chờ kết quả DataForSEO từ N8N: còn ${cleanDomains.filter((d) => !(d in ratings)).length}/${cleanDomains.length} domain (tự cập nhật mỗi 15s)…`}</span></>
+                )
+              ) : (
+                <span className="text-amber-600">Đã nhận kết quả tất cả {cleanDomains.length} domain — <b>0 domain đáng mua</b> (đều Rủi Ro / không đạt Tốt+Trung bình).</span>
+              )}
             </div>
           ) : (
             <>

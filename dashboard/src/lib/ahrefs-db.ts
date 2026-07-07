@@ -374,8 +374,10 @@ export async function listCheckedAmong(targetsRaw: string[]): Promise<string[]> 
     if (aErr) throw new Error(aErr.message);
     const out: string[] = Array.from(refSet);
     for (const r of (aData ?? []) as { target_domain: string; category: string | null; excluded_at: string | null }[]) {
-      const isApiError = (r.category ?? "").trim().toLowerCase() === "api error";
-      if (isApiError && !refSet.has(r.target_domain) && !r.excluded_at) continue;
+      // Lỗi tạm (API/Parse error) chưa loại trừ thủ công → coi như CHƯA check (cho re-run).
+      const cat = (r.category ?? "").trim().toLowerCase();
+      const isTransient = cat === "api error" || cat === "parse error";
+      if (isTransient && !refSet.has(r.target_domain) && !r.excluded_at) continue;
       out.push(r.target_domain);
     }
     return out;
