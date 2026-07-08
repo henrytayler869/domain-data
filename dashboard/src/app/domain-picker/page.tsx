@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
-import { Upload, Loader2, Copy, RotateCcw, Rocket, Send, ShoppingCart, RefreshCw } from "lucide-react";
+import { Upload, Loader2, Copy, RotateCcw, Rocket, Send, ShoppingCart, RefreshCw, Ban } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { parseCsv, parseUnifiedCsv } from "@/lib/picker-csv";
@@ -46,6 +46,19 @@ function parseDomains(text: string): string[] {
 }
 const tldOf = (d: string) => d.split(".").pop() ?? "";
 const DOMAIN_RE = /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/;
+
+// Có ref domain nào DR > 90 không, đọc từ chuỗi detail của rating.
+//   N8N: "DR>90:5 | d1 (DR 95); d2 (DR 92)"  → dùng số sau "DR>90:"
+//   fallback: quét "(DR NN)" trong danh sách ref, có NN > 90 là đạt.
+function hasRefOver90(detail: string | null | undefined): boolean {
+  if (!detail) return false;
+  const m = detail.match(/DR\s*>?\s*90\s*:\s*(\d+)/i);
+  if (m) return Number(m[1]) > 0;
+  const re = /\(\s*DR\s*(\d+)\s*\)/gi;
+  let x: RegExpExecArray | null;
+  while ((x = re.exec(detail))) if (Number(x[1]) > 90) return true;
+  return false;
+}
 
 // Kênh backorder Gname (Channel 2 = $26) — giá + deposit + TLD hỗ trợ.
 type BoChannel = { price: number; deposit: number; tlds: string[] };
@@ -113,6 +126,7 @@ export default function DomainPickerPage() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [owned, setOwned] = useState<Set<string>>(new Set());
+  const [excluded, setExcluded] = useState<Set<string>>(new Set()); // domain đã bấm "Loại trừ" ở Bước 6
   const [wbFlagged, setWbFlagged] = useState<Set<string>>(new Set());
   const [wbNoSnap, setWbNoSnap] = useState<Set<string>>(new Set());
   const [wbChecked, setWbChecked] = useState<Set<string>>(new Set());
@@ -222,10 +236,16 @@ export default function DomainPickerPage() {
   // Bước 6: chỉ giữ domain rating Tốt / Trung bình. Ưu tiên tập Clean của lần chạy;
   // nếu vào thẳng Bước 6 (upload kết quả rời) thì lấy toàn bộ domain đã có rating.
   const buyList = useMemo(() => {
-    const isGood = (d: string) => { const r = ratings[d] ?? ""; return r.includes("TỐT") || r.includes("TRUNG BÌNH"); };
+    // TỐT → luôn giữ. TRUNG BÌNH → chỉ giữ nếu CÓ ref DR > 90 (không có thì loại).
+    const isGood = (d: string) => {
+      const r = ratings[d] ?? "";
+      if (r.includes("TỐT")) return true;
+      if (r.includes("TRUNG BÌNH")) return hasRefOver90(details[d]);
+      return false;
+    };
     const base = cleanDomains.length ? cleanDomains : Object.keys(ratings);
-    return base.filter((d) => isGood(d) && !owned.has(d));   // ẩn domain đã mua (owned)
-  }, [cleanDomains, ratings, owned]);
+    return base.filter((d) => isGood(d) && !owned.has(d) && !excluded.has(d));   // ẩn đã mua + đã loại trừ
+  }, [cleanDomains, ratings, details, owned, excluded]);
   // Bảng trạng thái (step ≥ 3): ẩn domain Gname trả "registered" (đã đăng ký /
   // reserved — không mua được) khỏi view. Vẫn giữ available/backorder/premium,
   // domain đang check (status chưa có) và domain lỗi để còn theo dõi.
@@ -360,6 +380,20 @@ export default function DomainPickerPage() {
       setBuyNote({ ok: false, msg: e instanceof Error ? e.message : "Lỗi mua" });
     } finally { setBuying(false); }
   }, [ratings, rdap, pricing, boChannel, toast]);
+
+  // Loại trừ thủ công domain đã chọn ở Bước 6 → đánh dấu excluded (target_assessment)
+  // để biến mất khỏi danh sách + không quay lại ở lần chạy pipeline sau.
+  const excludeDomains = useCallback(async (domains: string[]) => {
+    if (!domains.length) return;
+    if (!confirm(`Loại trừ ${domains.length} domain khỏi danh sách đáng mua?`)) return;
+    try {
+      const res = await fetch("/api/ahrefs-results/db/exclude", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ targets: domains }) });
+      if (!res.ok) throw new Error((await res.json()).error ?? "lỗi");
+      setExcluded((prev) => { const n = new Set(prev); for (const d of domains) n.add(d); return n; });
+      setSelectedBuy(new Set());
+      toast(`✅ Đã loại trừ ${domains.length} domain`);
+    } catch (e) { toast(`❌ ${e instanceof Error ? e.message : "lỗi loại trừ"}`, true); }
+  }, [toast]);
 
   // ── CUỐN CHIẾU: actor Wayback nào xong trước → gửi clean của actor đó qua DFS NGAY ──
   // (không chờ tất cả actor). Mỗi vòng poll (~10s) gom domain clean MỚI rồi gửi 1 lô.
@@ -568,7 +602,7 @@ export default function DomainPickerPage() {
     } finally { setRunning(false); }
   }, [gateErrors, running, runGateJob, pricing, boChannel, toast]);
 
-  const reset = () => { setStep(1); setDone(new Set()); setRaw([]); setAfterExclude([]); setGated([]); setGateSplit({ avail: 0, boTotal: 0, boUsed: 0 }); setGatingDone(false); setGateProgress(null); setGateErrors([]); setB2({ bought: [], flagged: [], nosnap: [], checked: [] }); setRdap({}); setWbStarted(false); setWebhookStatus("idle"); sentWbRef.current = new Set(); setRatings({}); setDetails({}); setCategories({}); setSelectedBuy(new Set()); setBuyNote(null); };
+  const reset = () => { setStep(1); setDone(new Set()); setRaw([]); setAfterExclude([]); setGated([]); setGateSplit({ avail: 0, boTotal: 0, boUsed: 0 }); setGatingDone(false); setGateProgress(null); setGateErrors([]); setB2({ bought: [], flagged: [], nosnap: [], checked: [] }); setRdap({}); setWbStarted(false); setWebhookStatus("idle"); sentWbRef.current = new Set(); setRatings({}); setDetails({}); setCategories({}); setSelectedBuy(new Set()); setExcluded(new Set()); setBuyNote(null); };
 
   const priceStr = (d: string): string => {
     const info = priceOf(rdap[d]?.status, tldOf(d), pricing, boChannel);
@@ -768,6 +802,9 @@ export default function DomainPickerPage() {
                       </Button>
                       <Button size="sm" disabled={buying || boSel.length === 0} onClick={() => buyDomains(boSel)} className="gap-1.5 bg-amber-500 hover:bg-amber-600 text-white">
                         {buying ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShoppingCart className="h-4 w-4" />}🟠 Backorder ({boSel.length})
+                      </Button>
+                      <Button size="sm" variant="outline" disabled={buying || sel.length === 0} onClick={() => excludeDomains(sel)} className="gap-1.5 text-rose-600 border-rose-200 hover:bg-rose-50" title="Loại các domain đã chọn khỏi danh sách (không quay lại lần chạy sau)">
+                        <Ban className="h-4 w-4" />Loại trừ ({sel.length})
                       </Button>
                     </div>
                   );
