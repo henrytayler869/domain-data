@@ -223,8 +223,8 @@ export default function DomainPickerPage() {
   const buyList = useMemo(() => {
     const isGood = (d: string) => { const r = ratings[d] ?? ""; return r.includes("TỐT") || r.includes("TRUNG BÌNH"); };
     const base = cleanDomains.length ? cleanDomains : Object.keys(ratings);
-    return base.filter(isGood);
-  }, [cleanDomains, ratings]);
+    return base.filter((d) => isGood(d) && !owned.has(d));   // ẩn domain đã mua (owned)
+  }, [cleanDomains, ratings, owned]);
   const wbStats = useMemo(() => {
     let clean = 0, flagged = 0, nosnap = 0, pending = 0;
     for (const d of gated) {
