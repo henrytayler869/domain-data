@@ -85,6 +85,11 @@ export default function AgedDomainPage() {
   const [dbSearch, setDbSearch] = useState("");
   const [backfilling, setBackfilling] = useState(false);
 
+  // ── Unmatched Refs (ref DataForSEO chưa có trong backlink_db) ─────────────────
+  const [unmatchedOpen, setUnmatchedOpen] = useState(false);
+  const [unmatchedRows, setUnmatchedRows] = useState<{ domain: string; seenCount: number; lastSeen: string }[]>([]);
+  const [unmatchedLoading, setUnmatchedLoading] = useState(false);
+
   // ── Tra cứu đánh giá nhiều domain ─────────────────────────────────────────────
   const [lookupText, setLookupText] = useState("");
   const [lookupRows, setLookupRows] = useState<LookupRow[] | null>(null);
@@ -123,6 +128,16 @@ export default function AgedDomainPage() {
   }, []);
 
   useEffect(() => { loadDb(); }, [loadDb]);
+
+  const loadUnmatched = useCallback(async () => {
+    setUnmatchedLoading(true);
+    try {
+      const d = await (await fetch("/api/backlink-db/unmatched")).json();
+      if (d.error) throw new Error(d.error);
+      setUnmatchedRows(d.rows ?? []);
+    } catch (err) { showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true); }
+    finally { setUnmatchedLoading(false); }
+  }, [showToast]);
 
   const addToDb = useCallback(async (entries: DbEntry[]) => {
     if (!entries.length) return null;
@@ -700,24 +715,6 @@ export default function AgedDomainPage() {
               </Button>
 
               <Button
-                size="sm" variant="outline" className="gap-1.5"
-                title="Ref domain DataForSEO tìm thấy nhưng CHƯA có trong Backlink DB — tải về để check DR rồi bổ sung."
-                onClick={async () => {
-                  try {
-                    const d = await (await fetch("/api/backlink-db/unmatched")).json();
-                    if (!d.total) { showToast("Chưa có unmatched ref nào", true); return; }
-                    const a = document.createElement("a");
-                    a.href = "/api/backlink-db/unmatched?format=csv";
-                    a.click();
-                    showToast(`✅ Tải ${d.total} unmatched ref (chưa có DR)`);
-                  } catch (err) { showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true); }
-                }}
-              >
-                <Download className="h-3.5 w-3.5" />
-                Unmatched refs (CSV)
-              </Button>
-
-              <Button
                 size="sm"
                 variant="outline"
                 className="gap-1.5 text-purple-700 border-purple-400/60 hover:bg-purple-50 dark:hover:bg-purple-950"
@@ -873,6 +870,55 @@ export default function AgedDomainPage() {
           </div>
         </div>
       )}
+
+      {/* ── Unmatched Refs ─────────────────────────────────────────────────────── */}
+      <div className="rounded-xl border bg-card">
+        <button
+          className="w-full flex items-center justify-between px-6 py-4"
+          onClick={() => { const n = !unmatchedOpen; setUnmatchedOpen(n); if (n && !unmatchedRows.length) loadUnmatched(); }}
+        >
+          <div className="flex items-center gap-2">
+            <Database className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold uppercase tracking-wide">Unmatched Refs</h2>
+            <span className="text-xs text-muted-foreground">ref DataForSEO chưa có DR — chờ bổ sung</span>
+          </div>
+          <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", unmatchedOpen && "rotate-180")} />
+        </button>
+        {unmatchedOpen && (
+          <div className="border-t px-6 pb-6">
+            <div className="flex items-center gap-2 py-4">
+              <Button size="sm" variant="outline" className="gap-1.5" onClick={loadUnmatched} disabled={unmatchedLoading}>
+                {unmatchedLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}Tải lại
+              </Button>
+              <Button size="sm" variant="outline" className="gap-1.5" disabled={!unmatchedRows.length}
+                onClick={() => { const a = document.createElement("a"); a.href = "/api/backlink-db/unmatched?format=csv"; a.click(); }}>
+                <Download className="h-3.5 w-3.5" />Export CSV
+              </Button>
+              <span className="text-xs text-muted-foreground ml-auto">{unmatchedRows.length} ref (chờ bổ sung vào Backlink DB)</span>
+            </div>
+            {unmatchedRows.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-6 text-center">Chưa có unmatched ref. Chạy pipeline (DataForSEO) để gom ref chưa có DR, rồi bấm &quot;Tải lại&quot;.</p>
+            ) : (
+              <div className="rounded-lg border overflow-auto max-h-[420px]">
+                <table className="w-full text-sm">
+                  <thead className="border-b bg-muted/40 text-left text-xs text-muted-foreground sticky top-0">
+                    <tr><th className="px-3 py-2">Ref Domain</th><th className="px-3 py-2">Số lần gặp</th><th className="px-3 py-2">Gặp gần nhất</th></tr>
+                  </thead>
+                  <tbody>
+                    {unmatchedRows.map((r) => (
+                      <tr key={r.domain} className="border-b last:border-0 hover:bg-muted/30">
+                        <td className="px-3 py-1.5 font-mono">{r.domain}</td>
+                        <td className="px-3 py-1.5 tabular-nums">{r.seenCount}</td>
+                        <td className="px-3 py-1.5 text-xs text-muted-foreground">{r.lastSeen?.slice(0, 10)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* ── Toasts ─────────────────────────────────────────────────────────────── */}
       <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none">
