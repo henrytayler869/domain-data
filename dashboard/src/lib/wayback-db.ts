@@ -214,3 +214,22 @@ export async function listRecentRuns(limit = 20): Promise<WaybackRunRow[]> {
   if (error) throw new Error(error.message);
   return (data as RunDbRow[] | null)?.map(rowToRun) ?? [];
 }
+
+/**
+ * TẤT CẢ run còn cần poll/ingest (KHÔNG giới hạn 20): đang chạy (READY/RUNNING)
+ * hoặc đã SUCCEEDED nhưng chưa ingest. Dùng cho sweep để thu gom hết, tránh bỏ
+ * rơi run khi 1 lần chạy tạo hàng trăm actor.
+ */
+export async function listPendingRuns(sinceHours = 12, limit = 3000): Promise<WaybackRunRow[]> {
+  const sb = supabase();
+  const since = new Date(Date.now() - sinceHours * 3600 * 1000).toISOString();
+  const { data, error } = await sb
+    .from(RUNS_TABLE)
+    .select("*")
+    .gte("started_at", since)
+    .or("status.in.(READY,RUNNING),and(status.eq.SUCCEEDED,ingested_at.is.null)")
+    .order("started_at", { ascending: true })
+    .limit(limit);
+  if (error) throw new Error(error.message);
+  return (data as RunDbRow[] | null)?.map(rowToRun) ?? [];
+}

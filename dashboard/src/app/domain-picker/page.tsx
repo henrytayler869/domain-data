@@ -221,14 +221,32 @@ export default function DomainPickerPage() {
     await Promise.all(Array.from({ length: Math.min(CONC, batches.length) }, () => worker()));
     await loadWb();
   }, [loadWb]);
-  const pollWb = useCallback(async (runId: string) => { try { await fetch(`/api/wayback/runs/${encodeURIComponent(runId)}`); await loadWb(); } catch { /* ignore */ } }, [loadWb]);
+  // Thu gom Wayback: POST /api/wayback/sweep poll+ingest HẾT run pending (không giới
+  // hạn 20), trả stillPending. Sau đó loadWb refresh results → effect cuốn chiếu gửi
+  // clean qua DFS. Trả về số run còn pending (-1 nếu lỗi mạng).
+  const sweepWb = useCallback(async (): Promise<number> => {
+    try {
+      const r = await fetch("/api/wayback/sweep", { method: "POST" });
+      const d = await r.json();
+      await loadWb();
+      return typeof d.stillPending === "number" ? d.stillPending : -1;
+    } catch { return -1; }
+  }, [loadWb]);
+  // Sweep mỗi 12s ở step 4–6 (KHÔNG dừng khi rời step 4 như bug cũ). Ngừng khi 2 lần
+  // liên tiếp hết run pending (chịu được việc gate cuốn chiếu thêm run mới sau đó).
   useEffect(() => {
-    if (step !== 4) return;
-    const runningRuns = wbRuns.filter((r) => r.status === "READY" || r.status === "RUNNING");
-    if (!runningRuns.length) return;
-    const id = setInterval(() => { for (const r of runningRuns) pollWb(r.runId); }, 10000);
-    return () => clearInterval(id);
-  }, [step, wbRuns, pollWb]);
+    if (step < 4 || step > 6 || !wbStarted) return;
+    let cancelled = false, zeros = 0;
+    const loop = async () => {
+      while (!cancelled) {
+        const pending = await sweepWb();
+        if (pending === 0) { if (++zeros >= 2) break; } else zeros = 0;
+        await sleep(12000);
+      }
+    };
+    loop();
+    return () => { cancelled = true; };
+  }, [step, wbStarted, sweepWb]);
 
   const wbByDomain = useMemo(() => { const m = new Map<string, WaybackRow>(); for (const r of wbResults) m.set(r.targetDomain, r); return m; }, [wbResults]);
   const inFlightWb = useMemo(() => { const s = new Set<string>(); for (const r of wbRuns) if (r.status === "READY" || r.status === "RUNNING") for (const d of r.targets) s.add(d); return s; }, [wbRuns]);
