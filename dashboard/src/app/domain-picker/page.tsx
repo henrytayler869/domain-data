@@ -118,7 +118,7 @@ export default function DomainPickerPage() {
 
   const [webhookStatus, setWebhookStatus] = useState<"idle" | "sending" | "ok" | "error">("idle");
   const [webhookMsg, setWebhookMsg] = useState("");
-  const sentRef = useRef(false);
+  const sentWbRef = useRef<Set<string>>(new Set()); // domain đã gửi DFS (cuốn chiếu — không gửi lại)
   const pollRef = useRef(0);
 
   // Bước 6 — Đáng mua
@@ -340,19 +340,30 @@ export default function DomainPickerPage() {
     } finally { setBuying(false); }
   }, [ratings, rdap, pricing, boChannel, toast]);
 
-  // ── Auto: Wayback xong → gửi Clean qua webhook (1 lần/run) ──
+  // ── CUỐN CHIẾU: actor Wayback nào xong trước → gửi clean của actor đó qua DFS NGAY ──
+  // (không chờ tất cả actor). Mỗi vòng poll (~10s) gom domain clean MỚI rồi gửi 1 lô.
   useEffect(() => {
-    if (step !== 4 || !wbStarted || !gatingDone || sentRef.current || !gated.length) return;
-    const stillRunning = gated.some((d) => inFlightWb.has(d) && !wbByDomain.has(d));
-    const engaged = gated.some((d) => wbByDomain.has(d) || inFlightWb.has(d));
-    if (!stillRunning && engaged) {
-      sentRef.current = true;
-      const clean = gated.filter((d) => { const wb = wbByDomain.get(d); return !!wb && !wb.hasBetting && !wb.hasAdult && (wb.snapshotCount ?? 0) > 0; });
-      setDone((p) => new Set(p).add(4)); setStep(5);
-      if (clean.length) sendWebhook(clean);
-      else { setWebhookStatus("idle"); toast("Không có domain Clean để gửi", true); }
+    if (step < 4 || step > 6 || !wbStarted || !gated.length) return;
+    const newClean = gated.filter((d) => {
+      if (sentWbRef.current.has(d)) return false;
+      const wb = wbByDomain.get(d);
+      return !!wb && !wb.hasBetting && !wb.hasAdult && (wb.snapshotCount ?? 0) > 0;
+    });
+    if (newClean.length) {
+      newClean.forEach((d) => sentWbRef.current.add(d));
+      setDone((p) => new Set(p).add(4));
+      if (step === 4) setStep(5);
+      sendWebhook(newClean); // sendWebhook tự sang Bước 6 (poll rating). Gọi nhiều lần = gửi nhiều lô.
     }
-  }, [step, wbStarted, gatingDone, gated, wbByDomain, inFlightWb, sendWebhook, toast]);
+  }, [step, wbStarted, gated, wbByDomain, sendWebhook]);
+
+  // ── Wayback xong HẾT mà 0 clean nào → sang Bước 6 (hiện "0 đáng mua") + báo ──
+  useEffect(() => {
+    if (step < 4 || step >= 6 || !wbStarted || !gatingDone || !gated.length || sentWbRef.current.size > 0) return;
+    const running = gated.some((d) => inFlightWb.has(d) && !wbByDomain.has(d));
+    const engaged = gated.some((d) => wbByDomain.has(d) || inFlightWb.has(d));
+    if (!running && engaged) { setDone((p) => new Set(p).add(4).add(5)); setStep(6); setWebhookStatus("idle"); toast("Không có domain Clean để gửi", true); }
+  }, [step, wbStarted, gatingDone, gated, wbByDomain, inFlightWb, toast]);
 
   // ── Bước 6 AUTO-POLL: N8N chạy xong ghi rating → tự lấy (mỗi 15s, tối đa ~10 phút) ──
   useEffect(() => {
@@ -372,7 +383,7 @@ export default function DomainPickerPage() {
   const runPipeline = useCallback(async () => {
     const parsed = parseDomains(pasteText);
     if (!parsed.length) { toast("Không có domain hợp lệ", true); return; }
-    setRunning(true); sentRef.current = false; setWbStarted(false); setWebhookStatus("idle");
+    setRunning(true); sentWbRef.current = new Set(); setWbStarted(false); setWebhookStatus("idle");
     setRaw(parsed); setRdap({}); setGated([]);
 
     // B2: lọc mới (bounded query DFS/Ahrefs)
@@ -410,7 +421,7 @@ export default function DomainPickerPage() {
 
     // B3-4: CUỐN CHIẾU — check Gname 500/lần, lọc "Mua ngay" (available) GỬI WAYBACK NGAY
     // rồi tiếp chunk sau. Wayback bắt đầu sớm thay vì chờ hết ~7000 Gname check.
-    setStep(3); setGatingDone(false); sentRef.current = false;
+    setStep(3); setGatingDone(false); sentWbRef.current = new Set();
     const CHUNK = 500;
     const availAll: string[] = [], backAll: string[] = [], gatedAcc: string[] = [];
     let boTotal = 0, enteredWb = false;
@@ -439,7 +450,7 @@ export default function DomainPickerPage() {
     setRunning(false); // Wayback chạy async → effect tự gửi webhook khi xong
   }, [pasteText, owned, wbFlagged, wbNoSnap, wbChecked, pricing, boChannel, runRdap, startWayback, toast]);
 
-  const reset = () => { setStep(1); setDone(new Set()); setRaw([]); setAfterExclude([]); setGated([]); setGateSplit({ avail: 0, boTotal: 0, boUsed: 0 }); setGatingDone(false); setB2({ bought: [], flagged: [], nosnap: [], checked: [] }); setRdap({}); setWbStarted(false); setWebhookStatus("idle"); sentRef.current = false; setRatings({}); setDetails({}); setSelectedBuy(new Set()); setBuyNote(null); };
+  const reset = () => { setStep(1); setDone(new Set()); setRaw([]); setAfterExclude([]); setGated([]); setGateSplit({ avail: 0, boTotal: 0, boUsed: 0 }); setGatingDone(false); setB2({ bought: [], flagged: [], nosnap: [], checked: [] }); setRdap({}); setWbStarted(false); setWebhookStatus("idle"); sentWbRef.current = new Set(); setRatings({}); setDetails({}); setSelectedBuy(new Set()); setBuyNote(null); };
 
   const priceStr = (d: string): string => {
     const info = priceOf(rdap[d]?.status, tldOf(d), pricing, boChannel);
