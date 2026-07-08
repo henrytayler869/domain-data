@@ -90,6 +90,14 @@ export interface GnameCheckResult {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Trạng thái gate rút gọn dùng chung (route check + gate job + cache). */
+export type GnameStatus = "available" | "premium" | "backorder" | "registered" | "error";
+
+/** Map GnameCheckResult → status gate (khớp shape /api/gname/check). */
+export function statusOf(c: GnameCheckResult): GnameStatus {
+  return c.error ? "error" : c.premium ? "premium" : c.available ? "available" : c.backorderable ? "backorder" : "registered";
+}
+
 export interface GnameBackorderChannel {
   channel_name: string;
   price: number;

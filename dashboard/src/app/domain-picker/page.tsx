@@ -27,6 +27,13 @@ type RdapRow = { domain: string; status: string; dropEta: string | null };
 type WaybackRow = { targetDomain: string; snapshotCount: number | null; hasBetting: boolean; hasAdult: boolean; errorReason: string | null };
 type WaybackRun = { runId: string; status: string; targets: string[] };
 type Price = { register: number | null; backorder: number | null; deposit: number | null };
+// Trạng thái job gate (server-side) — khớp GET /api/picker/gate/status.
+type GateJobStatus = {
+  id: string; status: string; total: number; checked: number; available: number;
+  backorder: number; registered: number; errored: number; cached: number;
+  result: { available: string[]; premium: string[]; backorder: { domain: string; dropEta: string | null }[]; error: string[] };
+  errorMsg: string | null; createdAt: string; updatedAt: string;
+};
 
 function parseDomains(text: string): string[] {
   const seen = new Set<string>();
@@ -42,6 +49,8 @@ const DOMAIN_RE = /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/;
 
 // Kênh backorder Gname (Channel 2 = $26) — giá + deposit + TLD hỗ trợ.
 type BoChannel = { price: number; deposit: number; tlds: string[] };
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // Có mua được không + giá, theo trạng thái Gname:
 //   available  → đăng ký (giá register)   registered → backorder Channel 2 ($26)
@@ -111,6 +120,9 @@ export default function DomainPickerPage() {
   const [boChannel, setBoChannel] = useState<BoChannel | null>(null);
   const [gateSplit, setGateSplit] = useState({ avail: 0, boTotal: 0, boUsed: 0 });
   const [gatingDone, setGatingDone] = useState(false); // đã check Gname + gate HẾT chunk chưa (cuốn chiếu)
+  // Tiến độ gate job (server-side): đã check N/total + phân loại. null = chưa chạy.
+  const [gateProgress, setGateProgress] = useState<{ checked: number; total: number; available: number; backorder: number; registered: number; errored: number; cached: number } | null>(null);
+  const [gateErrors, setGateErrors] = useState<string[]>([]); // domain check Gname lỗi → cho "Chạy lại domain lỗi"
 
   const [rdap, setRdap] = useState<Record<string, RdapRow>>({});
   const [wbResults, setWbResults] = useState<WaybackRow[]>([]);
@@ -178,19 +190,6 @@ export default function DomainPickerPage() {
   };
 
   // ── Gname check (mua được?): trả về map (không dựa state để tránh stale) ──
-  const runRdap = useCallback(async (domains: string[]): Promise<Record<string, RdapRow>> => {
-    const acc: Record<string, RdapRow> = {};
-    const BATCH = 25;
-    for (let i = 0; i < domains.length; i += BATCH) {
-      try {
-        const res = await fetch("/api/gname/check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains: domains.slice(i, i + BATCH) }) });
-        for (const r of (await res.json()).results ?? []) acc[r.domain] = r;
-        setRdap((prev) => ({ ...prev, ...acc }));   // merge → gọi theo chunk vẫn giữ kết quả cũ
-      } catch { /* ignore */ }
-    }
-    return acc;
-  }, []);
-
   const loadWb = useCallback(async () => {
     try {
       const [r1, r2] = await Promise.all([fetch("/api/wayback/results"), fetch("/api/wayback/runs")]);
@@ -230,8 +229,11 @@ export default function DomainPickerPage() {
   // Bảng trạng thái (step ≥ 3): ẩn domain Gname trả "registered" (đã đăng ký /
   // reserved — không mua được) khỏi view. Vẫn giữ available/backorder/premium,
   // domain đang check (status chưa có) và domain lỗi để còn theo dõi.
+  // Chỉ hiện domain ĐÃ phân loại & mua được/đáng chú ý (available/backorder/premium/error).
+  // Ẩn "registered" (đã đăng ký) lẫn domain chưa check xong (gate 6000+ domain → tránh
+  // hàng nghìn dòng "…"). Tiến độ tổng xem ở thanh "Tiến trình gate".
   const tableRows = useMemo(
-    () => afterExclude.filter((d) => rdap[d]?.status !== "registered"),
+    () => afterExclude.filter((d) => { const s = rdap[d]?.status; return !!s && s !== "registered"; }),
     [afterExclude, rdap],
   );
   // Đã gửi qua DataForSEO (N8N) nhưng CHƯA nhận rating về → số domain còn đang chờ.
@@ -410,6 +412,91 @@ export default function DomainPickerPage() {
     }
   }, [cleanDomains, ratings, toast]);
 
+  // ── GATE (Bước 3) chạy NỀN server-side ──
+  // Tạo job check Gname trên VPS rồi POLL tiến độ. Domain "mua được & giá ≤ $26"
+  // xuất hiện tới đâu → gửi Wayback tới đó (cuốn chiếu). Không phụ thuộc tab mở /
+  // proxy timeout. Trả { gated, done, boTotal, boUsed, errored }.
+  const runGateJob = useCallback(async (
+    fresh: string[],
+    pr: Record<string, Price>,
+    bo: BoChannel | null,
+  ): Promise<{ gated: string[]; done: boolean; boTotal: number; boUsed: number; errored: number }> => {
+    setGateProgress({ checked: 0, total: fresh.length, available: 0, backorder: 0, registered: 0, errored: 0, cached: 0 });
+    setGateErrors([]);
+    let jobId = "";
+    try {
+      const r = await fetch("/api/picker/gate/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains: fresh }) });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error);
+      jobId = d.jobId;
+    } catch (e) {
+      toast(`❌ Không tạo được job gate: ${e instanceof Error ? e.message : "lỗi"}`, true);
+      return { gated: [], done: false, boTotal: 0, boUsed: 0, errored: 0 };
+    }
+
+    // lọc theo giá ≤ $26 (job chỉ phân loại status; giá do priceOf quyết định)
+    const eligible = (d: string, status: "available" | "backorder") => {
+      const info = priceOf(status, tldOf(d), pr, bo);
+      return info.acquirable && info.price != null && info.price <= MAX_PRICE;
+    };
+
+    const sentAvail = new Set<string>();
+    const gatedAcc: string[] = [];
+    let enteredWb = false;
+    const enterWb = () => { if (!enteredWb) { enteredWb = true; setWbStarted(true); setStep(4); setDone((p) => new Set(p).add(3)); } };
+
+    let lastUpdatedAt = "", stalled = 0;
+    for (;;) {
+      await sleep(2500);
+      let job: GateJobStatus;
+      try {
+        const r = await fetch(`/api/picker/gate/status?jobId=${jobId}`);
+        job = await r.json();
+        if (!r.ok) throw new Error((job as unknown as { error?: string }).error);
+      } catch { continue; }   // lỗi mạng tạm → poll lại
+
+      setGateProgress({ checked: job.checked, total: job.total, available: job.available, backorder: job.backorder, registered: job.registered, errored: job.errored, cached: job.cached });
+
+      // set rdap cho domain đáng chú ý (badge + priceStr + bảng)
+      const patch: Record<string, RdapRow> = {};
+      for (const d of job.result.available) patch[d] = { domain: d, status: "available", dropEta: null };
+      for (const d of job.result.premium) patch[d] = { domain: d, status: "premium", dropEta: null };
+      for (const b of job.result.backorder) patch[b.domain] = { domain: b.domain, status: "backorder", dropEta: b.dropEta };
+      for (const d of job.result.error) patch[d] = { domain: d, status: "error", dropEta: null };
+      if (Object.keys(patch).length) setRdap((prev) => ({ ...prev, ...patch }));
+
+      // cuốn chiếu: available (giá ≤ $26) MỚI → gửi Wayback ngay
+      const newAvail = job.result.available.filter((d) => eligible(d, "available") && !sentAvail.has(d));
+      if (newAvail.length) {
+        newAvail.forEach((d) => sentAvail.add(d));
+        enterWb();
+        gatedAcc.push(...newAvail);
+        setGated((prev) => Array.from(new Set([...prev, ...newAvail])));   // APPEND (giữ gated cũ khi chạy lại lô lỗi)
+        await startWayback(newAvail);
+      }
+      const boEligible = job.result.backorder.map((b) => b.domain).filter((d) => eligible(d, "backorder"));
+      setGateSplit({ avail: sentAvail.size, boTotal: boEligible.length, boUsed: Math.min(boEligible.length, BACKORDER_CAP) });
+
+      if (job.updatedAt === lastUpdatedAt) stalled++; else { stalled = 0; lastUpdatedAt = job.updatedAt; }
+
+      if (job.status === "done") {
+        const backAll = boEligible.slice(0, BACKORDER_CAP);
+        if (backAll.length) { enterWb(); gatedAcc.push(...backAll); setGated((prev) => Array.from(new Set([...prev, ...backAll]))); await startWayback(backAll); }
+        setGateErrors(job.result.error);
+        return { gated: gatedAcc, done: true, boTotal: boEligible.length, boUsed: backAll.length, errored: job.result.error.length };
+      }
+      if (job.status === "error") {
+        toast(`❌ Job gate lỗi: ${job.errorMsg ?? "unknown"}`, true);
+        setGateErrors(job.result.error);
+        return { gated: gatedAcc, done: false, boTotal: boEligible.length, boUsed: 0, errored: job.result.error.length };
+      }
+      if (stalled >= 36) {   // ~90s không nhích → server có thể restart
+        toast("⚠️ Job gate có vẻ đứng (server restart?) — chạy lại pipeline để tiếp tục.", true);
+        return { gated: gatedAcc, done: false, boTotal: boEligible.length, boUsed: 0, errored: job.result.error.length };
+      }
+    }
+  }, [startWayback, toast]);
+
   // ── ORCHESTRATOR ──
   const runPipeline = useCallback(async () => {
     const parsed = parseDomains(pasteText);
@@ -450,38 +537,38 @@ export default function DomainPickerPage() {
       } catch { /* ignore */ }
     }
 
-    // B3-4: CUỐN CHIẾU — check Gname 500/lần, lọc "Mua ngay" (available) GỬI WAYBACK NGAY
-    // rồi tiếp chunk sau. Wayback bắt đầu sớm thay vì chờ hết ~7000 Gname check.
+    // B3-4: gate chạy NỀN server-side (runGateJob) — check Gname 6000+ domain không
+    // phụ thuộc tab mở / proxy timeout. Domain "mua được & giá ≤ $26" xuất hiện tới
+    // đâu → cuốn chiếu gửi Wayback tới đó.
     setStep(3); setGatingDone(false); sentWbRef.current = new Set();
-    const CHUNK = 500;
-    const availAll: string[] = [], backAll: string[] = [], gatedAcc: string[] = [];
-    let boTotal = 0, enteredWb = false;
-    const enterWb = () => { if (!enteredWb) { enteredWb = true; setWbStarted(true); setStep(4); setDone((p) => new Set(p).add(3)); } };
-    for (let i = 0; i < fresh.length; i += CHUNK) {
-      const chunk = fresh.slice(i, i + CHUNK);
-      const rd = await runRdap(chunk);   // Gname check chunk này (merge vào rdap state)
-      const availChunk: string[] = [], backChunk: string[] = [];
-      for (const d of chunk) {
-        const info = priceOf(rd[d]?.status, tldOf(d), pr, bo);
-        if (!info.acquirable || info.price == null || info.price > MAX_PRICE) continue;
-        (info.mode === "backorder" ? backChunk : availChunk).push(d);
-      }
-      boTotal += backChunk.length;
-      availAll.push(...availChunk);
-      for (const d of backChunk) if (backAll.length < BACKORDER_CAP) backAll.push(d);
-      if (availChunk.length) { enterWb(); gatedAcc.push(...availChunk); setGated([...gatedAcc]); await startWayback(availChunk); }  // gửi available NGAY
-      setGateSplit({ avail: availAll.length, boTotal, boUsed: backAll.length });
-    }
-    // Hết chunk: gửi backorder (đã cap) qua Wayback
-    if (backAll.length) { enterWb(); gatedAcc.push(...backAll); setGated([...gatedAcc]); await startWayback(backAll); }
+    const g = await runGateJob(fresh, pr, bo);
     setDone((p) => new Set(p).add(3).add(4));
-    setGatingDone(true);   // đã gate HẾT chunk → effect được phép gửi DFS khi Wayback xong
-    if (!gatedAcc.length) { setStep(3); toast("Không domain nào mua được & giá ≤ $26", true); setRunning(false); return; }
-    if (boTotal > backAll.length) toast(`Backorder: chạy ${backAll.length}/${boTotal} (cap ${BACKORDER_CAP}/lần) — chạy lại để lấy tiếp`, false);
+    setGatingDone(true);   // gate xong → effect được phép gửi DFS khi Wayback xong
+    if (!g.gated.length) {
+      setStep(3);
+      toast(g.done ? "Không domain nào mua được & giá ≤ $26" : "Gate chưa xong — chạy lại để tiếp tục", true);
+      setRunning(false);
+      return;
+    }
+    if (g.done && g.boTotal > g.boUsed) toast(`Backorder: chạy ${g.boUsed}/${g.boTotal} (cap ${BACKORDER_CAP}/lần) — chạy lại để lấy tiếp`, false);
+    if (g.done && g.errored > 0) toast(`⚠️ ${g.errored} domain check Gname lỗi — bấm "Chạy lại domain lỗi"`, false);
     setRunning(false); // Wayback chạy async → effect tự gửi webhook khi xong
-  }, [pasteText, owned, wbFlagged, wbNoSnap, wbChecked, pricing, boChannel, runRdap, startWayback, toast]);
+  }, [pasteText, owned, wbFlagged, wbNoSnap, wbChecked, pricing, boChannel, runGateJob, startWayback, toast]);
 
-  const reset = () => { setStep(1); setDone(new Set()); setRaw([]); setAfterExclude([]); setGated([]); setGateSplit({ avail: 0, boTotal: 0, boUsed: 0 }); setGatingDone(false); setB2({ bought: [], flagged: [], nosnap: [], checked: [] }); setRdap({}); setWbStarted(false); setWebhookStatus("idle"); sentWbRef.current = new Set(); setRatings({}); setDetails({}); setCategories({}); setSelectedBuy(new Set()); setBuyNote(null); };
+  // Chạy lại CHỈ các domain check Gname lỗi (timeout / rate-limit) — gom từ job trước.
+  const retryGateErrors = useCallback(async () => {
+    if (!gateErrors.length || running) return;
+    const errs = [...gateErrors];
+    setRunning(true);
+    try {
+      const g = await runGateJob(errs, pricing, boChannel);
+      setGatingDone(true);
+      if (g.done && g.errored > 0) toast(`⚠️ Vẫn còn ${g.errored} domain lỗi`, true);
+      else if (g.done) toast("✅ Đã chạy lại xong domain lỗi");
+    } finally { setRunning(false); }
+  }, [gateErrors, running, runGateJob, pricing, boChannel, toast]);
+
+  const reset = () => { setStep(1); setDone(new Set()); setRaw([]); setAfterExclude([]); setGated([]); setGateSplit({ avail: 0, boTotal: 0, boUsed: 0 }); setGatingDone(false); setGateProgress(null); setGateErrors([]); setB2({ bought: [], flagged: [], nosnap: [], checked: [] }); setRdap({}); setWbStarted(false); setWebhookStatus("idle"); sentWbRef.current = new Set(); setRatings({}); setDetails({}); setCategories({}); setSelectedBuy(new Set()); setBuyNote(null); };
 
   const priceStr = (d: string): string => {
     const info = priceOf(rdap[d]?.status, tldOf(d), pricing, boChannel);
@@ -580,6 +667,31 @@ export default function DomainPickerPage() {
             <Stat l="Gửi DFS" v={webhookStatus === "ok" ? cleanDomains.length : 0} c="text-violet-600" />
           </div>
           <p className="text-[11px] text-muted-foreground">Loại B2: đã mua {b2.bought.length} · flagged {b2.flagged.length} · no-snap {b2.nosnap.length} · đã check {b2.checked.length}. Gate ≤${MAX_PRICE}: 🟢 {gateSplit.avail} available + 🟠 {gateSplit.boUsed}/{gateSplit.boTotal} backorder (cap {BACKORDER_CAP}/lần). Wayback: flagged {wbStats.flagged} · no-snap {wbStats.nosnap} · đang chạy {wbStats.pending}.</p>
+
+          {/* Tiến độ gate Gname (server-side) */}
+          {gateProgress && (
+            <div className="rounded-lg border bg-muted/30 p-3 flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2 text-xs">
+                  {gateProgress.checked < gateProgress.total
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-600" />
+                    : <span className="text-emerald-600">✓</span>}
+                  <span className="font-medium">Gate Gname: đã check {gateProgress.checked.toLocaleString()}/{gateProgress.total.toLocaleString()}</span>
+                  <span className="text-muted-foreground">
+                    · 🟢 {gateProgress.available} available · 🟠 {gateProgress.backorder} backorder · ⚪ {gateProgress.registered.toLocaleString()} đã đăng ký · ⚠️ {gateProgress.errored} lỗi{gateProgress.cached > 0 ? ` · ♻️ ${gateProgress.cached.toLocaleString()} cache` : ""}
+                  </span>
+                </div>
+                {gateErrors.length > 0 && !running && (
+                  <Button size="sm" variant="outline" onClick={retryGateErrors} className="gap-1.5 h-7 text-amber-700 border-amber-300 hover:bg-amber-50">
+                    <RotateCcw className="h-3.5 w-3.5" />Chạy lại {gateErrors.length} domain lỗi
+                  </Button>
+                )}
+              </div>
+              <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                <div className="h-full bg-blue-500 transition-all" style={{ width: `${gateProgress.total ? Math.round((gateProgress.checked / gateProgress.total) * 100) : 0}%` }} />
+              </div>
+            </div>
+          )}
 
           {step === 5 && (
             <div className="rounded-lg border bg-muted/30 p-3 flex flex-col gap-2">

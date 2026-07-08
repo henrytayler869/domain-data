@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { checkDomainsMany } from "@/lib/gname";
+import { checkDomainsMany, statusOf } from "@/lib/gname";
 
 /**
  * POST /api/gname/check
@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
     const results = checks.map((c) => ({
       domain: c.domain,
       // backorderable (registered + đang rớt, Gname dropcatch) → "backorder"; registered thuần → không mua được
-      status: c.error ? "error" : c.premium ? "premium" : c.available ? "available" : c.backorderable ? "backorder" : "registered",
+      status: statusOf(c),
       dropEta: c.deletionDate,
       ...(request.nextUrl.searchParams.get("debug") ? { code: c.code, msg: c.msg } : {}),
     }));
