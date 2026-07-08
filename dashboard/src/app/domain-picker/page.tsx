@@ -125,6 +125,7 @@ export default function DomainPickerPage() {
   // Bước 6 — Đáng mua
   const [ratings, setRatings] = useState<Record<string, string | null>>({});
   const [details, setDetails] = useState<Record<string, string | null>>({}); // ref-summary (DK1/DK2) từ N8N
+  const [categories, setCategories] = useState<Record<string, string | null>>({}); // phân loại (giống Kho Domain)
   const [loadingRatings, setLoadingRatings] = useState(false);
   const [selectedBuy, setSelectedBuy] = useState<Set<string>>(new Set());
   const [buying, setBuying] = useState(false);
@@ -267,6 +268,11 @@ export default function DomainPickerPage() {
       setDetails((prev) => {
         const m = { ...prev };
         for (const a of d.assessments ?? []) m[String(a.domain).toLowerCase()] = a.detail ?? null;
+        return m;
+      });
+      setCategories((prev) => {
+        const m = { ...prev };
+        for (const a of d.assessments ?? []) m[String(a.domain).toLowerCase()] = a.category ?? null;
         return m;
       });
     } catch { /* ignore */ } finally { setLoadingRatings(false); }
@@ -451,7 +457,7 @@ export default function DomainPickerPage() {
     setRunning(false); // Wayback chạy async → effect tự gửi webhook khi xong
   }, [pasteText, owned, wbFlagged, wbNoSnap, wbChecked, pricing, boChannel, runRdap, startWayback, toast]);
 
-  const reset = () => { setStep(1); setDone(new Set()); setRaw([]); setAfterExclude([]); setGated([]); setGateSplit({ avail: 0, boTotal: 0, boUsed: 0 }); setGatingDone(false); setB2({ bought: [], flagged: [], nosnap: [], checked: [] }); setRdap({}); setWbStarted(false); setWebhookStatus("idle"); sentWbRef.current = new Set(); setRatings({}); setDetails({}); setSelectedBuy(new Set()); setBuyNote(null); };
+  const reset = () => { setStep(1); setDone(new Set()); setRaw([]); setAfterExclude([]); setGated([]); setGateSplit({ avail: 0, boTotal: 0, boUsed: 0 }); setGatingDone(false); setB2({ bought: [], flagged: [], nosnap: [], checked: [] }); setRdap({}); setWbStarted(false); setWebhookStatus("idle"); sentWbRef.current = new Set(); setRatings({}); setDetails({}); setCategories({}); setSelectedBuy(new Set()); setBuyNote(null); };
 
   const priceStr = (d: string): string => {
     const info = priceOf(rdap[d]?.status, tldOf(d), pricing, boChannel);
@@ -633,7 +639,7 @@ export default function DomainPickerPage() {
               <div className="rounded-lg border overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
-                    <tr><th className="px-3 py-2 w-8"></th><th className="px-3 py-2">Domain</th><th className="px-3 py-2">Rating</th><th className="px-3 py-2">Ref (DK1/DK2)</th><th className="px-3 py-2">Giá</th></tr>
+                    <tr><th className="px-3 py-2 w-8"></th><th className="px-3 py-2">Domain</th><th className="px-3 py-2">Rating</th><th className="px-3 py-2">Phân loại</th><th className="px-3 py-2">Ref (DK1/DK2)</th><th className="px-3 py-2">Giá</th></tr>
                   </thead>
                   <tbody>
                     {buyList.map((d) => (
@@ -641,6 +647,7 @@ export default function DomainPickerPage() {
                         <td className="px-3 py-1.5"><input type="checkbox" checked={selectedBuy.has(d)} onChange={() => setSelectedBuy((p) => { const n = new Set(p); if (n.has(d)) n.delete(d); else n.add(d); return n; })} /></td>
                         <td className="px-3 py-1.5 font-medium"><a href={`https://${d}`} target="_blank" rel="noreferrer" className="hover:underline">{d}</a></td>
                         <td className="px-3 py-1.5 text-xs">{(ratings[d] ?? "").includes("TỐT") ? <span className="text-emerald-700 font-medium">✅ TỐT</span> : <span className="text-amber-600">⚠️ TRUNG BÌNH</span>}</td>
+                        <td className="px-3 py-1.5 text-xs max-w-[180px] truncate" title={categories[d] ?? ""}>{categories[d] ?? "—"}</td>
                         <td className="px-3 py-1.5 text-xs text-muted-foreground max-w-[320px] truncate" title={details[d] ?? ""}>{details[d] ?? "—"}</td>
                         <td className="px-3 py-1.5 tabular-nums text-xs">{priceStr(d)}</td>
                       </tr>

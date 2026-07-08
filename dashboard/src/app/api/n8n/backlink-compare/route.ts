@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readDb, readTrafficMap } from "@/lib/backlink-db";
 import { rootDomain } from "@/lib/root-domain";
+import { REF_BLACKLIST_SET } from "@/lib/picker-csv";
+import { readAll as readRefBlacklist } from "@/lib/ref-blacklist-db";
 
 /**
  * POST /api/n8n/backlink-compare
@@ -50,14 +52,22 @@ export async function POST(request: NextRequest) {
         .filter((r) => /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/.test(r)),
     ));
 
-    // Lookup DR + traffic từ backlink_db.
-    const [dbEntries, trafficRows] = await Promise.all([readDb(), readTrafficMap()]);
+    // Lookup DR + traffic từ backlink_db + gộp Ref BLACKLIST (hardcoded + user-added).
+    const [dbEntries, trafficRows, userBl] = await Promise.all([
+      readDb(),
+      readTrafficMap(),
+      readRefBlacklist().catch(() => []),   // bảng có thể chưa tạo — bỏ qua
+    ]);
     const drMap = new Map(dbEntries.map((e) => [e.domain.toLowerCase(), e.dr]));
     const trafficMap = new Map(trafficRows.map((r) => [r.domain.toLowerCase(), r.traffic]));
+    const blacklist = new Set<string>(REF_BLACKLIST_SET);
+    for (const e of userBl) blacklist.add(e.domain.toLowerCase());
 
     const matched: { domain: string; dr: number; traffic: number | null }[] = [];
     const unmatched: string[] = [];
+    const blacklisted: string[] = [];
     for (const root of roots) {
+      if (blacklist.has(root)) { blacklisted.push(root); continue; }   // LOẠI ref blacklist (dù DR cao)
       const dr = drMap.get(root);
       if (dr == null) {
         unmatched.push(root);
@@ -77,8 +87,10 @@ export async function POST(request: NextRequest) {
       total: roots.length,
       matchedCount: matched.length,
       unmatchedCount: unmatched.length,
-      matched,
+      blacklistedCount: blacklisted.length,
+      matched,          // ĐÃ loại blacklist → refsString/maxDr/dk1Count đều sạch
       unmatched,
+      blacklisted,
       refsString,
       maxDr,
       dk1Count,
