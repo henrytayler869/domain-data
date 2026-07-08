@@ -463,7 +463,7 @@ export default function DomainPickerPage() {
     if (!st) return <span className="text-muted-foreground text-xs">…</span>;
     if (st === "available") return <span className="text-emerald-700 font-bold text-xs">🟢 MUA ĐƯỢC</span>;
     if (st === "premium") return <span className="text-purple-600 text-xs" title="Domain premium — Gname không cho tự mua giá thường">⭐ Premium</span>;
-    if (st === "backorder") return <span className="text-amber-600 font-bold text-xs" title="Đang rớt — backorder qua Gname Channel 2 ($26, deposit $3 hoàn lại nếu không bắt được)">🟠 BACKORDER</span>;
+    if (st === "backorder") return <span className="text-amber-600 font-bold text-xs" title="Đang rớt — backorder qua Gname Channel 2 ($26, deposit $3 hoàn lại nếu không bắt được)">🟠 BACKORDER{rdap[d]?.dropEta ? ` · ${rdap[d]?.dropEta}` : ""}</span>;
     if (st === "registered") return <span className="text-muted-foreground text-xs" title="Đã có chủ / reserved — không mua được">⚪ đã đăng ký</span>;
     return <span className="text-orange-500 text-xs" title="Gname check lỗi (IP chưa whitelist / rate-limit / mạng) — bấm 'Làm lại' để thử lại.">⚠️ Gname lỗi</span>;
   };
@@ -613,9 +613,22 @@ export default function DomainPickerPage() {
                   <input type="checkbox" checked={selectedBuy.size === buyList.length && buyList.length > 0} onChange={(e) => setSelectedBuy(e.target.checked ? new Set(buyList) : new Set())} />
                   All ({buyList.length})
                 </label>
-                <Button size="sm" disabled={buying || selectedBuy.size === 0} onClick={() => buyDomains(Array.from(selectedBuy))} className="ml-auto gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white">
-                  {buying ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShoppingCart className="h-4 w-4" />}Mua đã chọn ({selectedBuy.size})
-                </Button>
+                {(() => {
+                  const sel = Array.from(selectedBuy);
+                  const modeOf = (d: string) => priceOf(rdap[d]?.status, tldOf(d), pricing, boChannel).mode;
+                  const availSel = sel.filter((d) => modeOf(d) === "register");
+                  const boSel = sel.filter((d) => modeOf(d) === "backorder");
+                  return (
+                    <div className="ml-auto flex items-center gap-2">
+                      <Button size="sm" disabled={buying || availSel.length === 0} onClick={() => buyDomains(availSel)} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white">
+                        {buying ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShoppingCart className="h-4 w-4" />}🟢 Mua Ngay ({availSel.length})
+                      </Button>
+                      <Button size="sm" disabled={buying || boSel.length === 0} onClick={() => buyDomains(boSel)} className="gap-1.5 bg-amber-500 hover:bg-amber-600 text-white">
+                        {buying ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShoppingCart className="h-4 w-4" />}🟠 Backorder ({boSel.length})
+                      </Button>
+                    </div>
+                  );
+                })()}
               </div>
               <div className="rounded-lg border overflow-x-auto">
                 <table className="w-full text-sm">

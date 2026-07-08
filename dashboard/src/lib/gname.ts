@@ -80,6 +80,10 @@ export interface GnameCheckResult {
   premium: boolean;
   /** Gọi check LỖI (IP chưa whitelist / mạng / rate-limit) — khác với "registered". */
   error: boolean;
+  /** registered + đang RỚT → có trong Gname dropcatch (is_backorder=1) → đặt backorder được. */
+  backorderable: boolean;
+  /** Ngày drop dự kiến (từ dropcatch) khi backorderable. */
+  deletionDate: string | null;
   code: number;
   msg: string;
 }
@@ -91,6 +95,27 @@ export interface GnameBackorderChannel {
   price: number;
   deposit: number;
   tlds: string[];
+}
+
+/**
+ * Check 1 domain CÓ BACKORDER ĐƯỢC qua Gname không (`/api/dropcatch/list`).
+ * Gname là thẩm quyền: domain đang RỚT + is_backorder=1 mới có trong list.
+ * Onsale / có-chủ / không-rớt → count 0 → không backorder được. (KHÔNG suy từ RDAP.)
+ */
+export async function checkBackorderable(domain: string): Promise<{ ok: boolean; deletionDate: string | null }> {
+  const ym = domain.toLowerCase().trim();
+  try {
+    const r = await gnamePost("/api/dropcatch/list", { inc_value: ym, page: "1", pagesize: "10" });
+    if (r.code === 1 && Array.isArray(r.data)) {
+      const hit = (r.data as Record<string, unknown>[]).find(
+        (x) => String(x.domain ?? "").toLowerCase() === ym && (x.is_backorder === 1 || x.is_backorder === "1"),
+      );
+      if (hit) return { ok: true, deletionDate: hit.deletion_date ? String(hit.deletion_date) : null };
+    }
+    return { ok: false, deletionDate: null };
+  } catch {
+    return { ok: false, deletionDate: null };
+  }
 }
 
 /** Danh sách kênh backorder của Gname (`/api/backorder/channel`) — giá + deposit + TLD. */
@@ -127,7 +152,7 @@ function classifyMsg(msg: string): "registered" | "ratelimit" | "iperror" | "oth
  */
 export async function checkDomain(domain: string, retries = 3): Promise<GnameCheckResult> {
   const ym = domain.toLowerCase().trim();
-  const base = { domain: ym, available: false, premium: false, error: false };
+  const base = { domain: ym, available: false, premium: false, error: false, backorderable: false, deletionDate: null as string | null };
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const r = await gnamePost("/api/domain/check", { domain: ym });
@@ -138,7 +163,11 @@ export async function checkDomain(domain: string, retries = 3): Promise<GnameChe
       }
       if (r.code === -3) return { ...base, available: true, premium: true, code: r.code, msg: r.msg };
       const kind = classifyMsg(String(r.msg ?? ""));
-      if (kind === "registered") return { ...base, available: false, code: r.code, msg: r.msg };
+      if (kind === "registered") {
+        // "registered" → có BACKORDER được không? Hỏi Gname dropcatch (thẩm quyền), KHÔNG suy từ RDAP.
+        const bo = await checkBackorderable(ym);
+        return { ...base, available: false, backorderable: bo.ok, deletionDate: bo.deletionDate, code: r.code, msg: r.msg };
+      }
       if (kind === "ratelimit" && attempt < retries) { await sleep(1200 * (attempt + 1)); continue; }
       return { ...base, error: true, code: r.code, msg: r.msg };   // iperror / other / hết retry
     } catch (err) {
