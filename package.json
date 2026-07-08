@@ -19,7 +19,7 @@
 		"format:check": "prettier --check .",
 		"lint": "eslint",
 		"lint:fix": "eslint --fix",
-		"test": "vitest run"
+		"test": "vitest run --passWithNoTests"
 	},
 	"author": "It's not you it's me",
 	"license": "ISC"
