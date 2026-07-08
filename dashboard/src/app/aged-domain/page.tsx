@@ -13,6 +13,7 @@ import {
   Loader2,
   Copy,
   Check,
+  Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -696,6 +697,24 @@ export default function AgedDomainPage() {
               >
                 <Upload className="h-3.5 w-3.5" />
                 Import CSV
+              </Button>
+
+              <Button
+                size="sm" variant="outline" className="gap-1.5"
+                title="Ref domain DataForSEO tìm thấy nhưng CHƯA có trong Backlink DB — tải về để check DR rồi bổ sung."
+                onClick={async () => {
+                  try {
+                    const d = await (await fetch("/api/backlink-db/unmatched")).json();
+                    if (!d.total) { showToast("Chưa có unmatched ref nào", true); return; }
+                    const a = document.createElement("a");
+                    a.href = "/api/backlink-db/unmatched?format=csv";
+                    a.click();
+                    showToast(`✅ Tải ${d.total} unmatched ref (chưa có DR)`);
+                  } catch (err) { showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true); }
+                }}
+              >
+                <Download className="h-3.5 w-3.5" />
+                Unmatched refs (CSV)
               </Button>
 
               <Button

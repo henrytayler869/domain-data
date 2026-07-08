@@ -3,6 +3,7 @@ import { readDb, readTrafficMap } from "@/lib/backlink-db";
 import { rootDomain } from "@/lib/root-domain";
 import { REF_BLACKLIST_SET } from "@/lib/picker-csv";
 import { readAll as readRefBlacklist } from "@/lib/ref-blacklist-db";
+import { upsertUnmatchedRefs } from "@/lib/unmatched-refs-db";
 
 /**
  * POST /api/n8n/backlink-compare
@@ -76,6 +77,10 @@ export async function POST(request: NextRequest) {
       }
     }
     matched.sort((a, b) => b.dr - a.dr);
+
+    // Lưu unmatched ref (DataForSEO có nhưng CHƯA trong backlink_db) để check DR sau.
+    // Đã loại blacklist. Không chặn response nếu bảng chưa tạo / lỗi.
+    if (unmatched.length) upsertUnmatchedRefs(unmatched).catch(() => {});
 
     const refsString = matched.map((m) => `${m.domain} (DR ${m.dr})`).join("; ");
     const maxDr = matched.length ? matched[0].dr : 0;
