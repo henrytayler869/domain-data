@@ -33,6 +33,23 @@ type SortKey = "domain" | "purchasePrice" | "sellPrice" | "expectedSellPrice" | 
 
 interface ToastItem { id: number; message: string; isError: boolean }
 
+/**
+ * Trích ref { domain, dr } từ chuỗi tóm tắt `detail` của target_assessment
+ * (domain mua qua pipeline không có ref rows, chỉ có chuỗi này).
+ * Định dạng: "DR>90:5 | d1 (DR 95); d2 (DR 92); …" hoặc "d1 (DR 95); …".
+ * Chuỗi không chứa ref (vd "DataForSEO (N8N)") → trả [].
+ */
+function parseDetailRefs(detail: string | null): { domain: string; dr: number }[] {
+  if (!detail) return [];
+  const body = detail.includes("|") ? detail.slice(detail.indexOf("|") + 1) : detail;
+  const out: { domain: string; dr: number }[] = [];
+  for (const part of body.split(/[;\n]+/)) {
+    const m = part.match(/([a-z0-9][a-z0-9.-]*\.[a-z]{2,})\s*\(\s*DR\s*(\d+)/i);
+    if (m) out.push({ domain: m[1].toLowerCase(), dr: Number(m[2]) });
+  }
+  return out;
+}
+
 export default function InventoryPage() {
   const [entries, setEntries] = useState<InventoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -97,7 +114,10 @@ export default function InventoryPage() {
   const refsByDomain = useMemo(() => {
     const m = new Map<string, { domain: string; dr: number }[]>();
     for (const t of ahrefsSummary) {
-      const filtered = t.refs.filter((r) => !blacklistSet.has(r.domain));
+      // Domain mua qua pipeline chỉ có ref trong chuỗi tóm tắt `detail`
+      // ("DR>90:5 | d1 (DR 95); d2 (DR 92)") chứ không có ref rows → parse fallback.
+      const base = t.refs.length ? t.refs : parseDetailRefs(t.detail);
+      const filtered = base.filter((r) => !blacklistSet.has(r.domain));
       m.set(t.targetDomain, filtered);
     }
     return m;

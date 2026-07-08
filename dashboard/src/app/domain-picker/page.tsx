@@ -227,6 +227,18 @@ export default function DomainPickerPage() {
     const base = cleanDomains.length ? cleanDomains : Object.keys(ratings);
     return base.filter((d) => isGood(d) && !owned.has(d));   // ẩn domain đã mua (owned)
   }, [cleanDomains, ratings, owned]);
+  // Bảng trạng thái (step ≥ 3): ẩn domain Gname trả "registered" (đã đăng ký /
+  // reserved — không mua được) khỏi view. Vẫn giữ available/backorder/premium,
+  // domain đang check (status chưa có) và domain lỗi để còn theo dõi.
+  const tableRows = useMemo(
+    () => afterExclude.filter((d) => rdap[d]?.status !== "registered"),
+    [afterExclude, rdap],
+  );
+  // Đã gửi qua DataForSEO (N8N) nhưng CHƯA nhận rating về → số domain còn đang chờ.
+  const dfsPending = useMemo(
+    () => cleanDomains.filter((d) => !(d in ratings)).length,
+    [cleanDomains, ratings],
+  );
   const wbStats = useMemo(() => {
     let clean = 0, flagged = 0, nosnap = 0, pending = 0;
     for (const d of gated) {
@@ -385,6 +397,18 @@ export default function DomainPickerPage() {
     }, 15000);
     return () => clearInterval(id);
   }, [step, cleanDomains, loadRatings]);
+
+  // ── Nhận ĐỦ rating từ DataForSEO (N8N) → toast 1 lần cho mỗi lô (reset khi có lô mới/chờ tiếp) ──
+  const dfsDoneRef = useRef(false);
+  useEffect(() => {
+    if (!cleanDomains.length) { dfsDoneRef.current = false; return; }
+    const pending = cleanDomains.filter((d) => !(d in ratings)).length;
+    if (pending > 0) { dfsDoneRef.current = false; return; }   // còn chờ → cho phép báo lại khi xong
+    if (!dfsDoneRef.current) {
+      dfsDoneRef.current = true;
+      toast(`✅ Đã nhận đủ kết quả DataForSEO (${cleanDomains.length} domain)`);
+    }
+  }, [cleanDomains, ratings, toast]);
 
   // ── ORCHESTRATOR ──
   const runPipeline = useCallback(async () => {
@@ -545,6 +569,7 @@ export default function DomainPickerPage() {
           <div className="flex items-center gap-2">
             <p className="text-sm font-medium">Tiến trình pipeline</p>
             {running && <span className="text-xs text-blue-600 inline-flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" />đang chạy…</span>}
+            {dfsPending > 0 && webhookStatus !== "error" && <span className="text-xs text-violet-600 inline-flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" />Đang chờ {dfsPending} kết quả DataForSEO…</span>}
           </div>
           <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
             <Stat l="Nhập" v={raw.length} />
@@ -662,7 +687,7 @@ export default function DomainPickerPage() {
       )}
 
       {/* Bảng domain (step ≥ 3) */}
-      {step >= 3 && afterExclude.length > 0 && (
+      {step >= 3 && tableRows.length > 0 && (
         <div className="rounded-xl border bg-card overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
@@ -674,7 +699,7 @@ export default function DomainPickerPage() {
               </tr>
             </thead>
             <tbody>
-              {afterExclude.map((d) => {
+              {tableRows.map((d) => {
                 const passedGate = gated.includes(d);
                 return (
                   <tr key={d} className={cn("border-b last:border-0", !passedGate && step >= 4 ? "opacity-40" : "hover:bg-muted/30")}>

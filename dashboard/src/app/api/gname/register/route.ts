@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
         source: meta[r.domain]?.source ?? null,
         rating: meta[r.domain]?.rating ?? null,
         category: meta[r.domain]?.category ?? null,
-        notes: `Gname ${r.backorder ? "backorder" : "register"}: ${r.msg}`.slice(0, 500),
+        notes: null,   // để trống cho user tự ghi chú; không nhét msg Gname vào Kho
       })));
       await markExcluded(succeeded.map((r) => r.domain));
     }
