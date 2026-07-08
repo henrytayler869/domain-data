@@ -213,14 +213,31 @@ export default function DomainPickerPage() {
   }, []);
   const startWayback = useCallback(async (targets: string[]) => {
     if (!targets.length) return;
-    const BATCH = 10, CONC = 5;
+    // BATCH 50 (không phải 10) → ít Apify run hơn ~5x (5000 domain: ~100 run thay vì
+    // ~500) → tạo nhanh, ít bị ngắt giữa chừng / đụng giới hạn. RETRY 3× mỗi batch +
+    // KHÔNG nuốt lỗi im lặng (cảnh báo nếu vẫn tạo run thất bại → không mất domain âm thầm).
+    const BATCH = 50, CONC = 4;
     const batches: string[][] = [];
     for (let i = 0; i < targets.length; i += BATCH) batches.push(targets.slice(i, i + BATCH));
-    let cursor = 0;
-    const worker = async () => { while (cursor < batches.length) { const i = cursor++; try { await fetch("/api/wayback/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ targets: batches[i] }) }); } catch { /* ignore */ } } };
+    let cursor = 0, failedDomains = 0;
+    const worker = async () => {
+      while (cursor < batches.length) {
+        const i = cursor++;
+        let ok = false;
+        for (let attempt = 0; attempt < 3 && !ok; attempt++) {
+          try {
+            const r = await fetch("/api/wayback/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ targets: batches[i] }) });
+            ok = r.ok;
+          } catch { /* retry */ }
+          if (!ok) await sleep(1200 * (attempt + 1));
+        }
+        if (!ok) failedDomains += batches[i].length;
+      }
+    };
     await Promise.all(Array.from({ length: Math.min(CONC, batches.length) }, () => worker()));
+    if (failedDomains) toast(`⚠️ ${failedDomains} domain không tạo được Wayback run — chạy lại pipeline để thử tiếp`, true);
     await loadWb();
-  }, [loadWb]);
+  }, [loadWb, toast]);
   // Thu gom Wayback: POST /api/wayback/sweep poll+ingest HẾT run pending (không giới
   // hạn 20), trả stillPending. Sau đó loadWb refresh results → effect cuốn chiếu gửi
   // clean qua DFS. Trả về số run còn pending (-1 nếu lỗi mạng).
