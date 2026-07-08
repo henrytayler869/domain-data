@@ -196,3 +196,36 @@ export async function registerDomain(domain: string): Promise<GnameRegisterResul
     };
   }
 }
+
+/** Channel 2 = $26 (deposit $3), phủ com/net/org… — dùng cho backorder mặc định. */
+export const BACKORDER_CHANNEL_TD = 2;
+
+export interface GnameBackorderResult {
+  domain: string;
+  ok: boolean;
+  /** Số tiền deposit Gname đóng băng khi đặt backorder thành công (USD). */
+  amount: number | null;
+  code: number;
+  msg: string;
+}
+
+/**
+ * Đặt backorder (抢注) 1 domain qua Gname `/api/backorder/add`.
+ *   ym = domain, td = channel (2 = Channel 2 $26). code 1 = thành công (data = deposit đóng băng).
+ */
+export async function placeBackorder(
+  domain: string,
+  td: number = BACKORDER_CHANNEL_TD,
+): Promise<GnameBackorderResult> {
+  const ym = domain.toLowerCase().trim();
+  try {
+    const r = await gnamePost("/api/backorder/add", { ym, td: String(td) });
+    if (r.code === 1) {
+      const amt = typeof r.data === "number" ? r.data : parseFloat(String(r.data));
+      return { domain: ym, ok: true, amount: Number.isFinite(amt) ? amt : null, code: r.code, msg: r.msg };
+    }
+    return { domain: ym, ok: false, amount: null, code: r.code, msg: r.msg };
+  } catch (err) {
+    return { domain: ym, ok: false, amount: null, code: -999, msg: err instanceof Error ? err.message : "Unknown error" };
+  }
+}

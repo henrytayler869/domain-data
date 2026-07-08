@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { registerDomain, GnameRegisterResult } from "@/lib/gname";
+import { registerDomain, placeBackorder } from "@/lib/gname";
 import { upsertEntries } from "@/lib/inventory-db";
 import { markExcluded } from "@/lib/ahrefs-db";
+
+// Kết quả hợp nhất cho cả đăng ký (register) lẫn đặt backorder.
+interface BuyResult { domain: string; ok: boolean; price: number | null; backorder: boolean; premium: boolean; code: number; msg: string }
 
 /**
  * POST /api/gname/register
@@ -22,7 +25,7 @@ export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as {
       domains?: string[];
-      meta?: Record<string, { source?: string | null; rating?: string | null; category?: string | null }>;
+      meta?: Record<string, { source?: string | null; rating?: string | null; category?: string | null; mode?: "register" | "backorder" }>;
     };
     const domains = Array.from(new Set(
       (body.domains ?? []).map((d) => d.trim().toLowerCase()).filter(Boolean)
@@ -37,23 +40,31 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const results: GnameRegisterResult[] = [];
+    const meta = body.meta ?? {};
+    const results: BuyResult[] = [];
     for (const d of domains) {
-      results.push(await registerDomain(d));
+      if (meta[d]?.mode === "backorder") {
+        // registered → đặt backorder qua Gname Channel 2 (price = deposit đóng băng)
+        const r = await placeBackorder(d);
+        results.push({ domain: r.domain, ok: r.ok, price: r.amount, backorder: true, premium: false, code: r.code, msg: r.msg });
+      } else {
+        const r = await registerDomain(d);
+        results.push({ domain: r.domain, ok: r.ok, price: r.price, backorder: false, premium: r.premium, code: r.code, msg: r.msg });
+      }
     }
 
     const succeeded = results.filter((r) => r.ok);
 
-    // Save successful orders into inventory with the real charged price.
+    // Save successful orders into inventory (backorder → is_backorder=true) + exclude.
     if (succeeded.length > 0) {
-      const meta = body.meta ?? {};
       await upsertEntries(succeeded.map((r) => ({
         domain: r.domain,
         purchasePrice: r.price,
+        isBackorder: r.backorder,
         source: meta[r.domain]?.source ?? null,
         rating: meta[r.domain]?.rating ?? null,
         category: meta[r.domain]?.category ?? null,
-        notes: `Gname API: ${r.msg}`.slice(0, 500),
+        notes: `Gname ${r.backorder ? "backorder" : "register"}: ${r.msg}`.slice(0, 500),
       })));
       await markExcluded(succeeded.map((r) => r.domain));
     }

@@ -315,11 +315,13 @@ export default function DomainPickerPage() {
 
   const buyDomains = useCallback(async (domains: string[]) => {
     if (!domains.length) return;
-    if (!confirm(`⚡ MUA THẬT ${domains.length} domain qua Gname? Tiền sẽ bị trừ từ số dư Gname.`)) return;
+    const modeOf = (d: string) => priceOf(rdap[d]?.status, tldOf(d), pricing, boChannel).mode === "backorder" ? "backorder" as const : "register" as const;
+    const nBo = domains.filter((d) => modeOf(d) === "backorder").length;
+    if (!confirm(`⚡ MUA THẬT ${domains.length} domain qua Gname (${domains.length - nBo} đăng ký + ${nBo} backorder)? Tiền/deposit sẽ bị trừ từ số dư Gname.`)) return;
     setBuying(true); setBuyNote(null);
     try {
-      const meta: Record<string, { rating: string | null }> = {};
-      for (const d of domains) meta[d] = { rating: ratings[d] ?? null };
+      const meta: Record<string, { rating: string | null; mode: "register" | "backorder" }> = {};
+      for (const d of domains) meta[d] = { rating: ratings[d] ?? null, mode: modeOf(d) };
       const res = await fetch("/api/gname/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains, meta }) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -336,7 +338,7 @@ export default function DomainPickerPage() {
     } catch (e) {
       setBuyNote({ ok: false, msg: e instanceof Error ? e.message : "Lỗi mua" });
     } finally { setBuying(false); }
-  }, [ratings, toast]);
+  }, [ratings, rdap, pricing, boChannel, toast]);
 
   // ── Auto: Wayback xong → gửi Clean qua webhook (1 lần/run) ──
   useEffect(() => {
@@ -625,7 +627,7 @@ export default function DomainPickerPage() {
                   </tbody>
                 </table>
               </div>
-              <p className="text-[11px] text-amber-600">⚠️ &quot;Mua&quot; gọi Gname API thật (trừ tiền). Cần chạy nơi IP đã whitelist (VPS). Không đủ tiền → có cảnh báo.</p>
+              <p className="text-[11px] text-amber-600">⚠️ &quot;Mua&quot; gọi Gname API thật: 🟢 available → đăng ký (trừ giá); 🟠 backorder → đặt đơn Channel 2 (đóng băng deposit $3, hoàn nếu không bắt được). Cần IP đã whitelist (VPS).</p>
             </>
           )}
         </div>
