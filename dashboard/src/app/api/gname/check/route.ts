@@ -24,7 +24,9 @@ export async function POST(request: NextRequest) {
     const checks = await checkDomainsMany(domains);
     const results = checks.map((c) => ({
       domain: c.domain,
-      status: c.error ? "error" : c.premium ? "premium" : c.available ? "available" : "registered",
+      // backorderable (registered + đang rớt, Gname dropcatch) → "backorder"; registered thuần → không mua được
+      status: c.error ? "error" : c.premium ? "premium" : c.available ? "available" : c.backorderable ? "backorder" : "registered",
+      dropEta: c.deletionDate,
       ...(request.nextUrl.searchParams.get("debug") ? { code: c.code, msg: c.msg } : {}),
     }));
     return NextResponse.json({ results });
