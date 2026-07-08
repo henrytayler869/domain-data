@@ -406,20 +406,20 @@ export async function listCheckedAmong(targetsRaw: string[]): Promise<string[]> 
  */
 export async function readAssessmentsFor(
   domains: string[],
-): Promise<{ domain: string; rating: string | null; category: string | null }[]> {
+): Promise<{ domain: string; rating: string | null; category: string | null; detail: string | null }[]> {
   const targets = Array.from(new Set(domains.map((d) => d.toLowerCase().trim()).filter(Boolean)));
   if (!targets.length) return [];
   const sb = supabase();
-  const out: { domain: string; rating: string | null; category: string | null }[] = [];
+  const out: { domain: string; rating: string | null; category: string | null; detail: string | null }[] = [];
   const CHUNK = 150;
   for (let i = 0; i < targets.length; i += CHUNK) {
     const { data, error } = await sb
       .from(ASSESS_TABLE)
-      .select("target_domain,rating,category")
+      .select("target_domain,rating,category,detail")
       .in("target_domain", targets.slice(i, i + CHUNK));
     if (error) throw new Error(error.message);
-    for (const r of (data ?? []) as { target_domain: string; rating: string | null; category: string | null }[]) {
-      out.push({ domain: r.target_domain, rating: r.rating, category: r.category });
+    for (const r of (data ?? []) as { target_domain: string; rating: string | null; category: string | null; detail: string | null }[]) {
+      out.push({ domain: r.target_domain, rating: r.rating, category: r.category, detail: r.detail });
     }
   }
   return out;
@@ -468,6 +468,27 @@ export async function deleteTarget(targetDomain: string): Promise<number> {
   if (e1) throw new Error(e1.message);
   if (e2) throw new Error(e2.message);
   return count ?? 0;
+}
+
+/**
+ * Bỏ đánh dấu "đã check" cho 1 danh sách domain: xóa cả ref rows (ahrefs_results)
+ * lẫn assessment (target_assessment) → domain trở lại re-checkable. Dùng khi dev.
+ */
+export async function deleteChecked(domains: string[]): Promise<{ count: number }> {
+  const sb = supabase();
+  const targets = Array.from(new Set(domains.map((d) => d.toLowerCase().trim()).filter(Boolean)));
+  if (!targets.length) return { count: 0 };
+  const BATCH = 200;
+  for (let i = 0; i < targets.length; i += BATCH) {
+    const slice = targets.slice(i, i + BATCH);
+    const [{ error: e1 }, { error: e2 }] = await Promise.all([
+      sb.from(TABLE).delete().in("target_domain", slice),
+      sb.from(ASSESS_TABLE).delete().in("target_domain", slice),
+    ]);
+    if (e1) throw new Error(e1.message);
+    if (e2) throw new Error(e2.message);
+  }
+  return { count: targets.length };
 }
 
 export interface UpsertResult {

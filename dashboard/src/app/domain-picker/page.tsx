@@ -21,6 +21,7 @@ const STEPS: { id: Step; label: string }[] = [
   { id: 6, label: "Đáng mua" },
 ];
 const MAX_PRICE = 26;
+const BACKORDER_CAP = 200; // số domain backorder tối đa mỗi lần chạy (tránh ngập Apify)
 
 type RdapRow = { domain: string; status: string; dropEta: string | null };
 type WaybackRow = { targetDomain: string; snapshotCount: number | null; hasBetting: boolean; hasAdult: boolean; errorReason: string | null };
@@ -107,6 +108,7 @@ export default function DomainPickerPage() {
   const [wbChecked, setWbChecked] = useState<Set<string>>(new Set());
   const [pricing, setPricing] = useState<Record<string, Price>>({});
   const [boChannel, setBoChannel] = useState<BoChannel | null>(null);
+  const [gateSplit, setGateSplit] = useState({ avail: 0, boTotal: 0, boUsed: 0 });
 
   const [rdap, setRdap] = useState<Record<string, RdapRow>>({});
   const [wbResults, setWbResults] = useState<WaybackRow[]>([]);
@@ -120,6 +122,7 @@ export default function DomainPickerPage() {
 
   // Bước 6 — Đáng mua
   const [ratings, setRatings] = useState<Record<string, string | null>>({});
+  const [details, setDetails] = useState<Record<string, string | null>>({}); // ref-summary (DK1/DK2) từ N8N
   const [loadingRatings, setLoadingRatings] = useState(false);
   const [selectedBuy, setSelectedBuy] = useState<Set<string>>(new Set());
   const [buying, setBuying] = useState(false);
@@ -259,8 +262,25 @@ export default function DomainPickerPage() {
         for (const a of d.assessments ?? []) m[String(a.domain).toLowerCase()] = a.rating;
         return m;
       });
+      setDetails((prev) => {
+        const m = { ...prev };
+        for (const a of d.assessments ?? []) m[String(a.domain).toLowerCase()] = a.detail ?? null;
+        return m;
+      });
     } catch { /* ignore */ } finally { setLoadingRatings(false); }
   }, []);
+
+  // Bỏ đánh dấu "đã check" (xóa rating/ref) cho danh sách domain → re-checkable (dùng khi dev).
+  const uncheckDomains = useCallback(async (domains: string[]) => {
+    if (!domains.length) return;
+    if (!confirm(`Bỏ đánh dấu "đã check" cho ${domains.length} domain (xóa rating/ref để chạy lại)?`)) return;
+    try {
+      const res = await fetch("/api/picker/uncheck", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains }) });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error);
+      toast(`✅ Bỏ đánh dấu ${d.cleared} domain — chạy lại để re-check`);
+    } catch (e) { toast(`❌ ${e instanceof Error ? e.message : "lỗi"}`, true); }
+  }, [toast]);
 
   // Upload file kết quả Ahrefs/DataForSEO (có cột rating) → ghi target_assessment → lọc Tốt/TB.
   const uploadResult = useCallback((f: File | null) => {
@@ -388,9 +408,19 @@ export default function DomainPickerPage() {
     // B3: Gname check (mua được?) + giá → gate ≤ $26 (available=đăng ký, registered=backorder Ch.2)
     setStep(3);
     const rd = await runRdap(fresh);
-    const g = fresh.filter((d) => { const info = priceOf(rd[d]?.status, tldOf(d), pr, bo); return info.acquirable && info.price != null && info.price <= MAX_PRICE; });
-    setGated(g); setDone((p) => new Set(p).add(3));
+    // Ưu tiên AVAILABLE (mua ngay) lên trước; BACKORDER giới hạn N/lần để không ngập Apify.
+    const availList: string[] = [], backList: string[] = [];
+    for (const d of fresh) {
+      const info = priceOf(rd[d]?.status, tldOf(d), pr, bo);
+      if (!info.acquirable || info.price == null || info.price > MAX_PRICE) continue;
+      (info.mode === "backorder" ? backList : availList).push(d);
+    }
+    const backUsed = backList.slice(0, BACKORDER_CAP);
+    const g = [...availList, ...backUsed];   // available trước → backorder (đã cap)
+    setGated(g); setGateSplit({ avail: availList.length, boTotal: backList.length, boUsed: backUsed.length });
+    setDone((p) => new Set(p).add(3));
     if (!g.length) { toast("Không domain nào mua được & giá ≤ $26", true); setRunning(false); return; }
+    if (backList.length > backUsed.length) toast(`Backorder: chạy ${backUsed.length}/${backList.length} (cap ${BACKORDER_CAP}/lần) — chạy lại để lấy tiếp`, false);
 
     // B4: Wayback (chỉ domain đã gate)
     setStep(4); setWbStarted(true);
@@ -398,7 +428,7 @@ export default function DomainPickerPage() {
     setRunning(false); // đã trigger; Wayback chạy async → effect tự gửi webhook khi xong
   }, [pasteText, owned, wbFlagged, wbNoSnap, wbChecked, pricing, boChannel, runRdap, startWayback, toast]);
 
-  const reset = () => { setStep(1); setDone(new Set()); setRaw([]); setAfterExclude([]); setGated([]); setB2({ bought: [], flagged: [], nosnap: [], checked: [] }); setRdap({}); setWbStarted(false); setWebhookStatus("idle"); sentRef.current = false; setRatings({}); setSelectedBuy(new Set()); setBuyNote(null); };
+  const reset = () => { setStep(1); setDone(new Set()); setRaw([]); setAfterExclude([]); setGated([]); setGateSplit({ avail: 0, boTotal: 0, boUsed: 0 }); setB2({ bought: [], flagged: [], nosnap: [], checked: [] }); setRdap({}); setWbStarted(false); setWebhookStatus("idle"); sentRef.current = false; setRatings({}); setDetails({}); setSelectedBuy(new Set()); setBuyNote(null); };
 
   const priceStr = (d: string): string => {
     const info = priceOf(rdap[d]?.status, tldOf(d), pricing, boChannel);
@@ -499,7 +529,7 @@ export default function DomainPickerPage() {
             <Stat l="✓ Clean" v={wbStats.clean} c="text-emerald-600" />
             <Stat l="Gửi DFS" v={webhookStatus === "ok" ? cleanDomains.length : 0} c="text-violet-600" />
           </div>
-          <p className="text-[11px] text-muted-foreground">Loại B2: đã mua {b2.bought.length} · flagged {b2.flagged.length} · no-snap {b2.nosnap.length} · đã check {b2.checked.length}. Gate ≤${MAX_PRICE}: loại {afterExclude.length - gated.length}. Wayback: flagged {wbStats.flagged} · no-snap {wbStats.nosnap} · đang chạy {wbStats.pending}.</p>
+          <p className="text-[11px] text-muted-foreground">Loại B2: đã mua {b2.bought.length} · flagged {b2.flagged.length} · no-snap {b2.nosnap.length} · đã check {b2.checked.length}. Gate ≤${MAX_PRICE}: 🟢 {gateSplit.avail} available + 🟠 {gateSplit.boUsed}/{gateSplit.boTotal} backorder (cap {BACKORDER_CAP}/lần). Wayback: flagged {wbStats.flagged} · no-snap {wbStats.nosnap} · đang chạy {wbStats.pending}.</p>
 
           {step === 5 && (
             <div className="rounded-lg border bg-muted/30 p-3 flex flex-col gap-2">
@@ -533,6 +563,11 @@ export default function DomainPickerPage() {
             <Button size="sm" variant="outline" onClick={() => loadRatings(cleanDomains)} disabled={loadingRatings} className="gap-1.5 h-8">
               {loadingRatings ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}Lấy lại
             </Button>
+            {raw.length > 0 && (
+              <Button size="sm" variant="outline" onClick={() => uncheckDomains(raw)} className="gap-1.5 h-8 text-rose-600 border-rose-200 hover:bg-rose-50" title="Xóa rating/ref của cả batch này để chạy lại (khi dev)">
+                <RotateCcw className="h-3.5 w-3.5" />Bỏ đánh dấu đã check
+              </Button>
+            )}
           </div>
           <p className="text-[11px] text-muted-foreground">N8N chạy DataForSEO xong POST rating về <code>/api/n8n/ingest-rating</code> → Bước 6 <b>tự lấy (poll 15s)</b>. Hoặc Upload file kết quả thủ công.</p>
 
@@ -566,7 +601,7 @@ export default function DomainPickerPage() {
               <div className="rounded-lg border overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
-                    <tr><th className="px-3 py-2 w-8"></th><th className="px-3 py-2">Domain</th><th className="px-3 py-2">Rating</th><th className="px-3 py-2">Giá</th></tr>
+                    <tr><th className="px-3 py-2 w-8"></th><th className="px-3 py-2">Domain</th><th className="px-3 py-2">Rating</th><th className="px-3 py-2">Ref (DK1/DK2)</th><th className="px-3 py-2">Giá</th></tr>
                   </thead>
                   <tbody>
                     {buyList.map((d) => (
@@ -574,6 +609,7 @@ export default function DomainPickerPage() {
                         <td className="px-3 py-1.5"><input type="checkbox" checked={selectedBuy.has(d)} onChange={() => setSelectedBuy((p) => { const n = new Set(p); if (n.has(d)) n.delete(d); else n.add(d); return n; })} /></td>
                         <td className="px-3 py-1.5 font-medium"><a href={`https://${d}`} target="_blank" rel="noreferrer" className="hover:underline">{d}</a></td>
                         <td className="px-3 py-1.5 text-xs">{(ratings[d] ?? "").includes("TỐT") ? <span className="text-emerald-700 font-medium">✅ TỐT</span> : <span className="text-amber-600">⚠️ TRUNG BÌNH</span>}</td>
+                        <td className="px-3 py-1.5 text-xs text-muted-foreground max-w-[320px] truncate" title={details[d] ?? ""}>{details[d] ?? "—"}</td>
                         <td className="px-3 py-1.5 tabular-nums text-xs">{priceStr(d)}</td>
                       </tr>
                     ))}
