@@ -479,7 +479,7 @@ export default function DomainPickerPage() {
     let enteredWb = false;
     const enterWb = () => { if (!enteredWb) { enteredWb = true; setWbStarted(true); setStep(4); setDone((p) => new Set(p).add(3)); } };
 
-    let lastUpdatedAt = "", stalled = 0;
+    let lastUpdatedAt = "", stalled = 0, slowNotified = false;
     for (;;) {
       await sleep(2500);
       let job: GateJobStatus;
@@ -524,8 +524,12 @@ export default function DomainPickerPage() {
         setGateErrors(job.result.error);
         return { gated: gatedAcc, done: false, boTotal: boEligible.length, boUsed: 0, errored: job.result.error.length };
       }
-      if (stalled >= 36) {   // ~90s không nhích → server có thể restart
-        toast("⚠️ Job gate có vẻ đứng (server restart?) — chạy lại pipeline để tiếp tục.", true);
+      // Gname rate-limit có thể làm tiến độ giật cục (60-90s không nhích) — KHÔNG bỏ
+      // cuộc vì server vẫn chạy nền. Chỉ nhắc 1 lần khi chậm, và chỉ dừng nếu ĐỨNG
+      // HẲN ~5 phút (server nhiều khả năng đã restart).
+      if (stalled === 24 && !slowNotified) { slowNotified = true; toast("⏳ Gate đang chậm (Gname rate-limit) — vẫn chạy nền, cứ chờ…"); }
+      if (stalled >= 120) {   // ~5 phút không nhích → server có thể restart
+        toast("⚠️ Job gate đứng hẳn ~5 phút (server restart?) — chạy lại pipeline để tiếp tục.", true);
         return { gated: gatedAcc, done: false, boTotal: boEligible.length, boUsed: 0, errored: job.result.error.length };
       }
     }

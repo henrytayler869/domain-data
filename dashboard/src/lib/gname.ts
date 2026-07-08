@@ -38,7 +38,7 @@ interface GnameEnvelope {
   data: unknown;
 }
 
-async function gnamePost(path: string, params: Record<string, string>): Promise<GnameEnvelope> {
+async function gnamePost(path: string, params: Record<string, string>, timeoutMs = 30_000): Promise<GnameEnvelope> {
   const { appid, appkey } = credentials();
   const full: Record<string, string> = {
     ...params,
@@ -52,8 +52,9 @@ async function gnamePost(path: string, params: Record<string, string>): Promise<
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
-    // Gname can be slow on registration calls.
-    signal: AbortSignal.timeout(30_000),
+    // Check/dropcatch (read) dùng timeout ngắn để worker không nghẽn 30s khi request
+    // treo; reg/backorder (tiêu tiền) giữ 30s cho chắc.
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) {
     throw new Error(`Gname HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
@@ -113,7 +114,7 @@ export interface GnameBackorderChannel {
 export async function checkBackorderable(domain: string): Promise<{ ok: boolean; deletionDate: string | null }> {
   const ym = domain.toLowerCase().trim();
   try {
-    const r = await gnamePost("/api/dropcatch/list", { inc_value: ym, page: "1", pagesize: "10" });
+    const r = await gnamePost("/api/dropcatch/list", { inc_value: ym, page: "1", pagesize: "10" }, 15_000);
     if (r.code === 1 && Array.isArray(r.data)) {
       const hit = (r.data as Record<string, unknown>[]).find(
         (x) => String(x.domain ?? "").toLowerCase() === ym && (x.is_backorder === 1 || x.is_backorder === "1"),
@@ -163,7 +164,7 @@ export async function checkDomain(domain: string, retries = 3): Promise<GnameChe
   const base = { domain: ym, available: false, premium: false, error: false, backorderable: false, deletionDate: null as string | null };
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const r = await gnamePost("/api/domain/check", { domain: ym });
+      const r = await gnamePost("/api/domain/check", { domain: ym }, 15_000);
       if (r.code === 1) {
         const data = (r.data && typeof r.data === "object") ? (r.data as Record<string, unknown>) : {};
         const premium = data.premium === true || data.premium === 1 || String(data.premium ?? "") === "1";

@@ -20,7 +20,10 @@ import { readFreshChecks, writeChecks } from "./gname-checks-cache";
 const TABLE = "gname_gate_jobs";
 const CACHE_TTL_HOURS = 24;   // domain check <24h thì tin cache, không gọi lại
 const CONCURRENCY = 3;        // server-side an toàn hơn browser nhưng vẫn né rate-limit Gname
+const PACING_MS = 350;        // giãn nhịp giữa các call/worker → giảm rate-limit Gname (như path cũ)
 const PERSIST_MS = 2000;      // throttle cập nhật tiến độ
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export interface GateResult {
   available: string[];
@@ -168,6 +171,7 @@ async function runGate(jobId: string, domains: string[]): Promise<void> {
         await persist("running");
         await flushCache();
       }
+      await sleep(PACING_MS);   // giãn nhịp → né rate-limit
     }
   };
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, toCheck.length || 1) }, () => worker()));
