@@ -109,6 +109,7 @@ export default function DomainPickerPage() {
   const [pricing, setPricing] = useState<Record<string, Price>>({});
   const [boChannel, setBoChannel] = useState<BoChannel | null>(null);
   const [gateSplit, setGateSplit] = useState({ avail: 0, boTotal: 0, boUsed: 0 });
+  const [gatingDone, setGatingDone] = useState(false); // đã check Gname + gate HẾT chunk chưa (cuốn chiếu)
 
   const [rdap, setRdap] = useState<Record<string, RdapRow>>({});
   const [wbResults, setWbResults] = useState<WaybackRow[]>([]);
@@ -182,7 +183,7 @@ export default function DomainPickerPage() {
       try {
         const res = await fetch("/api/gname/check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains: domains.slice(i, i + BATCH) }) });
         for (const r of (await res.json()).results ?? []) acc[r.domain] = r;
-        setRdap({ ...acc });
+        setRdap((prev) => ({ ...prev, ...acc }));   // merge → gọi theo chunk vẫn giữ kết quả cũ
       } catch { /* ignore */ }
     }
     return acc;
@@ -339,7 +340,7 @@ export default function DomainPickerPage() {
 
   // ── Auto: Wayback xong → gửi Clean qua webhook (1 lần/run) ──
   useEffect(() => {
-    if (step !== 4 || !wbStarted || sentRef.current || !gated.length) return;
+    if (step !== 4 || !wbStarted || !gatingDone || sentRef.current || !gated.length) return;
     const stillRunning = gated.some((d) => inFlightWb.has(d) && !wbByDomain.has(d));
     const engaged = gated.some((d) => wbByDomain.has(d) || inFlightWb.has(d));
     if (!stillRunning && engaged) {
@@ -349,7 +350,7 @@ export default function DomainPickerPage() {
       if (clean.length) sendWebhook(clean);
       else { setWebhookStatus("idle"); toast("Không có domain Clean để gửi", true); }
     }
-  }, [step, wbStarted, gated, wbByDomain, inFlightWb, sendWebhook, toast]);
+  }, [step, wbStarted, gatingDone, gated, wbByDomain, inFlightWb, sendWebhook, toast]);
 
   // ── Bước 6 AUTO-POLL: N8N chạy xong ghi rating → tự lấy (mỗi 15s, tối đa ~10 phút) ──
   useEffect(() => {
@@ -405,30 +406,38 @@ export default function DomainPickerPage() {
       } catch { /* ignore */ }
     }
 
-    // B3: Gname check (mua được?) + giá → gate ≤ $26 (available=đăng ký, registered=backorder Ch.2)
-    setStep(3);
-    const rd = await runRdap(fresh);
-    // Ưu tiên AVAILABLE (mua ngay) lên trước; BACKORDER giới hạn N/lần để không ngập Apify.
-    const availList: string[] = [], backList: string[] = [];
-    for (const d of fresh) {
-      const info = priceOf(rd[d]?.status, tldOf(d), pr, bo);
-      if (!info.acquirable || info.price == null || info.price > MAX_PRICE) continue;
-      (info.mode === "backorder" ? backList : availList).push(d);
+    // B3-4: CUỐN CHIẾU — check Gname 500/lần, lọc "Mua ngay" (available) GỬI WAYBACK NGAY
+    // rồi tiếp chunk sau. Wayback bắt đầu sớm thay vì chờ hết ~7000 Gname check.
+    setStep(3); setGatingDone(false); sentRef.current = false;
+    const CHUNK = 500;
+    const availAll: string[] = [], backAll: string[] = [], gatedAcc: string[] = [];
+    let boTotal = 0, enteredWb = false;
+    const enterWb = () => { if (!enteredWb) { enteredWb = true; setWbStarted(true); setStep(4); setDone((p) => new Set(p).add(3)); } };
+    for (let i = 0; i < fresh.length; i += CHUNK) {
+      const chunk = fresh.slice(i, i + CHUNK);
+      const rd = await runRdap(chunk);   // Gname check chunk này (merge vào rdap state)
+      const availChunk: string[] = [], backChunk: string[] = [];
+      for (const d of chunk) {
+        const info = priceOf(rd[d]?.status, tldOf(d), pr, bo);
+        if (!info.acquirable || info.price == null || info.price > MAX_PRICE) continue;
+        (info.mode === "backorder" ? backChunk : availChunk).push(d);
+      }
+      boTotal += backChunk.length;
+      availAll.push(...availChunk);
+      for (const d of backChunk) if (backAll.length < BACKORDER_CAP) backAll.push(d);
+      if (availChunk.length) { enterWb(); gatedAcc.push(...availChunk); setGated([...gatedAcc]); await startWayback(availChunk); }  // gửi available NGAY
+      setGateSplit({ avail: availAll.length, boTotal, boUsed: backAll.length });
     }
-    const backUsed = backList.slice(0, BACKORDER_CAP);
-    const g = [...availList, ...backUsed];   // available trước → backorder (đã cap)
-    setGated(g); setGateSplit({ avail: availList.length, boTotal: backList.length, boUsed: backUsed.length });
-    setDone((p) => new Set(p).add(3));
-    if (!g.length) { toast("Không domain nào mua được & giá ≤ $26", true); setRunning(false); return; }
-    if (backList.length > backUsed.length) toast(`Backorder: chạy ${backUsed.length}/${backList.length} (cap ${BACKORDER_CAP}/lần) — chạy lại để lấy tiếp`, false);
-
-    // B4: Wayback (chỉ domain đã gate)
-    setStep(4); setWbStarted(true);
-    await startWayback(g);
-    setRunning(false); // đã trigger; Wayback chạy async → effect tự gửi webhook khi xong
+    // Hết chunk: gửi backorder (đã cap) qua Wayback
+    if (backAll.length) { enterWb(); gatedAcc.push(...backAll); setGated([...gatedAcc]); await startWayback(backAll); }
+    setDone((p) => new Set(p).add(3).add(4));
+    setGatingDone(true);   // đã gate HẾT chunk → effect được phép gửi DFS khi Wayback xong
+    if (!gatedAcc.length) { setStep(3); toast("Không domain nào mua được & giá ≤ $26", true); setRunning(false); return; }
+    if (boTotal > backAll.length) toast(`Backorder: chạy ${backAll.length}/${boTotal} (cap ${BACKORDER_CAP}/lần) — chạy lại để lấy tiếp`, false);
+    setRunning(false); // Wayback chạy async → effect tự gửi webhook khi xong
   }, [pasteText, owned, wbFlagged, wbNoSnap, wbChecked, pricing, boChannel, runRdap, startWayback, toast]);
 
-  const reset = () => { setStep(1); setDone(new Set()); setRaw([]); setAfterExclude([]); setGated([]); setGateSplit({ avail: 0, boTotal: 0, boUsed: 0 }); setB2({ bought: [], flagged: [], nosnap: [], checked: [] }); setRdap({}); setWbStarted(false); setWebhookStatus("idle"); sentRef.current = false; setRatings({}); setDetails({}); setSelectedBuy(new Set()); setBuyNote(null); };
+  const reset = () => { setStep(1); setDone(new Set()); setRaw([]); setAfterExclude([]); setGated([]); setGateSplit({ avail: 0, boTotal: 0, boUsed: 0 }); setGatingDone(false); setB2({ bought: [], flagged: [], nosnap: [], checked: [] }); setRdap({}); setWbStarted(false); setWebhookStatus("idle"); sentRef.current = false; setRatings({}); setDetails({}); setSelectedBuy(new Set()); setBuyNote(null); };
 
   const priceStr = (d: string): string => {
     const info = priceOf(rdap[d]?.status, tldOf(d), pricing, boChannel);
