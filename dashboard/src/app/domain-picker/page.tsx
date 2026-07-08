@@ -56,8 +56,9 @@ function priceOf(
     const reg = pricing[tld]?.register;
     return reg != null ? { acquirable: true, price: reg, mode: "register" } : { acquirable: false, price: null, mode: "none" };
   }
-  // registered → backorder qua Channel 2 ($26) nếu TLD được kênh hỗ trợ.
-  if (status === "registered" && bo && bo.tlds.includes(tld)) {
+  // "registered/reserved" = đã có chủ → KHÔNG mua được (loại). Backorder LÀ KHÁC:
+  // chỉ domain ĐANG RỚT (status "backorder") mới đặt được qua Channel 2 ($26).
+  if (status === "backorder" && bo && bo.tlds.includes(tld)) {
     return { acquirable: true, price: bo.price, mode: "backorder" };
   }
   return { acquirable: false, price: null, mode: "none" };
@@ -462,12 +463,8 @@ export default function DomainPickerPage() {
     if (!st) return <span className="text-muted-foreground text-xs">…</span>;
     if (st === "available") return <span className="text-emerald-700 font-bold text-xs">🟢 MUA ĐƯỢC</span>;
     if (st === "premium") return <span className="text-purple-600 text-xs" title="Domain premium — Gname không cho tự mua giá thường">⭐ Premium</span>;
-    if (st === "registered") {
-      const info = priceOf(st, tldOf(d), pricing, boChannel);
-      return info.mode === "backorder"
-        ? <span className="text-amber-600 font-bold text-xs" title="Backorder qua Gname Channel 2 ($26, deposit $3 hoàn lại nếu không bắt được)">🟠 BACKORDER</span>
-        : <span className="text-muted-foreground text-xs">⚪ đã đăng ký</span>;
-    }
+    if (st === "backorder") return <span className="text-amber-600 font-bold text-xs" title="Đang rớt — backorder qua Gname Channel 2 ($26, deposit $3 hoàn lại nếu không bắt được)">🟠 BACKORDER</span>;
+    if (st === "registered") return <span className="text-muted-foreground text-xs" title="Đã có chủ / reserved — không mua được">⚪ đã đăng ký</span>;
     return <span className="text-orange-500 text-xs" title="Gname check lỗi (IP chưa whitelist / rate-limit / mạng) — bấm 'Làm lại' để thử lại.">⚠️ Gname lỗi</span>;
   };
   const wbBadge = (d: string) => {
