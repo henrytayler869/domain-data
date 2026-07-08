@@ -626,6 +626,33 @@ export default function DomainPickerPage() {
 
   const reset = () => { setStep(1); setDone(new Set()); setRaw([]); setAfterExclude([]); setGated([]); setGateSplit({ avail: 0, boTotal: 0, boUsed: 0 }); setGatingDone(false); setGateProgress(null); setGateErrors([]); setB2({ bought: [], flagged: [], nosnap: [], checked: [] }); setRdap({}); setWbStarted(false); setWebhookStatus("idle"); sentWbRef.current = new Set(); setRatings({}); setDetails({}); setCategories({}); setSelectedBuy(new Set()); setExcluded(new Set()); setBuyNote(null); };
 
+  // Khôi phục Bước 6 từ DB: dựng lại state (gated + wbResults-clean + rdap + rating)
+  // cho các domain "mua được + clean" gần đây → dùng khi tab bị đóng/reload giữa chừng.
+  const [resuming, setResuming] = useState(false);
+  const resumeFromDb = useCallback(async () => {
+    setResuming(true);
+    try {
+      const r = await fetch("/api/picker/resume?hours=12");
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error);
+      const cands: { domain: string; gnameStatus: "available" | "backorder"; dropEta: string | null; rating: string | null; category: string | null; detail: string | null }[] = d.candidates ?? [];
+      if (!cands.length) { toast("Chưa có domain mua được nào để khôi phục (12h qua) — chờ rating N8N rồi bấm lại", true); return; }
+      const doms = cands.map((c) => c.domain);
+      setGated(doms);
+      setWbResults(cands.map((c) => ({ targetDomain: c.domain, snapshotCount: 1, hasBetting: false, hasAdult: false, errorReason: null })));
+      setRdap(Object.fromEntries(cands.map((c) => [c.domain, { domain: c.domain, status: c.gnameStatus, dropEta: c.dropEta }])));
+      setRatings(Object.fromEntries(cands.map((c) => [c.domain, c.rating])));
+      setDetails(Object.fromEntries(cands.map((c) => [c.domain, c.detail])));
+      setCategories(Object.fromEntries(cands.map((c) => [c.domain, c.category])));
+      sentWbRef.current = new Set(doms);   // đã gửi DFS rồi → effect cuốn chiếu không gửi lại
+      setWbStarted(true); setGatingDone(true); setWebhookStatus("ok");
+      setDone(new Set([1, 2, 3, 4, 5] as Step[]));
+      setStep(6);
+      toast(`✅ Khôi phục ${cands.length} domain đáng mua (TỐT/TB) — bấm lại để cập nhật khi có thêm rating`);
+    } catch (e) { toast(`❌ ${e instanceof Error ? e.message : "lỗi khôi phục"}`, true); }
+    finally { setResuming(false); }
+  }, [toast]);
+
   const priceStr = (d: string): string => {
     const info = priceOf(rdap[d]?.status, tldOf(d), pricing, boChannel);
     if (info.price == null) return "—";
@@ -685,7 +712,10 @@ export default function DomainPickerPage() {
             </React.Fragment>
           );
         })}
-        <Button size="sm" variant="ghost" onClick={reset} className="ml-auto gap-1.5 text-xs"><RotateCcw className="h-3.5 w-3.5" />Làm lại</Button>
+        <Button size="sm" variant="ghost" onClick={resumeFromDb} disabled={resuming} className="ml-auto gap-1.5 text-xs" title="Hiện lại domain mua được + clean gần đây từ DB (khi tab bị đóng/reload giữa chừng)">
+          {resuming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}Khôi phục từ DB
+        </Button>
+        <Button size="sm" variant="ghost" onClick={reset} className="gap-1.5 text-xs"><RotateCcw className="h-3.5 w-3.5" />Làm lại</Button>
       </div>
 
       {/* Bước 1: input + chạy */}
