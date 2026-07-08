@@ -142,3 +142,18 @@ export async function fetchWaybackResults(datasetId: string): Promise<WaybackRes
   }
   return out;
 }
+
+/**
+ * Số Actor run đang CHIẾM slot concurrency (RUNNING + READY). Apify chặn tạo run
+ * mới khi vượt giới hạn concurrent (tài khoản này = 32) → dùng để throttle dispatch.
+ */
+export async function countActiveRuns(): Promise<number> {
+  let total = 0;
+  for (const status of ["RUNNING", "READY"] as const) {
+    const res = await fetch(`${APIFY_BASE}/actor-runs?token=${token()}&status=${status}&limit=1`);
+    if (!res.ok) continue;
+    const body = await res.json();
+    total += body?.data?.total ?? 0;
+  }
+  return total;
+}

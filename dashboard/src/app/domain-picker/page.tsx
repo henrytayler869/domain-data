@@ -213,29 +213,31 @@ export default function DomainPickerPage() {
   }, []);
   const startWayback = useCallback(async (targets: string[]) => {
     if (!targets.length) return;
-    // BATCH 50 (không phải 10) → ít Apify run hơn ~5x (5000 domain: ~100 run thay vì
-    // ~500) → tạo nhanh, ít bị ngắt giữa chừng / đụng giới hạn. RETRY 3× mỗi batch +
-    // KHÔNG nuốt lỗi im lặng (cảnh báo nếu vẫn tạo run thất bại → không mất domain âm thầm).
-    const BATCH = 50, CONC = 4;
+    // Apify tài khoản giới hạn 32 CONCURRENT run → tạo >32 là bị TỪ CHỐI (không phải
+    // xếp hàng). Nên: BATCH 50 (ít run) + THROTTLE — chỉ tạo khi số run đang chạy < 30,
+    // hết slot thì chờ Apify nhả (run cũ xong). RETRY + cảnh báo nếu thất bại (không
+    // nuốt lỗi im lặng → không mất domain âm thầm).
+    const BATCH = 50, CAP = 30;
     const batches: string[][] = [];
     for (let i = 0; i < targets.length; i += BATCH) batches.push(targets.slice(i, i + BATCH));
-    let cursor = 0, failedDomains = 0;
-    const worker = async () => {
-      while (cursor < batches.length) {
-        const i = cursor++;
-        let ok = false;
-        for (let attempt = 0; attempt < 3 && !ok; attempt++) {
-          try {
-            const r = await fetch("/api/wayback/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ targets: batches[i] }) });
-            ok = r.ok;
-          } catch { /* retry */ }
-          if (!ok) await sleep(1200 * (attempt + 1));
-        }
-        if (!ok) failedDomains += batches[i].length;
-      }
+    const getActive = async (): Promise<number> => {
+      try { return (await (await fetch("/api/wayback/active")).json()).active ?? 0; } catch { return 0; }
     };
-    await Promise.all(Array.from({ length: Math.min(CONC, batches.length) }, () => worker()));
-    if (failedDomains) toast(`⚠️ ${failedDomains} domain không tạo được Wayback run — chạy lại pipeline để thử tiếp`, true);
+    let failedDomains = 0;
+    for (const batch of batches) {
+      // throttle: chờ Apify còn slot (Apify tự nhả khi run xong)
+      for (let w = 0; w < 120 && (await getActive()) >= CAP; w++) await sleep(10000);
+      let ok = false;
+      for (let attempt = 0; attempt < 3 && !ok; attempt++) {
+        try {
+          const r = await fetch("/api/wayback/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ targets: batch }) });
+          ok = r.ok;
+        } catch { /* retry */ }
+        if (!ok) await sleep(1500 * (attempt + 1));
+      }
+      if (!ok) failedDomains += batch.length;
+    }
+    if (failedDomains) toast(`⚠️ ${failedDomains} domain chưa tạo được Wayback run — bấm "Chạy lại" hoặc chờ rồi thử lại`, true);
     await loadWb();
   }, [loadWb, toast]);
   // Thu gom Wayback: POST /api/wayback/sweep poll+ingest HẾT run pending (không giới
