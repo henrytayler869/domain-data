@@ -19,6 +19,8 @@ import {
   Tag,
   Wallet,
   ChevronDown,
+  RefreshCw,
+  AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -149,6 +151,8 @@ export default function InventoryPage() {
   const [wStatus, setWStatus] = useState<WithdrawalStatus>("paid");
   const [wWallet, setWWallet] = useState<WithdrawalWallet>(null);
   const [wNotes, setWNotes] = useState("");
+
+  const [tab, setTab] = useState<"kho" | "checkloi">("kho"); // tab Kho Domain / Check Lỗi
 
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastIdRef = useRef(0);
@@ -1062,6 +1066,20 @@ export default function InventoryPage() {
 
   return (
     <div className="flex flex-col gap-6 p-6">
+      {/* Tabs: Kho Domain / Check Lỗi */}
+      <div className="flex items-center gap-1 border-b">
+        <button onClick={() => setTab("kho")} className={cn("px-4 py-2 text-sm font-medium border-b-2 -mb-px transition", tab === "kho" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>
+          <span className="inline-flex items-center gap-1.5"><Boxes className="h-4 w-4" />Kho Domain</span>
+        </button>
+        <button onClick={() => setTab("checkloi")} className={cn("px-4 py-2 text-sm font-medium border-b-2 -mb-px transition", tab === "checkloi" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>
+          <span className="inline-flex items-center gap-1.5"><AlertTriangle className="h-4 w-4" />Check Lỗi</span>
+        </button>
+      </div>
+
+      {tab === "checkloi" ? (
+        <ApiErrorTab showToast={showToast} />
+      ) : (
+      <>
       {/* Header */}
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
@@ -2121,6 +2139,8 @@ export default function InventoryPage() {
           </div>
         )}
       </div>
+      </>
+      )}
 
       {/* Toasts */}
       <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none">
@@ -2135,6 +2155,98 @@ export default function InventoryPage() {
             {t.message}
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Tab Check Lỗi: domain "API error" → gửi lại N8N check lại ──────────────────
+function ApiErrorTab({ showToast }: { showToast: (m: string, e?: boolean) => void }) {
+  const [rows, setRows] = useState<{ domain: string; rating: string | null; category: string | null; detail: string | null }[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [rechecking, setRechecking] = useState(false);
+  const [search, setSearch] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await fetch("/api/inventory/api-errors");
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error);
+      setRows(d.rows ?? []);
+      setSelected(new Set());
+    } catch (e) { showToast(`Lỗi tải: ${e instanceof Error ? e.message : ""}`, true); }
+    finally { setLoading(false); }
+  }, [showToast]);
+  useEffect(() => { load(); }, [load]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return q ? rows.filter((r) => r.domain.includes(q)) : rows;
+  }, [rows, search]);
+
+  const recheck = useCallback(async (domains: string[]) => {
+    if (!domains.length) return;
+    if (!confirm(`Gửi lại ${domains.length} domain tới N8N để check lại DataForSEO?`)) return;
+    setRechecking(true);
+    try {
+      const r = await fetch("/api/inventory/api-errors/recheck", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains }) });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error);
+      showToast(`✅ Đã gửi lại ${d.sent} domain → N8N check lại (rating mới sẽ về sau)`);
+      await load();
+    } catch (e) { showToast(`❌ ${e instanceof Error ? e.message : "lỗi"}`, true); }
+    finally { setRechecking(false); }
+  }, [showToast, load]);
+
+  const sel = Array.from(selected);
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><AlertTriangle className="h-6 w-6 text-amber-500" />Check Lỗi</h1>
+          <p className="text-sm text-muted-foreground mt-1">Domain bị <b>API error</b> lúc chấm DataForSEO/Ahrefs — gửi lại N8N để chấm lại.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={load} disabled={loading} className="gap-1.5">{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}Tải lại</Button>
+          <Button size="sm" onClick={() => recheck(sel.length ? sel : filtered.map((r) => r.domain))} disabled={rechecking || !filtered.length} className="gap-1.5 bg-amber-500 hover:bg-amber-600 text-white">
+            {rechecking ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}Check Lại ({sel.length || filtered.length})
+          </Button>
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1 max-w-xs">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Tìm domain…" className="w-full pl-8 pr-3 py-1.5 text-sm rounded-md border bg-background" />
+        </div>
+        <span className="text-sm text-muted-foreground">{filtered.length} domain lỗi API</span>
+      </div>
+      <div className="rounded-lg border overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
+            <tr>
+              <th className="px-3 py-2 w-8"><input type="checkbox" checked={selected.size === filtered.length && filtered.length > 0} onChange={(e) => setSelected(e.target.checked ? new Set(filtered.map((r) => r.domain)) : new Set())} /></th>
+              <th className="px-3 py-2">Domain</th>
+              <th className="px-3 py-2">Rating</th>
+              <th className="px-3 py-2">Category (lỗi)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={4} className="px-3 py-8 text-center text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin inline" /> Đang tải…</td></tr>
+            ) : filtered.length === 0 ? (
+              <tr><td colSpan={4} className="px-3 py-8 text-center text-muted-foreground">Không có domain nào bị API error 🎉</td></tr>
+            ) : filtered.map((r) => (
+              <tr key={r.domain} className="border-b last:border-0 hover:bg-muted/30">
+                <td className="px-3 py-1.5"><input type="checkbox" checked={selected.has(r.domain)} onChange={() => setSelected((p) => { const n = new Set(p); if (n.has(r.domain)) n.delete(r.domain); else n.add(r.domain); return n; })} /></td>
+                <td className="px-3 py-1.5 font-medium"><a href={`https://${r.domain}`} target="_blank" rel="noreferrer" className="hover:underline">{r.domain}</a></td>
+                <td className="px-3 py-1.5 text-xs">{r.rating ?? "—"}</td>
+                <td className="px-3 py-1.5 text-xs text-amber-600 max-w-[360px] truncate" title={r.category ?? ""}>{r.category ?? "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
