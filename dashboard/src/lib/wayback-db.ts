@@ -110,6 +110,30 @@ export async function readAllResults(): Promise<WaybackRow[]> {
   return all.map(rowToResult);
 }
 
+/**
+ * Wayback results CHỈ cho danh sách domain yêu cầu (query `.in()` thay vì quét cả
+ * bảng). Dùng cho Kho Domain: kho chỉ vài trăm domain, không cần tải hết 6000+ dòng
+ * (kèm JSONB nặng → payload ~10MB/7s). Chunk `.in()` để tránh URL quá dài.
+ */
+export async function readResultsFor(targetsRaw: string[]): Promise<WaybackRow[]> {
+  const targets = Array.from(new Set(targetsRaw.map((t) => t.toLowerCase().trim()).filter(Boolean)));
+  if (!targets.length) return [];
+  const sb = supabase();
+  const CHUNK = 150;
+  const chunks: string[][] = [];
+  for (let i = 0; i < targets.length; i += CHUNK) chunks.push(targets.slice(i, i + CHUNK));
+  // Chạy SONG SONG các chunk (trước đây tuần tự → 7 round-trip DB nối tiếp = chậm).
+  const parts = await Promise.all(
+    chunks.map((c) => sb.from(RESULTS_TABLE).select("*").in("target_domain", c)),
+  );
+  const out: ResultsDbRow[] = [];
+  for (const { data, error } of parts) {
+    if (error) throw new Error(error.message);
+    if (data) out.push(...(data as ResultsDbRow[]));
+  }
+  return out.map(rowToResult);
+}
+
 export interface CheckedDomain { domain: string; flagged: boolean; noSnapshot: boolean }
 
 /**

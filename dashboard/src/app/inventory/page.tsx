@@ -56,7 +56,7 @@ export default function InventoryPage() {
   const [entries, setEntries] = useState<InventoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [filterStatus, setFilterStatus] = useState<"all" | "holding" | "sold" | "backorder">("all");
+  const [filterStatus, setFilterStatus] = useState<"all" | "holding" | "sold" | "backorder">("holding");
   const [filterExpected, setFilterExpected] = useState<"all" | "yes" | "no">("all");
   const [showArchived, setShowArchived] = useState(false);
   const [archiving, setArchiving] = useState(false);
@@ -106,7 +106,7 @@ export default function InventoryPage() {
   const [waybackRuns, setWaybackRuns] = useState<WaybackRunT[]>([]);
   const [waybackStarting, setWaybackStarting] = useState(false);
   const [expandedWayback, setExpandedWayback] = useState<Set<string>>(new Set());
-  const [filterWayback, setFilterWayback] = useState<"flagged" | "clean" | "unchecked">("unchecked");
+  const [filterWayback, setFilterWayback] = useState<"flagged" | "clean" | "unchecked">("clean");
 
   const blacklistSet = useMemo(
     () => new Set(userBlacklist.map((e) => e.domain.toLowerCase())),
@@ -182,26 +182,23 @@ export default function InventoryPage() {
     setLoading(true);
     let domains: string[] = [];
     try {
-      // Dữ liệu lõi (inventory + meta) tải song song và hiển thị bảng NGAY.
-      const [invRes, blRes, wRes, wbResRes, wbRunsRes] = await Promise.all([
-        fetch("/api/inventory"),
-        fetch("/api/ref-blacklist"),
-        fetch("/api/withdrawals"),
-        fetch("/api/wayback/results"),
-        fetch("/api/wayback/runs"),
+      // Inventory TRƯỚC → có danh sách domain để scope Wayback (chỉ lấy wayback của
+      // domain trong kho, không tải hết 6000+ dòng ~10MB/7s).
+      const invData = await (await fetch("/api/inventory")).json();
+      const entriesArr = (Array.isArray(invData) ? invData : []) as InventoryEntry[];
+      setEntries(entriesArr);
+      domains = entriesArr.map((e) => e.domain).filter(Boolean);
+      // Meta còn lại + Wayback (scoped) song song.
+      const [blData, wData, wbResData, wbRunsData] = await Promise.all([
+        fetch("/api/ref-blacklist").then((r) => r.json()),
+        fetch("/api/withdrawals").then((r) => r.json()),
+        fetch("/api/wayback/results", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ targets: domains }) }).then((r) => r.json()),
+        fetch("/api/wayback/runs").then((r) => r.json()),
       ]);
-      const invData = await invRes.json();
-      const blData = await blRes.json();
-      const wData = await wRes.json();
-      const wbResData = await wbResRes.json();
-      const wbRunsData = await wbRunsRes.json();
-      const entriesArr: { domain: string }[] = Array.isArray(invData) ? invData : [];
-      setEntries(Array.isArray(invData) ? invData : []);
       setUserBlacklist(Array.isArray(blData) ? blData : []);
       setWithdrawals(Array.isArray(wData) ? wData : []);
       setWaybackResults(wbResData.rows ?? []);
       setWaybackRuns(wbRunsData.runs ?? []);
-      domains = entriesArr.map((e) => e.domain).filter(Boolean);
     } catch { /* ignore */ }
     setLoading(false);
     // Refs/đánh giá tải nền — bảng đã hiện, cột đánh giá/ref điền sau khi xong.
