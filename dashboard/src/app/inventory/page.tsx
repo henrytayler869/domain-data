@@ -2158,13 +2158,17 @@ export default function InventoryPage() {
 }
 
 // ─── Tab Check Lỗi: domain "API error" → gửi lại N8N check lại ──────────────────
-type ApiErrorRow = { domain: string; rating: string | null; category: string | null; detail: string | null; wayback: { snapshotCount: number | null; hasBetting: boolean; hasAdult: boolean } | null };
+type ApiErrorRow = { domain: string; rating: string | null; category: string | null; detail: string | null; wayback: { snapshotCount: number | null; hasBetting: boolean; hasAdult: boolean } | null; inflight?: boolean };
 
-function wbBadge(w: ApiErrorRow["wayback"]) {
-  if (!w) return <span className="text-muted-foreground text-xs">— chưa check</span>;
-  if (w.hasBetting || w.hasAdult) return <span className="text-rose-600 text-xs">🚨 flagged</span>;
-  if ((w.snapshotCount ?? 0) === 0) return <span className="text-amber-600 text-xs">no snap</span>;
-  return <span className="text-emerald-600 text-xs font-medium">✓ clean ({w.snapshotCount})</span>;
+function wbBadge(r: ApiErrorRow) {
+  const w = r.wayback;
+  if (w) {
+    if (w.hasBetting || w.hasAdult) return <span className="text-rose-600 text-xs">🚨 flagged</span>;
+    if ((w.snapshotCount ?? 0) === 0) return <span className="text-amber-600 text-xs">no snap</span>;
+    return <span className="text-emerald-600 text-xs font-medium">✓ clean ({w.snapshotCount})</span>;
+  }
+  if (r.inflight) return <span className="text-blue-600 text-xs inline-flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" />đang check</span>;
+  return <span className="text-muted-foreground text-xs">— chưa check</span>;
 }
 
 function ApiErrorTab({ showToast }: { showToast: (m: string, e?: boolean) => void }) {
@@ -2210,7 +2214,7 @@ function ApiErrorTab({ showToast }: { showToast: (m: string, e?: boolean) => voi
 
   // Domain Wayback KHÔNG clean (flagged / no-snap) → loại trừ.
   const nonClean = useMemo(() => rows.filter((r) => r.wayback && (r.wayback.hasBetting || r.wayback.hasAdult || (r.wayback.snapshotCount ?? 0) === 0)).map((r) => r.domain), [rows]);
-  const uncheckedCount = useMemo(() => rows.filter((r) => !r.wayback).length, [rows]);
+  const uncheckedCount = useMemo(() => rows.filter((r) => !r.wayback && !r.inflight).length, [rows]);
 
   const excludeNonClean = useCallback(async () => {
     if (!nonClean.length) return;
@@ -2233,7 +2237,12 @@ function ApiErrorTab({ showToast }: { showToast: (m: string, e?: boolean) => voi
       const r = await fetch("/api/inventory/api-errors/process-unchecked", { method: "POST" });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error);
-      showToast(`✅ Check Gname ${d.checked} domain → ${d.available} available → gửi Wayback ${d.dispatchedDomains}${d.remaining ? ` (còn ${d.remaining}, bấm lại)` : ""}`);
+      if (!d.checked) { showToast("Không còn domain chưa check nào để xử lý"); }
+      else if (d.errored === d.checked) { showToast(`⚠️ ${d.checked} domain đều lỗi Gname — kiểm tra IP VPS đã whitelist trên Gname chưa`, true); }
+      else {
+        const parts = [`check ${d.checked}`, `🟢${d.available} mua được → Wayback ${d.dispatchedDomains}`, `⚪${d.registered} đã đăng ký → loại`, d.errored ? `⚠️${d.errored} lỗi` : ""].filter(Boolean);
+        showToast(`✅ ${parts.join(" · ")}${d.remaining ? ` · còn ${d.remaining} bấm lại` : ""}`);
+      }
       await load();
     } catch (e) { showToast(`❌ ${e instanceof Error ? e.message : "lỗi"}`, true); }
     finally { setProcessing(false); }
@@ -2270,13 +2279,14 @@ function ApiErrorTab({ showToast }: { showToast: (m: string, e?: boolean) => voi
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Tìm domain…" className="w-full pl-8 pr-3 py-1.5 text-sm rounded-md border bg-background" />
         </div>
         {(() => {
-          let clean = 0, flagged = 0, nosnap = 0, unchecked = 0;
-          for (const r of filtered) { const w = r.wayback; if (!w) unchecked++; else if (w.hasBetting || w.hasAdult) flagged++; else if ((w.snapshotCount ?? 0) === 0) nosnap++; else clean++; }
+          let clean = 0, flagged = 0, nosnap = 0, unchecked = 0, inflight = 0;
+          for (const r of filtered) { const w = r.wayback; if (w) { if (w.hasBetting || w.hasAdult) flagged++; else if ((w.snapshotCount ?? 0) === 0) nosnap++; else clean++; } else if (r.inflight) inflight++; else unchecked++; }
           return (
             <span className="text-sm text-muted-foreground">
               {filtered.length} domain · <span className="text-emerald-600 font-medium">✓{clean} clean</span>
               {flagged > 0 && <> · <span className="text-rose-600">🚨{flagged} flagged</span></>}
               {nosnap > 0 && <> · <span className="text-amber-600">{nosnap} no-snap</span></>}
+              {inflight > 0 && <> · <span className="text-blue-600">⏳{inflight} đang check</span></>}
               {unchecked > 0 && <> · {unchecked} chưa check</>}
             </span>
           );
@@ -2302,7 +2312,7 @@ function ApiErrorTab({ showToast }: { showToast: (m: string, e?: boolean) => voi
               <tr key={r.domain} className="border-b last:border-0 hover:bg-muted/30">
                 <td className="px-3 py-1.5"><input type="checkbox" checked={selected.has(r.domain)} onChange={() => setSelected((p) => { const n = new Set(p); if (n.has(r.domain)) n.delete(r.domain); else n.add(r.domain); return n; })} /></td>
                 <td className="px-3 py-1.5 font-medium"><a href={`https://${r.domain}`} target="_blank" rel="noreferrer" className="hover:underline">{r.domain}</a></td>
-                <td className="px-3 py-1.5">{wbBadge(r.wayback)}</td>
+                <td className="px-3 py-1.5">{wbBadge(r)}</td>
                 <td className="px-3 py-1.5 text-xs">{r.rating ?? "—"}</td>
                 <td className="px-3 py-1.5 text-xs text-amber-600 max-w-[360px] truncate" title={r.category ?? ""}>{r.category ?? "—"}</td>
               </tr>

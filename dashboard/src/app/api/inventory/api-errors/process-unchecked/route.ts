@@ -3,27 +3,26 @@ import { supabase } from "@/lib/supabase";
 import { checkDomainsMany, statusOf } from "@/lib/gname";
 import { startWaybackRun, countActiveRuns } from "@/lib/apify-wayback";
 import { createRun } from "@/lib/wayback-db";
+import { markExcluded } from "@/lib/ahrefs-db";
 
 /**
  * POST /api/inventory/api-errors/process-unchecked
  *
- * Cho các domain "API error" CHƯA có Wayback result: check Gname → domain nào
- * AVAILABLE thì gửi qua Wayback (KHÔNG gửi N8N/DFS). Bảng Check Lỗi tự cập nhật
- * cột Wayback khi run xong (qua tick sweep / tải lại).
- *
- * Bounded mỗi lần (CAP domain) để không quá proxy timeout — trả `remaining` để
- * client bấm lại xử lý tiếp. Domain đã gửi Wayback (in-flight) tự loại lần sau.
+ * Domain "API error" CHƯA có Wayback: check Gname →
+ *   • available / backorder (mua được) → gửi Wayback (KHÔNG gửi N8N/DFS)
+ *   • registered / premium (không mua được) → LOẠI TRỪ (rời tab)
+ *   • error (IP chưa whitelist / rate-limit) → giữ lại, thử sau
+ * Bảng tự cập nhật cột Wayback khi run xong. Bounded 120 domain/lần (né timeout).
  */
-const CHECK_CAP = 120;   // Gname C=1 ~7 req/s → ≤120 domain/lần cho an toàn timeout
+const CHECK_CAP = 120;
 const WB_BATCH = 50;
-const WB_CAP = 30;       // ≤30 concurrent (Apify limit 32)
+const WB_CAP = 30;
 
 export async function POST() {
   try {
     const sb = supabase();
 
-    // 1) Ứng viên: category API error, chưa loại trừ, CHƯA có wayback_results,
-    //    và chưa nằm trong run Wayback gần đây (in-flight).
+    // Ứng viên: API error, chưa loại trừ, CHƯA có wayback_results, chưa in-flight.
     const errRows: { target_domain: string }[] = [];
     {
       const PAGE = 1000; let from = 0;
@@ -36,38 +35,38 @@ export async function POST() {
         from += PAGE;
       }
     }
-    const errDomains = new Set(errRows.map((r) => String(r.target_domain).toLowerCase()));
-
-    // đã có wayback_results?
+    const errDomains = errRows.map((r) => String(r.target_domain).toLowerCase());
     const wbDone = new Set<string>();
-    {
-      const list = [...errDomains];
-      for (let i = 0; i < list.length; i += 300) {
-        const { data } = await sb.from("wayback_results").select("target_domain").in("target_domain", list.slice(i, i + 300));
-        for (const r of (data ?? []) as { target_domain: string }[]) wbDone.add(String(r.target_domain).toLowerCase());
-      }
+    for (let i = 0; i < errDomains.length; i += 300) {
+      const { data } = await sb.from("wayback_results").select("target_domain").in("target_domain", errDomains.slice(i, i + 300));
+      for (const r of (data ?? []) as { target_domain: string }[]) wbDone.add(String(r.target_domain).toLowerCase());
     }
-    // in-flight (run Wayback 3h qua)
     const inFlight = new Set<string>();
     {
       const since = new Date(Date.now() - 3 * 3600 * 1000).toISOString();
       const { data } = await sb.from("wayback_runs").select("targets").gte("started_at", since);
       for (const r of (data ?? []) as { targets: string[] }[]) for (const t of (r.targets ?? [])) inFlight.add(String(t).toLowerCase());
     }
-
-    const candidates = [...errDomains].filter((d) => !wbDone.has(d) && !inFlight.has(d));
-    if (!candidates.length) return NextResponse.json({ ok: true, candidates: 0, checked: 0, available: 0, dispatched: 0, dispatchedDomains: 0, remaining: 0 });
+    const candidates = errDomains.filter((d) => !wbDone.has(d) && !inFlight.has(d));
+    if (!candidates.length) return NextResponse.json({ ok: true, candidates: 0, checked: 0, available: 0, registered: 0, errored: 0, dispatched: 0, dispatchedDomains: 0, excluded: 0, remaining: 0 });
 
     const batch = candidates.slice(0, CHECK_CAP);
 
-    // 2) Gname check (C=1 — an toàn rate-limit) → available.
+    // Gname check (C=1 an toàn rate-limit) → phân loại.
     const checks = await checkDomainsMany(batch, 1);
-    const available = checks.filter((c) => statusOf(c) === "available").map((c) => c.domain);
+    const acquirable: string[] = [], registered: string[] = [];
+    let errored = 0;
+    for (const c of checks) {
+      const s = statusOf(c);
+      if (s === "available" || s === "backorder") acquirable.push(c.domain);
+      else if (s === "registered" || s === "premium") registered.push(c.domain);
+      else errored++;   // error → giữ, thử sau
+    }
 
-    // 3) Available → Wayback (respect 32 concurrent). KHÔNG gửi N8N.
+    // Acquirable → Wayback (≤30 concurrent). KHÔNG gửi N8N.
     const active = await countActiveRuns();
     const slots = Math.max(0, WB_CAP - active);
-    const toDispatch = available.slice(0, slots * WB_BATCH);
+    const toDispatch = acquirable.slice(0, slots * WB_BATCH);
     let dispatched = 0, dispatchedDomains = 0;
     for (let i = 0; i < toDispatch.length; i += WB_BATCH) {
       const b = toDispatch.slice(i, i + WB_BATCH);
@@ -75,16 +74,23 @@ export async function POST() {
         const run = await startWaybackRun(b);
         await createRun(run.runId, b, run.status, run.datasetId);
         dispatched++; dispatchedDomains += b.length;
-      } catch { break; }   // đụng limit → dừng, lần sau tiếp
+      } catch { break; }
     }
+
+    // Registered/premium → loại trừ (không mua được → rời tab).
+    let excluded = 0;
+    if (registered.length) { const ex = await markExcluded(registered); excluded = ex.count; }
 
     return NextResponse.json({
       ok: true,
       candidates: candidates.length,
       checked: batch.length,
-      available: available.length,
+      available: acquirable.length,
+      registered: registered.length,
+      errored,
       dispatched,
       dispatchedDomains,
+      excluded,
       remaining: candidates.length - batch.length,
     });
   } catch (err) {

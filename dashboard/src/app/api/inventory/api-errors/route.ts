@@ -33,16 +33,26 @@ export async function GET() {
     const wb = await readResultsFor(rows.map((r) => r.target_domain));
     const wbMap = new Map(wb.map((w) => [w.targetDomain.toLowerCase(), w]));
 
+    // Domain đang có Wayback run chạy (3h qua) nhưng chưa có kết quả → "đang check".
+    const inFlight = new Set<string>();
+    {
+      const since = new Date(Date.now() - 3 * 3600 * 1000).toISOString();
+      const { data } = await sb.from("wayback_runs").select("targets").gte("started_at", since);
+      for (const r of (data ?? []) as { targets: string[] }[]) for (const t of (r.targets ?? [])) inFlight.add(String(t).toLowerCase());
+    }
+
     return NextResponse.json({
       total: rows.length,
       rows: rows.map((r) => {
-        const w = wbMap.get(r.target_domain.toLowerCase());
+        const d = r.target_domain.toLowerCase();
+        const w = wbMap.get(d);
         return {
           domain: r.target_domain,
           rating: r.rating,
           category: r.category,
           detail: r.detail,
           wayback: w ? { snapshotCount: w.snapshotCount, hasBetting: w.hasBetting, hasAdult: w.hasAdult } : null,
+          inflight: !w && inFlight.has(d),
         };
       }),
     });
