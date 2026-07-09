@@ -2172,6 +2172,8 @@ function ApiErrorTab({ showToast }: { showToast: (m: string, e?: boolean) => voi
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [rechecking, setRechecking] = useState(false);
+  const [excluding, setExcluding] = useState(false);
+  const [processing, setProcessing] = useState(false);
   const [search, setSearch] = useState("");
 
   const load = useCallback(async () => {
@@ -2206,6 +2208,37 @@ function ApiErrorTab({ showToast }: { showToast: (m: string, e?: boolean) => voi
     finally { setRechecking(false); }
   }, [showToast, load]);
 
+  // Domain Wayback KHÔNG clean (flagged / no-snap) → loại trừ.
+  const nonClean = useMemo(() => rows.filter((r) => r.wayback && (r.wayback.hasBetting || r.wayback.hasAdult || (r.wayback.snapshotCount ?? 0) === 0)).map((r) => r.domain), [rows]);
+  const uncheckedCount = useMemo(() => rows.filter((r) => !r.wayback).length, [rows]);
+
+  const excludeNonClean = useCallback(async () => {
+    if (!nonClean.length) return;
+    if (!confirm(`Loại trừ ${nonClean.length} domain Wayback flagged/no-snap (không clean)?`)) return;
+    setExcluding(true);
+    try {
+      const r = await fetch("/api/ahrefs-results/db/exclude", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ targets: nonClean }) });
+      if (!r.ok) throw new Error((await r.json()).error ?? "lỗi");
+      showToast(`✅ Đã loại trừ ${nonClean.length} domain flagged/no-snap`);
+      await load();
+    } catch (e) { showToast(`❌ ${e instanceof Error ? e.message : "lỗi"}`, true); }
+    finally { setExcluding(false); }
+  }, [nonClean, showToast, load]);
+
+  // Chưa check Wayback → Gname check → available thì gửi Wayback (KHÔNG gửi N8N).
+  const processUnchecked = useCallback(async () => {
+    if (!uncheckedCount) return;
+    setProcessing(true);
+    try {
+      const r = await fetch("/api/inventory/api-errors/process-unchecked", { method: "POST" });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error);
+      showToast(`✅ Check Gname ${d.checked} domain → ${d.available} available → gửi Wayback ${d.dispatchedDomains}${d.remaining ? ` (còn ${d.remaining}, bấm lại)` : ""}`);
+      await load();
+    } catch (e) { showToast(`❌ ${e instanceof Error ? e.message : "lỗi"}`, true); }
+    finally { setProcessing(false); }
+  }, [uncheckedCount, showToast, load]);
+
   const sel = Array.from(selected);
   return (
     <div className="flex flex-col gap-3">
@@ -2214,8 +2247,18 @@ function ApiErrorTab({ showToast }: { showToast: (m: string, e?: boolean) => voi
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><AlertTriangle className="h-6 w-6 text-amber-500" />Check Lỗi</h1>
           <p className="text-sm text-muted-foreground mt-1">Domain bị <b>API error</b> lúc chấm DataForSEO/Ahrefs — gửi lại N8N để chấm lại.</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <Button size="sm" variant="outline" onClick={load} disabled={loading} className="gap-1.5">{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}Tải lại</Button>
+          {nonClean.length > 0 && (
+            <Button size="sm" variant="outline" onClick={excludeNonClean} disabled={excluding} className="gap-1.5 text-rose-600 border-rose-200 hover:bg-rose-50" title="Loại domain Wayback flagged/no-snap khỏi danh sách">
+              {excluding ? <Loader2 className="h-4 w-4 animate-spin" /> : <X className="h-4 w-4" />}Loại flagged/no-snap ({nonClean.length})
+            </Button>
+          )}
+          {uncheckedCount > 0 && (
+            <Button size="sm" variant="outline" onClick={processUnchecked} disabled={processing} className="gap-1.5 text-blue-600 border-blue-200 hover:bg-blue-50" title="Chưa check Wayback → check Gname → available thì gửi Wayback (không gửi N8N)">
+              {processing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}Chạy lại chưa check ({uncheckedCount})
+            </Button>
+          )}
           <Button size="sm" onClick={() => recheck(sel.length ? sel : filtered.map((r) => r.domain))} disabled={rechecking || !filtered.length} className="gap-1.5 bg-amber-500 hover:bg-amber-600 text-white">
             {rechecking ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}Check Lại ({sel.length || filtered.length})
           </Button>

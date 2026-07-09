@@ -19,6 +19,7 @@ export async function GET() {
         .from("target_assessment")
         .select("target_domain,rating,category,detail")
         .ilike("category", "%API%error%")
+        .is("excluded_at", null)   // ẩn domain đã bấm Loại trừ
         .order("target_domain", { ascending: true })
         .range(from, from + PAGE - 1);
       if (error) throw new Error(error.message);
