@@ -58,7 +58,6 @@ export default function InventoryPage() {
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "holding" | "sold" | "backorder">("holding");
   const [filterExpected, setFilterExpected] = useState<"all" | "yes" | "no">("all");
-  const [showArchived, setShowArchived] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(25);
@@ -152,7 +151,7 @@ export default function InventoryPage() {
   const [wWallet, setWWallet] = useState<WithdrawalWallet>(null);
   const [wNotes, setWNotes] = useState("");
 
-  const [tab, setTab] = useState<"kho" | "checkloi">("kho"); // tab Kho Domain / Check Lỗi
+  const [tab, setTab] = useState<"kho" | "luutru" | "checkloi">("kho"); // Kho Domain / Lưu trữ / Check Lỗi
 
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastIdRef = useRef(0);
@@ -344,9 +343,11 @@ export default function InventoryPage() {
   // Within range = entry was purchased in range OR sold in range
   // Drop archived rows unless user explicitly toggles "Hiện cả lưu trữ".
   // Done at the very top so stats + table both honor the filter.
+  // Tab "Lưu trữ" = CHỈ domain đã lưu trữ; tab "Kho Domain" = CHỈ domain chưa lưu trữ
+  // (tách bảng riêng, không gộp chung nữa).
   const visibleEntries = useMemo(
-    () => (showArchived ? entries : entries.filter((e) => !e.archivedAt)),
-    [entries, showArchived],
+    () => (tab === "luutru" ? entries.filter((e) => e.archivedAt) : entries.filter((e) => !e.archivedAt)),
+    [entries, tab],
   );
   const archivedCount = useMemo(
     () => entries.filter((e) => e.archivedAt).length,
@@ -1068,6 +1069,9 @@ export default function InventoryPage() {
         <button onClick={() => setTab("kho")} className={cn("px-4 py-2 text-sm font-medium border-b-2 -mb-px transition", tab === "kho" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>
           <span className="inline-flex items-center gap-1.5"><Boxes className="h-4 w-4" />Kho Domain</span>
         </button>
+        <button onClick={() => setTab("luutru")} className={cn("px-4 py-2 text-sm font-medium border-b-2 -mb-px transition", tab === "luutru" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>
+          <span className="inline-flex items-center gap-1.5"><Boxes className="h-4 w-4" />Lưu trữ{archivedCount > 0 ? ` (${archivedCount})` : ""}</span>
+        </button>
         <button onClick={() => setTab("checkloi")} className={cn("px-4 py-2 text-sm font-medium border-b-2 -mb-px transition", tab === "checkloi" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>
           <span className="inline-flex items-center gap-1.5"><AlertTriangle className="h-4 w-4" />Check Lỗi</span>
         </button>
@@ -1080,9 +1084,9 @@ export default function InventoryPage() {
       {/* Header */}
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Kho Domain</h1>
+          <h1 className="text-2xl font-bold tracking-tight">{tab === "luutru" ? "Lưu trữ" : "Kho Domain"}</h1>
           <p className="text-sm text-muted-foreground mt-1 flex items-center gap-1.5">
-            Danh sách domain đã mua. Click giá để chỉnh sửa.
+            {tab === "luutru" ? "Domain đã lưu trữ (ẩn khỏi Kho). Chọn → Khôi phục để đưa lại Kho." : "Danh sách domain đã mua. Click giá để chỉnh sửa."}
             {refsLoading && (
               <span className="inline-flex items-center gap-1 text-[11px] text-blue-600 dark:text-blue-400">
                 <Loader2 className="h-3 w-3 animate-spin" /> đang tải đánh giá/ref…
@@ -1288,20 +1292,6 @@ export default function InventoryPage() {
           <option value="flagged">🚨 Flagged</option>
           <option value="unchecked">— Chưa check</option>
         </select>
-        {archivedCount > 0 && (
-          <label
-            className="flex items-center gap-1.5 text-xs cursor-pointer select-none px-2 py-1 rounded-md border border-input bg-background hover:bg-muted"
-            title={`${archivedCount} domain đã lưu trữ — bật để hiện chúng trong danh sách`}
-          >
-            <input
-              type="checkbox"
-              checked={showArchived}
-              onChange={(e) => setShowArchived(e.target.checked)}
-              className="rounded"
-            />
-            <span>Hiện lưu trữ ({archivedCount})</span>
-          </label>
-        )}
         {(() => {
           // Trigger Wayback for holding + currently-filtered + unchecked domains.
           const candidates = filtered
