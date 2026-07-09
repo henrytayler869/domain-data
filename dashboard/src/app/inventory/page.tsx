@@ -2158,8 +2158,17 @@ export default function InventoryPage() {
 }
 
 // ─── Tab Check Lỗi: domain "API error" → gửi lại N8N check lại ──────────────────
+type ApiErrorRow = { domain: string; rating: string | null; category: string | null; detail: string | null; wayback: { snapshotCount: number | null; hasBetting: boolean; hasAdult: boolean } | null };
+
+function wbBadge(w: ApiErrorRow["wayback"]) {
+  if (!w) return <span className="text-muted-foreground text-xs">— chưa check</span>;
+  if (w.hasBetting || w.hasAdult) return <span className="text-rose-600 text-xs">🚨 flagged</span>;
+  if ((w.snapshotCount ?? 0) === 0) return <span className="text-amber-600 text-xs">no snap</span>;
+  return <span className="text-emerald-600 text-xs font-medium">✓ clean ({w.snapshotCount})</span>;
+}
+
 function ApiErrorTab({ showToast }: { showToast: (m: string, e?: boolean) => void }) {
-  const [rows, setRows] = useState<{ domain: string; rating: string | null; category: string | null; detail: string | null }[]>([]);
+  const [rows, setRows] = useState<ApiErrorRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [rechecking, setRechecking] = useState(false);
@@ -2217,7 +2226,18 @@ function ApiErrorTab({ showToast }: { showToast: (m: string, e?: boolean) => voi
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Tìm domain…" className="w-full pl-8 pr-3 py-1.5 text-sm rounded-md border bg-background" />
         </div>
-        <span className="text-sm text-muted-foreground">{filtered.length} domain lỗi API</span>
+        {(() => {
+          let clean = 0, flagged = 0, nosnap = 0, unchecked = 0;
+          for (const r of filtered) { const w = r.wayback; if (!w) unchecked++; else if (w.hasBetting || w.hasAdult) flagged++; else if ((w.snapshotCount ?? 0) === 0) nosnap++; else clean++; }
+          return (
+            <span className="text-sm text-muted-foreground">
+              {filtered.length} domain · <span className="text-emerald-600 font-medium">✓{clean} clean</span>
+              {flagged > 0 && <> · <span className="text-rose-600">🚨{flagged} flagged</span></>}
+              {nosnap > 0 && <> · <span className="text-amber-600">{nosnap} no-snap</span></>}
+              {unchecked > 0 && <> · {unchecked} chưa check</>}
+            </span>
+          );
+        })()}
       </div>
       <div className="rounded-lg border overflow-x-auto">
         <table className="w-full text-sm">
@@ -2225,19 +2245,21 @@ function ApiErrorTab({ showToast }: { showToast: (m: string, e?: boolean) => voi
             <tr>
               <th className="px-3 py-2 w-8"><input type="checkbox" checked={selected.size === filtered.length && filtered.length > 0} onChange={(e) => setSelected(e.target.checked ? new Set(filtered.map((r) => r.domain)) : new Set())} /></th>
               <th className="px-3 py-2">Domain</th>
+              <th className="px-3 py-2">Wayback Check</th>
               <th className="px-3 py-2">Rating</th>
               <th className="px-3 py-2">Category (lỗi)</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={4} className="px-3 py-8 text-center text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin inline" /> Đang tải…</td></tr>
+              <tr><td colSpan={5} className="px-3 py-8 text-center text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin inline" /> Đang tải…</td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={4} className="px-3 py-8 text-center text-muted-foreground">Không có domain nào bị API error 🎉</td></tr>
+              <tr><td colSpan={5} className="px-3 py-8 text-center text-muted-foreground">Không có domain nào bị API error 🎉</td></tr>
             ) : filtered.map((r) => (
               <tr key={r.domain} className="border-b last:border-0 hover:bg-muted/30">
                 <td className="px-3 py-1.5"><input type="checkbox" checked={selected.has(r.domain)} onChange={() => setSelected((p) => { const n = new Set(p); if (n.has(r.domain)) n.delete(r.domain); else n.add(r.domain); return n; })} /></td>
                 <td className="px-3 py-1.5 font-medium"><a href={`https://${r.domain}`} target="_blank" rel="noreferrer" className="hover:underline">{r.domain}</a></td>
+                <td className="px-3 py-1.5">{wbBadge(r.wayback)}</td>
                 <td className="px-3 py-1.5 text-xs">{r.rating ?? "—"}</td>
                 <td className="px-3 py-1.5 text-xs text-amber-600 max-w-[360px] truncate" title={r.category ?? ""}>{r.category ?? "—"}</td>
               </tr>

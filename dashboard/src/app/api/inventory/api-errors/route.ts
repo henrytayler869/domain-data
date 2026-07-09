@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { readResultsFor } from "@/lib/wayback-db";
 
 /**
- * GET /api/inventory/api-errors → { total, rows: [{ domain, rating, category, detail }] }
- *   Domain có category dạng "API error" (N8N gọi DataForSEO/Ahrefs lỗi lấy anchor/ref
- *   → chấm không đầy đủ). Dùng cho tab "Check Lỗi" ở Kho Domain để check lại.
+ * GET /api/inventory/api-errors
+ *   → { total, rows: [{ domain, rating, category, detail, wayback }] }
+ *   Domain có category dạng "API error" (N8N gọi DataForSEO/Ahrefs lỗi lấy anchor/ref).
+ *   Kèm trạng thái Wayback (clean/flagged/no-snap) để biết domain nào đáng check lại.
  */
 export async function GET() {
   try {
@@ -25,9 +27,23 @@ export async function GET() {
       if (data.length < PAGE) break;
       from += PAGE;
     }
+
+    // Trạng thái Wayback cho các domain này (scoped + song song).
+    const wb = await readResultsFor(rows.map((r) => r.target_domain));
+    const wbMap = new Map(wb.map((w) => [w.targetDomain.toLowerCase(), w]));
+
     return NextResponse.json({
       total: rows.length,
-      rows: rows.map((r) => ({ domain: r.target_domain, rating: r.rating, category: r.category, detail: r.detail })),
+      rows: rows.map((r) => {
+        const w = wbMap.get(r.target_domain.toLowerCase());
+        return {
+          domain: r.target_domain,
+          rating: r.rating,
+          category: r.category,
+          detail: r.detail,
+          wayback: w ? { snapshotCount: w.snapshotCount, hasBetting: w.hasBetting, hasAdult: w.hasAdult } : null,
+        };
+      }),
     });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : "Unknown error" }, { status: 500 });
