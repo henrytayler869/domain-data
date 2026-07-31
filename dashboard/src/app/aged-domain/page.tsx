@@ -15,6 +15,7 @@ import {
   Check,
   Download,
   Ban,
+  ShoppingCart,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -114,12 +115,9 @@ export default function AgedDomainPage() {
   const [expandedLookup, setExpandedLookup] = useState<Set<string>>(new Set());
   const [lookupFilter, setLookupFilter] = useState<"all" | "tot" | "tb" | "bad" | "none">("all");
   const [copiedLookup, setCopiedLookup] = useState(false);
-  // Multi-select + mua (lưu Kho Domain) trong bảng tra cứu.
+  // Multi-select + mua thật qua Gname trong bảng tra cứu.
   const [selectedLookup, setSelectedLookup] = useState<Set<string>>(new Set());
-  const [purchaseOpen, setPurchaseOpen] = useState(false);
-  const [purchaseRows, setPurchaseRows] = useState<Record<string, string>>({});
-  const [purchaseBulk, setPurchaseBulk] = useState("");
-  const [savingPurchase, setSavingPurchase] = useState(false);
+  const [buying, setBuying] = useState(false);
 
   // ── Toasts ──────────────────────────────────────────────────────────────────
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -371,58 +369,70 @@ export default function AgedDomainPage() {
     });
   };
 
-  // Mở form nhập giá — prefill giá mua cũ nếu domain đã có trong kho.
-  function openPurchaseForm() {
-    if (selectedLookup.size === 0) return;
-    const init: Record<string, string> = {};
-    for (const d of selectedLookup) init[d] = "";
-    setPurchaseRows(init);
-    setPurchaseBulk("");
-    setPurchaseOpen(true);
-  }
-  function applyPurchaseBulk() {
-    const v = purchaseBulk.trim();
-    if (!v) return;
-    setPurchaseRows((prev) => {
-      const next = { ...prev };
-      for (const d of Object.keys(next)) next[d] = v;
-      return next;
-    });
-  }
-  // Lưu vào Kho Domain (giống Domain Picker): snapshot rating/category từ kết quả tra cứu.
-  async function savePurchase() {
-    setSavingPurchase(true);
+  // MUA THẬT qua Gname (giống Domain Picker Bước 6): check status → xác nhận →
+  // POST /api/gname/register (available→đăng ký trừ tiền; backorder→đặt cọc). API
+  // tự lưu Kho + đánh dấu excluded. KHÔNG chỉ lưu Kho — đây là tiêu tiền thật.
+  async function buyViaGname() {
+    const targets = Array.from(selectedLookup);
+    if (!targets.length) return;
+    setBuying(true);
     try {
-      const rowByDomain = new Map((lookupRows ?? []).map((r) => [r.domain, r]));
-      const entries = Object.entries(purchaseRows).map(([domain, priceStr]) => {
-        const r = rowByDomain.get(domain);
-        const price = priceStr.trim() === "" ? null : Number(priceStr);
-        return {
-          domain,
-          purchasePrice: isNaN(price as number) ? null : price,
-          source: null,
-          rating: r?.rating ?? null,
-          category: r?.category ?? null,
-          isBackorder: false,
-        };
-      });
-      const res = await fetch("/api/inventory/add", {
+      // 1) Check Gname status để biết mode + cái nào mua được (chạy trên VPS whitelist).
+      const chkRes = await fetch("/api/gname/check", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ entries }),
+        body: JSON.stringify({ domains: targets }),
+      });
+      const chk = await chkRes.json();
+      if (!chkRes.ok) throw new Error(chk.error ?? "Check Gname lỗi");
+      const statusOf = new Map<string, string>(
+        (chk.results ?? []).map((r: { domain: string; status: string }) => [r.domain.toLowerCase(), r.status]),
+      );
+      const buyable: { domain: string; mode: "register" | "backorder" }[] = [];
+      let skipped = 0;
+      for (const d of targets) {
+        const st = statusOf.get(d) ?? "error";
+        if (st === "available") buyable.push({ domain: d, mode: "register" });
+        else if (st === "backorder") buyable.push({ domain: d, mode: "backorder" });
+        else skipped++; // premium / registered / error → không tự mua
+      }
+      if (!buyable.length) {
+        showToast(`❌ Không domain nào mua được (registered/premium/lỗi)`, true);
+        return;
+      }
+      const nReg = buyable.filter((b) => b.mode === "register").length;
+      const nBo = buyable.length - nReg;
+      const skipMsg = skipped ? ` · bỏ qua ${skipped} (registered/premium/lỗi)` : "";
+      if (!confirm(`⚡ MUA THẬT ${buyable.length} domain qua Gname: ${nReg} đăng ký + ${nBo} backorder${skipMsg}.\nTiền/deposit sẽ bị TRỪ từ số dư Gname. Xác nhận?`)) return;
+
+      // 2) Register thật — snapshot rating/category vào Kho qua meta.
+      const rowByDomain = new Map((lookupRows ?? []).map((r) => [r.domain, r]));
+      const meta: Record<string, { rating: string | null; category: string | null; mode: "register" | "backorder" }> = {};
+      for (const b of buyable) {
+        const r = rowByDomain.get(b.domain);
+        meta[b.domain] = { rating: r?.rating ?? null, category: r?.category ?? null, mode: b.mode };
+      }
+      const res = await fetch("/api/gname/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domains: buyable.map((b) => b.domain), meta }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Lưu thất bại");
-      // Cập nhật trạng thái Đã mua ngay trong bảng (giá dự kiến set sau ở Kho).
-      const boughtSet = new Set(entries.map((e) => e.domain));
-      setLookupRows((prev) => prev ? prev.map((r) => boughtSet.has(r.domain) ? { ...r, purchased: true } : r) : prev);
-      setPurchaseOpen(false);
+      if (!res.ok) throw new Error(data.error ?? "Mua thất bại");
+      const results: { domain: string; ok: boolean; msg: string }[] = data.results ?? [];
+      const okSet = new Set(results.filter((r) => r.ok).map((r) => r.domain));
+      const failed = results.filter((r) => !r.ok);
+      // API đã lưu Kho + excluded → phản chiếu vào bảng.
+      setLookupRows((prev) => prev ? prev.map((r) => okSet.has(r.domain) ? { ...r, purchased: true, excluded: true } : r) : prev);
       setSelectedLookup(new Set());
-      showToast(`✅ Đã lưu ${entries.length} domain vào Kho Domain`);
+      if (okSet.size) showToast(`✅ Mua ${okSet.size} domain · tổng $${(data.totalCharged ?? 0).toFixed(2)} · đã lưu Kho`);
+      const insufficient = failed.some((r) => /insufficient|balance|not enough|不足|余额/i.test(r.msg || ""));
+      if (insufficient) showToast(`⚠️ Không đủ số dư Gname — nạp thêm rồi mua lại (${failed.length} chưa mua)`, true);
+      else if (failed.length) showToast(`⚠️ ${failed.length} domain lỗi: ${(failed[0].msg || "").slice(0, 80)}`, true);
     } catch (err) {
       showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
     } finally {
-      setSavingPurchase(false);
+      setBuying(false);
     }
   }
 
@@ -567,9 +577,11 @@ export default function AgedDomainPage() {
                 <Button
                   size="sm"
                   className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"
-                  onClick={openPurchaseForm}
+                  onClick={buyViaGname}
+                  disabled={buying}
+                  title="Mua thật qua Gname (trừ tiền/deposit từ số dư Gname)"
                 >
-                  <Check className="h-3.5 w-3.5" />
+                  {buying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShoppingCart className="h-3.5 w-3.5" />}
                   Mua ({selectedLookup.size})
                 </Button>
                 <Button
@@ -896,43 +908,6 @@ export default function AgedDomainPage() {
           </div>
         )}
       </div>
-
-      {/* ── Form nhập giá (Đã mua → lưu Kho Domain) ──────────────────────────── */}
-      {purchaseOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setPurchaseOpen(false)}>
-          <div className="bg-card rounded-xl border shadow-xl w-full max-w-lg max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
-            <div className="px-5 py-4 border-b flex items-center justify-between">
-              <h3 className="text-sm font-semibold">Đã mua {Object.keys(purchaseRows).length} domain — nhập giá mua ($)</h3>
-              <button onClick={() => setPurchaseOpen(false)} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
-            </div>
-            <div className="px-5 py-3 border-b flex items-center gap-2">
-              <Input type="number" placeholder="Giá chung ($)" value={purchaseBulk} onChange={(e) => setPurchaseBulk(e.target.value)} className="w-36 text-sm" />
-              <Button size="sm" variant="outline" onClick={applyPurchaseBulk} disabled={!purchaseBulk.trim()}>Áp dụng tất cả</Button>
-              <span className="text-xs text-muted-foreground ml-auto">Để trống = chưa rõ giá</span>
-            </div>
-            <div className="flex-1 overflow-auto px-5 py-3 space-y-2">
-              {Object.keys(purchaseRows).map((d) => (
-                <div key={d} className="flex items-center gap-2">
-                  <span className="flex-1 font-mono text-xs truncate" title={d}>{d}</span>
-                  <Input
-                    type="number" placeholder="Giá $"
-                    value={purchaseRows[d]}
-                    onChange={(e) => setPurchaseRows((prev) => ({ ...prev, [d]: e.target.value }))}
-                    className="w-28 text-sm"
-                  />
-                </div>
-              ))}
-            </div>
-            <div className="px-5 py-4 border-t flex justify-end gap-2">
-              <Button variant="ghost" size="sm" onClick={() => setPurchaseOpen(false)}>Hủy</Button>
-              <Button size="sm" onClick={savePurchase} disabled={savingPurchase} className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white">
-                {savingPurchase ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-                Lưu Kho Domain
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ── Unmatched Refs ─────────────────────────────────────────────────────── */}
       <div className="rounded-xl border bg-card">
