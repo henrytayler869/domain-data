@@ -21,6 +21,7 @@ import {
   ChevronDown,
   RefreshCw,
   AlertTriangle,
+  Activity,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -50,6 +51,73 @@ function parseDetailRefs(detail: string | null): { domain: string; dr: number }[
     if (m) out.push({ domain: m[1].toLowerCase(), dr: Number(m[2]) });
   }
   return out;
+}
+
+// ── Bảng theo dõi bộ điều phối tự lành ────────────────────────────────────────
+// Poll /api/pipeline/status 60s/lần. Hiện tick chạy lúc nào + tồn đọng mỗi tầng
+// (rating/gname/wayback). Nếu tick ngừng chạy quá lâu → cảnh báo đỏ (chống "quên").
+interface PipelineStatus {
+  healthy: boolean;
+  ageMin: number | null;
+  lastTickAt: string | null;
+  backlog: { rating: number; gname: number; wayback: number };
+  creditFlag: "flowing" | "waiting_credit" | "unknown" | "idle";
+  error?: string;
+}
+
+function PipelineStatusBanner() {
+  const [st, setSt] = useState<PipelineStatus | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const r = await fetch("/api/pipeline/status", { cache: "no-store" });
+        const d = (await r.json()) as PipelineStatus;
+        if (alive && !d.error) setSt(d);
+      } catch { /* im lặng */ }
+    };
+    load();
+    const id = setInterval(load, 60_000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+
+  if (!st) return null;
+  const { healthy, ageMin, lastTickAt, backlog, creditFlag } = st;
+  const neverRan = !lastTickAt;
+  const waitingCredit = creditFlag === "waiting_credit";
+
+  const chip = (label: string, n: number, note?: string) => (
+    <span className="inline-flex items-center gap-1">
+      <span className="text-muted-foreground">{label}</span>
+      <span className={cn("font-semibold tabular-nums", n ? (note ? "text-amber-600" : "text-blue-600 dark:text-blue-400") : "text-muted-foreground")}>{n}</span>
+      {note && n > 0 && <span className="text-amber-600">({note})</span>}
+    </span>
+  );
+
+  return (
+    <div className={cn(
+      "flex items-center gap-x-4 gap-y-1.5 flex-wrap rounded-lg border px-3 py-2 text-xs",
+      !neverRan && !healthy ? "border-rose-300 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/30" : "bg-muted/40",
+    )}>
+      <span className="inline-flex items-center gap-1.5 font-medium">
+        <Activity className={cn("h-3.5 w-3.5", neverRan ? "text-muted-foreground" : healthy ? "text-emerald-600" : "text-rose-600")} />
+        Điều phối tự lành
+      </span>
+      {neverRan ? (
+        <span className="text-muted-foreground">đang chờ tick đầu…</span>
+      ) : healthy ? (
+        <span className="text-muted-foreground">tick {ageMin === 0 ? "vừa xong" : `${ageMin}′ trước`}</span>
+      ) : (
+        <span className="inline-flex items-center gap-1 font-medium text-rose-600">
+          <AlertTriangle className="h-3.5 w-3.5" />ngừng {ageMin}′ — kiểm tra N8N Schedule
+        </span>
+      )}
+      <span className="h-3 w-px bg-border" />
+      {chip("rating", backlog.rating, waitingCredit ? "chờ credit" : undefined)}
+      {chip("gname", backlog.gname)}
+      {chip("wayback", backlog.wayback)}
+    </div>
+  );
 }
 
 export default function InventoryPage() {
@@ -1076,6 +1144,8 @@ export default function InventoryPage() {
           <span className="inline-flex items-center gap-1.5"><AlertTriangle className="h-4 w-4" />Check Lỗi</span>
         </button>
       </div>
+
+      <PipelineStatusBanner />
 
       {tab === "checkloi" ? (
         <ApiErrorTab showToast={showToast} />

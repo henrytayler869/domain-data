@@ -1,12 +1,22 @@
 /**
- * Một "tick" của drip-feed Wayback — gọi định kỳ (vd N8N Schedule mỗi 20-30 phút)
- * để xử lý dần hàng nghìn domain dưới giới hạn 32 concurrent run của Apify, KHÔNG
- * cần tab mở. Mỗi tick:
- *   1. SWEEP: poll+ingest mọi run pending (thu kết quả run đã xong → nhả slot Apify).
- *   2. DFS:   gửi domain clean+mua-được CHƯA rating qua N8N (đánh dấu placeholder để
- *             tick sau không gửi lại).
- *   3. DISPATCH: tạo thêm Wayback run cho domain available(≤$26) CHƯA check, lấp đầy
- *             tới CAP (30) slot còn trống.
+ * Một "tick" của BỘ ĐIỀU PHỐI TỰ LÀNH (self-healing reconciler) — gọi định kỳ
+ * (N8N Schedule mỗi ~20-30 phút → POST /api/n8n/wayback-dispatch), KHÔNG cần tab
+ * mở. Mỗi tick đối soát trạng thái từng domain và chỉ chạy BƯỚC CÒN THIẾU:
+ *
+ *   1. SWEEP     — poll+ingest mọi Wayback run pending (nhả slot Apify).
+ *   2. RATING    — gửi domain CHƯA có rating thật qua N8N (Fla→Kelly→DFS).
+ *                  RE-ARM placeholder cũ (>45') → chống mất domain khi hết credit;
+ *                  CREDIT-AWARE: nếu 1h qua 0 rating về → chỉ gửi probe nhỏ để dò
+ *                  credit về, không blast cả backlog.
+ *   3. GNAME     — domain rated-good CHƯA check Gname → kick gate job nền (webapp
+ *                  đã whitelist IP; check chạy ở đây được, máy khác thì không).
+ *   4. WAYBACK   — tạo Wayback run cho domain available(≤$26) chưa check, lấp đầy
+ *                  tới CAP (30) slot Apify còn trống.
+ *   5. HEARTBEAT — ghi tồn đọng + thời điểm chạy vào app_settings để webapp hiện
+ *                  bảng theo dõi + cảnh báo nếu tick ngừng (chống "quên").
+ *
+ * Idempotent: bước đã có dữ liệu (rating thật / gname_check mới / wayback_result)
+ * đều bị bỏ qua. An toàn khi gọi lặp lại.
  */
 
 import { supabase } from "./supabase";
@@ -16,17 +26,29 @@ import { pollAndIngestRun } from "./wayback-poll";
 import { startWaybackRun, countActiveRuns } from "./apify-wayback";
 import { upsertAssessments } from "./ahrefs-db";
 import { readSettings } from "./settings";
+import { startGateJob } from "./gname-gate";
+import { readReconcileState, writeReconcileState, type CreditFlag, type ReconcileState } from "./pipeline-status";
 
 const CAP = 30;                 // giữ ≤30 concurrent (limit Apify = 32, chừa margin)
-const BATCH = 50;               // domain / run
+const BATCH = 50;               // domain / Wayback run
 const MAX_PRICE = 26;
 const AVAIL_WINDOW_H = 24;      // available cache còn hạn
-const DFS_BATCH = 140;          // domain / lần gửi N8N
-const DISPATCH_CAP_DOMAINS = 40 * BATCH;  // trần domain dispatch mỗi tick (an toàn)
+const DISPATCH_CAP_DOMAINS = 40 * BATCH;  // trần domain dispatch Wayback mỗi tick
+
+// ── Rating (RE-ARM + credit-aware) ────────────────────────────────────────────
+const RATING_BATCH = 140;       // domain / lần gửi N8N khi credit OK
+const RATING_REARM_MIN = 45;    // placeholder cũ hơn ngần này → gửi lại (chống mất)
+const RATING_PROBE = 15;        // khi nghi hết credit: chỉ gửi bấy nhiêu để dò
+const CREDIT_SENT_COOLDOWN_MIN = 90; // "đã gửi gần đây" để suy đoán credit
+
+// ── Gname backfill ────────────────────────────────────────────────────────────
+const GNAME_JOB_CAP = 500;      // domain / gate job mỗi tick
+const GNAME_TTL_H = 24;         // gname_check còn hạn → khỏi check lại
 
 const tldOf = (d: string) => d.split(".").pop() ?? "";
+const isGoodRating = (r: string | null) => !!r && (r.includes("TỐT") || r.includes("TRUNG BÌNH"));
 
-// Phân trang 1 query PostgREST (query đã build sẵn bởi caller) — PostgREST trả tối đa 1000 dòng.
+// Phân trang 1 query PostgREST (query đã build sẵn bởi caller) — trả tối đa 1000 dòng.
 async function pageAll<T>(build: () => { range: (a: number, b: number) => PromiseLike<{ data: unknown; error: { message: string } | null }> }): Promise<T[]> {
   const out: T[] = [];
   const PAGE = 1000;
@@ -46,15 +68,28 @@ async function pageAll<T>(build: () => { range: (a: number, b: number) => Promis
 export interface DispatchSummary {
   ingestedRuns: number;
   ingestedResults: number;
-  dfsSent: number;
-  dispatched: number;         // số run mới tạo
+  // rating
+  ratingBacklog: number;
+  ratingReArmed: number;
+  ratingSent: number;
+  ratingProbe: boolean;
+  creditFlag: CreditFlag;
+  // gname
+  gnameBacklog: number;
+  gnameKicked: number;
+  gnameJobId: string | null;
+  // wayback
+  dispatched: number;
   dispatchedDomains: number;
   remainingToWayback: number;
   activeAfter: number;
 }
 
 export async function dispatchTick(): Promise<DispatchSummary> {
+  const startedAt = Date.now();
   const sb = supabase();
+  const prev = await readReconcileState();
+  const { n8nWebhookUrl } = await readSettings();
 
   // ── 1. SWEEP ────────────────────────────────────────────────────────────────
   const pending = await listPendingRuns();
@@ -94,39 +129,13 @@ export async function dispatchTick(): Promise<DispatchSummary> {
     if (!r.has_betting && !r.has_adult && (r.snapshot_count ?? 0) > 0) clean.add(d);
   }
 
-  // ── 2. DFS: clean + mua được + CHƯA có assessment (chưa gửi/chưa rating) ──────
-  const cleanAcquirable = [...clean].filter((d) => acquirable.has(d));
-  const assessed = new Set<string>();
-  for (let i = 0; i < cleanAcquirable.length; i += 300) {
-    const slice = cleanAcquirable.slice(i, i + 300);
-    const { data } = await sb.from("target_assessment").select("target_domain").in("target_domain", slice);
-    for (const r of (data ?? []) as { target_domain: string }[]) assessed.add(String(r.target_domain).toLowerCase());
-  }
-  const toDfs = cleanAcquirable.filter((d) => !assessed.has(d));
-  let dfsSent = 0;
-  if (toDfs.length) {
-    const { n8nWebhookUrl } = await readSettings();
-    if (n8nWebhookUrl) {
-      for (let i = 0; i < toDfs.length; i += DFS_BATCH) {
-        const batch = toDfs.slice(i, i + DFS_BATCH);
-        try {
-          const res = await fetch(n8nWebhookUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ domains: batch, source: "wayback-dispatch", ts: new Date().toISOString() }),
-            signal: AbortSignal.timeout(20_000),
-          });
-          if (res.ok) {
-            // placeholder (rating=null) → tick sau không gửi lại; ingest-rating ghi đè khi N8N trả.
-            await upsertAssessments(batch.map((d) => ({ targetDomain: d, rating: null, category: null, detail: "DFS pending", excludedAt: null })));
-            dfsSent += batch.length;
-          }
-        } catch { /* ignore batch */ }
-      }
-    }
-  }
+  // ── 2. RATING (re-arm + credit-aware) ─────────────────────────────────────────
+  const rating = await ratingBackfill(clean, acquirable, n8nWebhookUrl, prev);
 
-  // ── 3. DISPATCH Wayback cho available(≤$26) CHƯA check & chưa in-flight ───────
+  // ── 3. GNAME backfill (rated-good chưa check → gate job nền) ──────────────────
+  const gname = await gnameBackfill();
+
+  // ── 4. DISPATCH Wayback cho available(≤$26) CHƯA check & chưa in-flight ───────
   const inFlight = new Set<string>();
   for (const r of pending) for (const t of r.targets) inFlight.add(String(t).toLowerCase());
   const toWayback = [...acquirable.keys()].filter((d) => {
@@ -148,11 +157,212 @@ export async function dispatchTick(): Promise<DispatchSummary> {
       dispatched++; dispatchedDomains += batch.length;
     } catch { break; }   // đụng limit / lỗi → dừng, để tick sau
   }
+  const remainingToWayback = toWayback.length - dispatchedDomains;
+
+  // ── 5. HEARTBEAT ─────────────────────────────────────────────────────────────
+  const state: ReconcileState = {
+    lastTickAt: new Date().toISOString(),
+    tookMs: Date.now() - startedAt,
+    backlog: { rating: rating.backlog, gname: gname.backlog, wayback: remainingToWayback },
+    creditFlag: rating.creditFlag,
+    lastRatingSendAt: rating.sent > 0 ? new Date().toISOString() : prev.lastRatingSendAt,
+    lastGnameJobId: gname.jobId ?? prev.lastGnameJobId,
+    last: {
+      ratingReArmed: rating.reArmed,
+      ratingSent: rating.sent,
+      ratingProbe: rating.probe,
+      gnameKicked: gname.kicked,
+      waybackDispatched: dispatchedDomains,
+      ingestedResults,
+    },
+  };
+  await writeReconcileState(state).catch(() => {});
 
   return {
-    ingestedRuns, ingestedResults, dfsSent,
-    dispatched, dispatchedDomains,
-    remainingToWayback: toWayback.length - dispatchedDomains,
+    ingestedRuns, ingestedResults,
+    ratingBacklog: rating.backlog, ratingReArmed: rating.reArmed, ratingSent: rating.sent, ratingProbe: rating.probe, creditFlag: rating.creditFlag,
+    gnameBacklog: gname.backlog, gnameKicked: gname.kicked, gnameJobId: gname.jobId,
+    dispatched, dispatchedDomains, remainingToWayback,
     activeAfter: active + dispatched,
   };
+}
+
+// ─── Stage 2: RATING backfill ────────────────────────────────────────────────
+interface RatingResult { backlog: number; reArmed: number; sent: number; probe: boolean; creditFlag: CreditFlag }
+
+async function ratingBackfill(
+  clean: Set<string>,
+  acquirable: Map<string, { status: string; dropEta: string | null }>,
+  n8nWebhookUrl: string,
+  prev: ReconcileState,
+): Promise<RatingResult> {
+  const sb = supabase();
+  const now = Date.now();
+
+  // Universe "cần rating" — map domain → updatedAt (chuỗi ISO) hoặc null (chưa có row).
+  // (a) Row kẹt trong target_assessment: rating null (placeholder/chưa chấm) HOẶC
+  //     category ~ "API error" (chấm lỗi). excluded_at null (chưa bị loại trừ).
+  const need = new Map<string, string | null>();
+  const noteOldest = (d: string, ts: string | null) => {
+    if (!need.has(d)) { need.set(d, ts); return; }
+    // giữ updatedAt CŨ nhất (đã chờ lâu nhất) — null (chưa gửi) coi như cũ nhất.
+    const cur = need.get(d) ?? null;
+    if (cur === null) return;                 // đã là "cũ nhất" → giữ
+    if (ts === null) { need.set(d, null); return; }
+    if (Date.parse(ts) < Date.parse(cur)) need.set(d, ts);
+  };
+
+  // rating=null nhưng LOẠI marker "DataforSEO checked" — marker này nghĩa là domain
+  // ĐÃ được DataForSEO check xong, 0 ref đáng giá → cố tình để rating null (đã xử lý
+  // dứt điểm, KHÔNG phải kẹt). Gửi lại chúng = churn vô tận + đốt credit. Chỉ giữ
+  // placeholder ("DFS pending"), detail null, hoặc detail khác → là domain thật sự
+  // chưa/đang chờ rating.
+  const nullRating = await pageAll<{ target_domain: string; updated_at: string; detail: string | null }>(
+    () => sb.from("target_assessment").select("target_domain,updated_at,detail").is("rating", null).is("excluded_at", null),
+  );
+  for (const r of nullRating) {
+    if ((r.detail ?? "").trim() === "DataforSEO checked") continue;
+    noteOldest(String(r.target_domain).toLowerCase(), r.updated_at);
+  }
+
+  const apiErr = await pageAll<{ target_domain: string; updated_at: string }>(
+    () => sb.from("target_assessment").select("target_domain,updated_at").ilike("category", "%API%error%").is("excluded_at", null),
+  );
+  for (const r of apiErr) noteOldest(String(r.target_domain).toLowerCase(), r.updated_at);
+
+  // (b) Domain clean+mua-được nhưng CHƯA có rating thật (gồm cả chưa từng gửi).
+  //     Đây là "chặng cuối" — domain đã qua Wayback+Gname, chỉ thiếu rating.
+  const cleanAcq = [...clean].filter((d) => acquirable.has(d));
+  const done = new Set<string>();  // đã rating thật HOẶC marker "DataforSEO checked"
+  for (let i = 0; i < cleanAcq.length; i += 300) {
+    const slice = cleanAcq.slice(i, i + 300);
+    const { data } = await sb.from("target_assessment").select("target_domain,rating,detail").in("target_domain", slice);
+    for (const r of (data ?? []) as { target_domain: string; rating: string | null; detail: string | null }[]) {
+      if (r.rating || (r.detail ?? "").trim() === "DataforSEO checked") done.add(String(r.target_domain).toLowerCase());
+    }
+  }
+  for (const d of cleanAcq) {
+    if (done.has(d)) continue;         // đã có rating thật / đã check xong → bỏ qua
+    if (!need.has(d)) need.set(d, null); // chưa từng gửi → cần gửi
+  }
+
+  const backlog = need.size;
+  if (!backlog) return { backlog: 0, reArmed: 0, sent: 0, probe: false, creditFlag: "idle" };
+  if (!n8nWebhookUrl) return { backlog, reArmed: 0, sent: 0, probe: false, creditFlag: "unknown" };
+
+  // Eligible = chưa từng gửi (null) HOẶC placeholder cũ hơn RE-ARM. Sắp xếp cũ→mới
+  // để probe xoay vòng qua backlog theo thời gian.
+  const rearmCutoff = now - RATING_REARM_MIN * 60 * 1000;
+  const eligible = [...need.entries()]
+    .filter(([, ts]) => ts === null || Date.parse(ts) < rearmCutoff)
+    .sort((a, b) => (a[1] ? Date.parse(a[1]) : 0) - (b[1] ? Date.parse(b[1]) : 0));
+  if (!eligible.length) return { backlog, reArmed: 0, sent: 0, probe: false, creditFlag: "unknown" };
+
+  // Credit-aware: có rating THẬT nào về trong 1h qua không?
+  const oneHourAgo = new Date(now - 60 * 60 * 1000).toISOString();
+  const { count } = await sb
+    .from("target_assessment")
+    .select("*", { count: "exact", head: true })
+    .not("rating", "is", null)
+    .gte("updated_at", oneHourAgo);
+  const realLastHour = count ?? 0;
+
+  const sentRecently = prev.lastRatingSendAt != null && (now - Date.parse(prev.lastRatingSendAt) < CREDIT_SENT_COOLDOWN_MIN * 60 * 1000);
+  let creditFlag: CreditFlag;
+  let batchSize: number;
+  let probe: boolean;
+  if (realLastHour === 0 && sentRecently) {
+    // Đã gửi gần đây mà 0 rating về → nhiều khả năng hết credit. Chỉ gửi probe nhỏ
+    // để phát hiện lúc credit về (không blast cả backlog vô ích).
+    creditFlag = "waiting_credit"; batchSize = RATING_PROBE; probe = true;
+  } else {
+    creditFlag = realLastHour > 0 ? "flowing" : "unknown"; batchSize = RATING_BATCH; probe = false;
+  }
+
+  const toSend = eligible.slice(0, batchSize).map(([d]) => d);
+  const reArmed = eligible.slice(0, batchSize).filter(([, ts]) => ts !== null).length;
+
+  // Gửi N8N + đánh dấu placeholder (updated_at=now → rời "eligible" 45', probe xoay
+  // vòng; ingest-rating ghi đè khi N8N trả rating thật).
+  let sent = 0;
+  const nowIso = new Date().toISOString();
+  for (let i = 0; i < toSend.length; i += RATING_BATCH) {
+    const batch = toSend.slice(i, i + RATING_BATCH);
+    try {
+      const res = await fetch(n8nWebhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domains: batch, source: "reconcile", ts: nowIso }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (res.ok) {
+        await upsertAssessments(batch.map((d) => ({ targetDomain: d, rating: null, category: null, detail: "DFS pending", excludedAt: null })));
+        sent += batch.length;
+      }
+    } catch { /* ignore batch */ }
+  }
+
+  return { backlog, reArmed, sent, probe, creditFlag };
+}
+
+// ─── Stage 3: GNAME backfill ─────────────────────────────────────────────────
+interface GnameResult { backlog: number; kicked: number; jobId: string | null }
+
+async function gnameBackfill(): Promise<GnameResult> {
+  const sb = supabase();
+
+  // Rated-good (TỐT / TRUNG BÌNH), chưa loại trừ.
+  const good = new Set<string>();
+  for (const kw of ["%TỐT%", "%TRUNG BÌNH%"]) {
+    const rows = await pageAll<{ target_domain: string }>(
+      () => sb.from("target_assessment").select("target_domain").ilike("rating", kw).is("excluded_at", null),
+    );
+    for (const r of rows) good.add(String(r.target_domain).toLowerCase());
+  }
+  if (!good.size) return { backlog: 0, kicked: 0, jobId: null };
+  const goodArr = [...good];
+
+  // Đã mua (domain_inventory) → không cần check Gname.
+  const owned = new Set<string>();
+  for (const r of await pageAll<{ domain: string }>(() => sb.from("domain_inventory").select("domain"))) {
+    owned.add(String(r.domain).toLowerCase());
+  }
+
+  // Lần check Gname MỚI NHẤT của mỗi domain rated-good (status + thời điểm).
+  const latest = new Map<string, { status: string; checkedAt: string }>();
+  for (let i = 0; i < goodArr.length; i += 200) {
+    const slice = goodArr.slice(i, i + 200);
+    const { data, error } = await sb
+      .from("gname_checks").select("domain,status,checked_at").in("domain", slice)
+      .order("checked_at", { ascending: false });
+    if (error) throw new Error(error.message);
+    for (const r of (data ?? []) as { domain: string; status: string; checked_at: string }[]) {
+      const d = String(r.domain).toLowerCase();
+      if (!latest.has(d)) latest.set(d, { status: r.status, checkedAt: r.checked_at }); // desc → first = mới nhất
+    }
+  }
+
+  // Cần check = chưa mua VÀ (chưa từng check  HOẶC  lần check gần nhất là
+  // available/backorder nhưng đã quá hạn acquire-window 24h → refresh để Wayback
+  // stage bắt lại được). Registered/premium/error → KHÔNG re-check (tránh phồng).
+  const staleCutoff = Date.now() - GNAME_TTL_H * 3600 * 1000;
+  const needGname = goodArr.filter((d) => {
+    if (owned.has(d)) return false;
+    const l = latest.get(d);
+    if (!l) return true;                                   // chưa từng check
+    if ((l.status === "available" || l.status === "backorder") && Date.parse(l.checkedAt) < staleCutoff) return true;
+    return false;
+  });
+  const backlog = needGname.length;
+  if (!backlog) return { backlog: 0, kicked: 0, jobId: null };
+
+  // Không xếp chồng job: nếu đang có gate job chạy (cập nhật trong 10' qua) → chờ.
+  const runningCutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const { data: runningJobs } = await sb
+    .from("gname_gate_jobs").select("id").eq("status", "running").gte("updated_at", runningCutoff).limit(1);
+  if (runningJobs && runningJobs.length) return { backlog, kicked: 0, jobId: null };
+
+  const batch = needGname.slice(0, GNAME_JOB_CAP);
+  const jobId = await startGateJob(batch);
+  return { backlog, kicked: batch.length, jobId };
 }
