@@ -31,12 +31,14 @@ OUTER_EOF
 chmod +x "$TICK"
 
 # Crontab của user: mỗi 20' (khớp ngưỡng heartbeat 75'). Xoá dòng cũ rồi thêm lại.
-( crontab -l 2>/dev/null | grep -v 'reconcile-tick.sh' ; \
-  echo "*/20 * * * * $TICK >> $HOME/reconcile-tick.log 2>&1" ) | crontab -
+# Lưu ý: `crontab -l` trả exit 1 khi user CHƯA có crontab → phải bọc `|| true` để
+# không bị set -e/pipefail giết trước khi cài.
+EXISTING="$(crontab -l 2>/dev/null || true)"
+FILTERED="$(printf '%s\n' "$EXISTING" | grep -v 'reconcile-tick.sh' || true)"
+{ printf '%s\n' "$FILTERED"; echo "*/20 * * * * $TICK >> $HOME/reconcile-tick.log 2>&1"; } | crontab -
 
 echo "=== crontab đã cài ==="
 crontab -l | grep 'reconcile-tick.sh' || { echo "ERROR: cron chưa vào"; exit 1; }
 
 echo "=== chạy thử 1 lần ngay ==="
-"$TICK"
-echo "=== xong ==="
+if "$TICK"; then echo "=== tick OK ==="; else echo "=== tick FAILED (xem output trên) ==="; exit 1; fi
