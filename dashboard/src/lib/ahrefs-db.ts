@@ -141,7 +141,12 @@ export async function readTargetSummary(): Promise<TargetSummary[]> {
   // still processed: excluded targets, và DataforSEO-checked (0 ref khớp DR)
   // → để chúng vẫn hiện trong panel cho user review + Wayback + quyết định.
   for (const [domain, a] of assessMap.entries()) {
-    if (!map.has(domain) && (a.excluded_at || a.detail === "DataforSEO checked")) {
+    // Hiện MỌI domain đã có đánh giá (rating), kể cả khi chưa có ref rows trong
+    // bảng ref (ví dụ chấm bằng Fla — chỉ ghi rating/detail vào target_assessment,
+    // không đổ ref rows) và chưa bị loại trừ. Trước đây điều kiện chỉ nhận
+    // excluded_at || detail=="DataforSEO checked" nên các domain Fla (rating có,
+    // excluded_at=null, detail=ref-summary) bị rớt → lookup báo "chưa có đánh giá".
+    if (!map.has(domain) && (a.rating || a.excluded_at || a.detail === "DataforSEO checked")) {
       ensure(domain, a.updated_at);
     }
   }
@@ -239,7 +244,12 @@ export async function readTargetSummaryFor(targetsRaw: string[]): Promise<Target
     cur.refs.push({ domain: r.ref_domain, dr: r.domain_rating });
   }
   for (const [domain, a] of assessMap.entries()) {
-    if (!map.has(domain) && (a.excluded_at || a.detail === "DataforSEO checked")) {
+    // Hiện MỌI domain đã có đánh giá (rating), kể cả khi chưa có ref rows trong
+    // bảng ref (ví dụ chấm bằng Fla — chỉ ghi rating/detail vào target_assessment,
+    // không đổ ref rows) và chưa bị loại trừ. Trước đây điều kiện chỉ nhận
+    // excluded_at || detail=="DataforSEO checked" nên các domain Fla (rating có,
+    // excluded_at=null, detail=ref-summary) bị rớt → lookup báo "chưa có đánh giá".
+    if (!map.has(domain) && (a.rating || a.excluded_at || a.detail === "DataforSEO checked")) {
       ensure(domain, a.updated_at);
     }
   }

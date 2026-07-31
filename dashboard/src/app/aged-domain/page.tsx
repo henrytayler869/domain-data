@@ -51,6 +51,20 @@ interface LookupRow {
   expectedPrice: number | null; // giá dự kiến đã set bên Kho (null = chưa set)
 }
 
+// Parse ref từ chuỗi detail khi assessment KHÔNG có ref rows (ví dụ chấm bằng Fla —
+// chỉ ghi rating/detail vào target_assessment, không đổ ref rows). Detail dạng
+// "wordpress.com (DR 96); blogspot.com (DR 95); …" — cùng regex với Kho Domain.
+function parseDetailRefs(detail: string | null): { domain: string; dr: number }[] {
+  if (!detail) return [];
+  const body = detail.includes("|") ? detail.slice(detail.indexOf("|") + 1) : detail;
+  const out: { domain: string; dr: number }[] = [];
+  for (const part of body.split(/[;\n]+/)) {
+    const m = part.match(/([a-z0-9][a-z0-9.-]*\.[a-z]{2,})\s*\(\s*DR\s*(\d+)/i);
+    if (m) out.push({ domain: m[1].toLowerCase(), dr: Number(m[2]) });
+  }
+  return out;
+}
+
 // Backlink mạnh: ĐK1 = ref DR>90; ĐK2 = ref DR70-89 traffic ≥ 1M.
 const STRONG_TRAFFIC_MIN = 1_000_000;
 function backlinkEvidence(
@@ -217,8 +231,13 @@ export default function AgedDomainPage() {
         if (!s) {
           return { domain, found: false, rating: null, category: null, detail: null, refsCount: 0, maxDr: 0, refs: [], cond: 0, evItems: [], purchased, expectedPrice };
         }
-        // Lọc blacklist (s.refs đã sort DR desc → cleanRefs[0] là max DR).
-        const cleanRefs = s.refs.filter((r) => !blSet.has(r.domain.toLowerCase()));
+        // Ref rows nếu có; nếu không (chấm Fla) thì parse từ detail. Sort DR desc
+        // để cleanRefs[0] là max DR, đồng nhất với Kho Domain.
+        const baseRefs = (s.refs.length ? s.refs : parseDetailRefs(s.detail))
+          .slice()
+          .sort((a, b) => b.dr - a.dr);
+        // Lọc blacklist (đã sort DR desc → cleanRefs[0] là max DR).
+        const cleanRefs = baseRefs.filter((r) => !blSet.has(r.domain.toLowerCase()));
         const ev = backlinkEvidence(cleanRefs, trafficMap);
         return {
           domain,
