@@ -1,0 +1,30 @@
+name: Install reconciler heartbeat (VPS cron)
+
+# Chạy TAY (workflow_dispatch) 1 lần để cài native VPS cron gọi reconciler tick
+# mỗi 20'. Tái dùng đúng SSH secrets của deploy.yml — không cần secret mới, không
+# đụng token. Cài xong, nhịp tim do crond của VPS lo (không phụ thuộc scheduler
+# của GitHub). Chạy lại workflow này an toàn (script idempotent).
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: reconcile-heartbeat-install
+  cancel-in-progress: false
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Install reconciler cron on VPS
+        run: |
+          ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=no -o ServerAliveInterval=30 \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" bash -s < .github/scripts/install-reconcile-cron.sh
