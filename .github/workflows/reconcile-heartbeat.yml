@@ -6,6 +6,12 @@ name: Install reconciler heartbeat (VPS cron)
 # của GitHub). Chạy lại workflow này an toàn (script idempotent).
 on:
   workflow_dispatch:
+  # Tự chạy khi chính installer thay đổi (không cần quyền admin để dispatch).
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/reconcile-heartbeat.yml"
+      - ".github/scripts/install-reconcile-cron.sh"
 
 concurrency:
   group: reconcile-heartbeat-install
