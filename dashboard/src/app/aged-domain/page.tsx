@@ -14,6 +14,7 @@ import {
   Copy,
   Check,
   Download,
+  Ban,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -49,6 +50,7 @@ interface LookupRow {
   evItems: { domain: string; dr: number; traffic: number | null }[];
   purchased: boolean;           // có trong Kho Domain chưa
   expectedPrice: number | null; // giá dự kiến đã set bên Kho (null = chưa set)
+  excluded: boolean;            // đã bị Loại trừ (target_assessment.excluded_at)
 }
 
 // Parse ref từ chuỗi detail khi assessment KHÔNG có ref rows (ví dụ chấm bằng Fla —
@@ -229,7 +231,7 @@ export default function AgedDomainPage() {
         const expectedPrice = purchased ? (invMap.get(domain) ?? null) : null;
         const s = map.get(domain);
         if (!s) {
-          return { domain, found: false, rating: null, category: null, detail: null, refsCount: 0, maxDr: 0, refs: [], cond: 0, evItems: [], purchased, expectedPrice };
+          return { domain, found: false, rating: null, category: null, detail: null, refsCount: 0, maxDr: 0, refs: [], cond: 0, evItems: [], purchased, expectedPrice, excluded: false };
         }
         // Ref rows nếu có; nếu không (chấm Fla) thì parse từ detail. Sort DR desc
         // để cleanRefs[0] là max DR, đồng nhất với Kho Domain.
@@ -252,6 +254,7 @@ export default function AgedDomainPage() {
           evItems: ev.items,
           purchased,
           expectedPrice,
+          excluded: s.excluded,
         };
       });
       setLookupRows(rows);
@@ -423,6 +426,32 @@ export default function AgedDomainPage() {
     }
   }
 
+  // Loại trừ domain đã chọn (target_assessment.excluded_at) → rời pipeline/picker,
+  // KHÔNG xoá đánh giá. Đánh dấu excluded ngay trong bảng để thấy phản hồi.
+  const [excludingLookup, setExcludingLookup] = useState(false);
+  async function excludeLookup() {
+    const targets = Array.from(selectedLookup);
+    if (!targets.length) return;
+    setExcludingLookup(true);
+    try {
+      const res = await fetch("/api/ahrefs-results/db/exclude", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targets }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Loại trừ thất bại");
+      const set = new Set(targets);
+      setLookupRows((prev) => prev ? prev.map((r) => set.has(r.domain) ? { ...r, excluded: true } : r) : prev);
+      setSelectedLookup(new Set());
+      showToast(`✅ Đã loại trừ ${targets.length} domain (đánh giá vẫn giữ)`);
+    } catch (err) {
+      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
+    } finally {
+      setExcludingLookup(false);
+    }
+  }
+
   // ─── CSV import ───────────────────────────────────────────────────────────────
 
   // Parse "domain,dr[,traffic]" — bỏ header + dòng dr không hợp lệ.
@@ -534,14 +563,26 @@ export default function AgedDomainPage() {
               <option value="none">Chưa đánh giá</option>
             </select>
             {selectedLookup.size > 0 && (
-              <Button
-                size="sm"
-                className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"
-                onClick={openPurchaseForm}
-              >
-                <Check className="h-3.5 w-3.5" />
-                Đã mua ({selectedLookup.size})
-              </Button>
+              <>
+                <Button
+                  size="sm"
+                  className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"
+                  onClick={openPurchaseForm}
+                >
+                  <Check className="h-3.5 w-3.5" />
+                  Mua ({selectedLookup.size})
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5 border-rose-300 text-rose-600 hover:bg-rose-50 dark:border-rose-900 dark:hover:bg-rose-950/30"
+                  onClick={excludeLookup}
+                  disabled={excludingLookup}
+                >
+                  {excludingLookup ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Ban className="h-3.5 w-3.5" />}
+                  Loại trừ ({selectedLookup.size})
+                </Button>
+              </>
             )}
             <Button size="sm" variant="outline" className="gap-1.5 ml-auto" onClick={copyLookup} disabled={!displayedLookup.length}>
               {copiedLookup ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
@@ -604,11 +645,14 @@ export default function AgedDomainPage() {
                           {row.found ? (expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />) : null}
                         </td>
                         <td className="px-3 py-2 font-mono text-xs">{row.domain}</td>
-                        <td className="px-3 py-2">
+                        <td className="px-3 py-2 whitespace-nowrap">
                           {row.purchased ? (
                             <span className="inline-flex items-center gap-0.5 rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 px-1.5 py-0.5 text-[10px] font-medium"><Check className="h-2.5 w-2.5" /> Đã mua</span>
                           ) : (
                             <span className="inline-block rounded bg-muted text-muted-foreground px-1.5 py-0.5 text-[10px] font-medium">Chưa mua</span>
+                          )}
+                          {row.excluded && (
+                            <span className="ml-1 inline-flex items-center gap-0.5 rounded bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300 px-1.5 py-0.5 text-[10px] font-medium"><Ban className="h-2.5 w-2.5" /> Đã loại</span>
                           )}
                         </td>
                         <td className="px-3 py-2">
