@@ -1,7 +1,8 @@
 /**
  * Định giá domain theo chất lượng backlink (referring domains đã lọc blacklist).
- * Mỗi ref đóng góp điểm theo DR vượt ngưỡng 40 (hoặc điểm cố định nếu là
- * authority/.gov/.edu); tổng × hệ số rồi kẹp [VALUATION_MIN, VALUATION_MAX].
+ * - Không có ref DR ≥ 90 → domain yếu → định giá thấp $15–$17 (giả-random ổn định).
+ * - Có ref DR ≥ 90 → mỗi ref đóng góp điểm theo DR vượt ngưỡng 40 (hoặc điểm cố định
+ *   nếu là authority/.gov/.edu); tổng × hệ số rồi kẹp [VALUATION_MIN, VALUATION_MAX].
  * Dùng chung cho Kho Domain (giá dự kiến) và Backlink DB (cột Giá khi export).
  */
 
@@ -48,7 +49,19 @@ function hashStr(s: string): number {
   return h;
 }
 
+// Giá "domain yếu" (không có ref DR≥90): random ổn định trong [WEAK_MIN, WEAK_MAX].
+export const WEAK_VALUATION_MIN = 15;
+export const WEAK_VALUATION_MAX = 17;
+
 export function valuateByRefs(refs: { domain?: string; dr: number }[], domain = ""): number {
+  // Không có ref mạnh (DR ≥ 90) → domain yếu → định giá thấp $15–$17. Giả-random
+  // ổn định theo domain (không đổi mỗi lần render / định giá lại).
+  const hasStrong = refs.some((r) => (r.dr ?? 0) >= 90);
+  if (!hasStrong) {
+    const span = (WEAK_VALUATION_MAX - WEAK_VALUATION_MIN) * 100 + 1; // số cent khả dĩ
+    const cents = hashStr(domain || "x") % span;                     // 0..span-1
+    return Math.round((WEAK_VALUATION_MIN * 100 + cents)) / 100;      // 15.00..17.00
+  }
   const points = refs.reduce((sum, r) => sum + refPoints(r.domain, r.dr), 0);
   const base = VALUATION_MIN + points * VALUATION_K;
   // Whole dollars kẹp [MIN, MAX-1] để cộng phần lẻ vẫn ≤ MAX và ≥ MIN.

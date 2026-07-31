@@ -30,7 +30,7 @@ import type { InventoryEntry } from "@/lib/inventory-db";
 import type { TargetSummary } from "@/lib/ahrefs-db";
 import type { RefBlacklistEntry } from "@/lib/ref-blacklist-db";
 import type { Withdrawal, WithdrawalStatus, WithdrawalWallet } from "@/lib/withdrawal-db";
-import { VALUATION_MIN, VALUATION_MAX, valuateByRefs } from "@/lib/valuation";
+import { WEAK_VALUATION_MIN, VALUATION_MAX, valuateByRefs } from "@/lib/valuation";
 
 type SortKey = "domain" | "purchasePrice" | "sellPrice" | "expectedSellPrice" | "profit" | "rating" | "category" | "purchasedAt" | "soldAt" | "status";
 
@@ -1400,7 +1400,7 @@ export default function InventoryPage() {
               title={
                 toValuate === 0
                   ? "Chọn domain (chưa bán) để định giá"
-                  : `Định giá ${toValuate} domain đã chọn dựa trên REFS ($${VALUATION_MIN}–$${VALUATION_MAX}); ghi đè giá đã có`
+                  : `Định giá ${toValuate} domain đã chọn dựa trên REFS (không ref DR≥90 → $${WEAK_VALUATION_MIN}–$17; có ref mạnh → tới $${VALUATION_MAX}); ghi đè giá đã có`
               }
             >
               {valuating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <TrendingUp className="h-3.5 w-3.5" />}
