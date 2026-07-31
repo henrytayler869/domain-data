@@ -1,9 +1,13 @@
+# syntax=docker/dockerfile:1
 FROM node:22-slim AS build
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY package*.json ./
-# npm install (not ci) so linux swc native binding is fetched; retry flags for flaky bandwidth
-RUN npm install --no-audit --no-fund --fetch-timeout=600000 --fetch-retries=6 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000
+# npm install (not ci) so linux swc native binding is fetched; retry flags for flaky bandwidth.
+# Cache mount /root/.npm: gói đã tải được giữ lại giữa các lần build → lần deploy sau
+# (kể cả retry sau khi timeout) tái dùng cache, đỡ phải tải lại từ đầu qua băng thông chập chờn.
+RUN --mount=type=cache,target=/root/.npm \
+    npm install --no-audit --no-fund --fetch-timeout=600000 --fetch-retries=6 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000
 COPY . ./
 # Turbopack needs native bindings; fall back to webpack if unavailable.
 RUN npm run build || npx --yes next build --webpack
