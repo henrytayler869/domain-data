@@ -47,16 +47,17 @@ function parseDomains(text: string): string[] {
 const tldOf = (d: string) => d.split(".").pop() ?? "";
 const DOMAIN_RE = /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/;
 
-// Có ref domain nào DR > 90 không, đọc từ chuỗi detail của rating.
-//   N8N: "DR>90:5 | d1 (DR 95); d2 (DR 92)"  → dùng số sau "DR>90:"
-//   fallback: quét "(DR NN)" trong danh sách ref, có NN > 90 là đạt.
-function hasRefOver90(detail: string | null | undefined): boolean {
+// Có ref domain "mạnh" (DR ≥ 90) không — đồng bộ với ĐK1 Backlink mạnh ở Backlink DB.
+//   Marker N8N "DR>90:N" đếm sẵn ref DR>90 (strict) → N>0 là chắc chắn có ref mạnh
+//   (>90 ⊂ ≥90). NGOÀI RA quét "(DR NN)" trong ref list cho NN ≥ 90 để bắt cả ref
+//   DR đúng 90 mà marker (>90) bỏ sót.
+function hasStrongRef90(detail: string | null | undefined): boolean {
   if (!detail) return false;
   const m = detail.match(/DR\s*>?\s*90\s*:\s*(\d+)/i);
-  if (m) return Number(m[1]) > 0;
+  if (m && Number(m[1]) > 0) return true;
   const re = /\(\s*DR\s*(\d+)\s*\)/gi;
   let x: RegExpExecArray | null;
-  while ((x = re.exec(detail))) if (Number(x[1]) > 90) return true;
+  while ((x = re.exec(detail))) if (Number(x[1]) >= 90) return true;
   return false;
 }
 
@@ -273,11 +274,11 @@ export default function DomainPickerPage() {
   // Bước 6: chỉ giữ domain rating Tốt / Trung bình. Ưu tiên tập Clean của lần chạy;
   // nếu vào thẳng Bước 6 (upload kết quả rời) thì lấy toàn bộ domain đã có rating.
   const buyList = useMemo(() => {
-    // TỐT → luôn giữ. TRUNG BÌNH → chỉ giữ nếu CÓ ref DR > 90 (không có thì loại).
+    // TỐT → luôn giữ. TRUNG BÌNH → chỉ giữ nếu CÓ ref DR ≥ 90 (không có thì loại).
     const isGood = (d: string) => {
       const r = ratings[d] ?? "";
       if (r.includes("TỐT")) return true;
-      if (r.includes("TRUNG BÌNH")) return hasRefOver90(details[d]);
+      if (r.includes("TRUNG BÌNH")) return hasStrongRef90(details[d]);
       return false;
     };
     const base = cleanDomains.length ? cleanDomains : Object.keys(ratings);
