@@ -1,4 +1,5 @@
 name: Install reconciler heartbeat (VPS cron)
+# (re-run để verify tick trên code reconciler mới sau khi deploy)
 
 # Chạy TAY (workflow_dispatch) 1 lần để cài native VPS cron gọi reconciler tick
 # mỗi 20'. Tái dùng đúng SSH secrets của deploy.yml — không cần secret mới, không
