@@ -68,13 +68,13 @@ function parseDetailRefs(detail: string | null): { domain: string; dr: number }[
   return out;
 }
 
-// Backlink mạnh: ĐK1 = ref DR>90; ĐK2 = ref DR70-89 traffic ≥ 1M.
+// Backlink mạnh: ĐK1 = ref DR≥90; ĐK2 = ref DR70-89 traffic ≥ 1M.
 const STRONG_TRAFFIC_MIN = 1_000_000;
 function backlinkEvidence(
   refs: { domain: string; dr: number }[],
   trafficMap: Map<string, number>,
 ): { cond: 0 | 1 | 2; items: { domain: string; dr: number; traffic: number | null }[] } {
-  const dr90 = refs.filter((r) => r.dr > 90);
+  const dr90 = refs.filter((r) => r.dr >= 90);
   if (dr90.length) return { cond: 1, items: dr90.map((r) => ({ domain: r.domain, dr: r.dr, traffic: null })) };
   const dr7089 = refs
     .map((r) => ({ domain: r.domain, dr: r.dr, traffic: trafficMap.get(r.domain.toLowerCase()) ?? 0 }))
@@ -746,7 +746,7 @@ export default function AgedDomainPage() {
                         <td className="px-3 py-2 text-xs text-muted-foreground">{row.found ? row.refsCount.toLocaleString() : "—"}</td>
                         <td className="px-3 py-2 text-xs">
                           {row.cond === 1 ? (
-                            <span className="inline-block rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 px-1.5 py-0.5 text-[10px] font-medium">✅ ĐK1 · {row.evItems.length} ref DR&gt;90</span>
+                            <span className="inline-block rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 px-1.5 py-0.5 text-[10px] font-medium">✅ ĐK1 · {row.evItems.length} ref DR≥90</span>
                           ) : row.cond === 2 ? (
                             <span className="inline-block rounded bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 px-1.5 py-0.5 text-[10px] font-medium">🟡 ĐK2 · {row.evItems.length} ref ≥1M</span>
                           ) : <span className="opacity-40">—</span>}
