@@ -40,6 +40,92 @@
     sel.dispatchEvent(new Event("change", { bubbles: true }));
   });
 
+  // ---- Tao & LUU 1 Saved Filter tu CSV (dat field trong #sz-filters form roi POST /filter/save/) ----
+  // content.js (isolated world) khong goi duoc jQuery.serializeArray() + CSRF cua trang -> nho MAIN world lam.
+  // Nhan payload JSON: { id, name, domains:[...] }. Tra ket qua qua "SZ_SAVE_FILTER_RESULT".
+  window.addEventListener("SZ_SAVE_FILTER", function (e) {
+    var payload;
+    try { payload = JSON.parse(e && e.detail); } catch (err) { return; }
+    var id = payload && payload.id;
+    var name = (payload && payload.name) || "";
+    var domains = (payload && payload.domains) || [];
+
+    function reply(obj) {
+      obj.id = id;
+      window.dispatchEvent(new CustomEvent("SZ_SAVE_FILTER_RESULT", { detail: JSON.stringify(obj) }));
+    }
+
+    var $ = window.jQuery || window.$;
+    if (!$) { reply({ ok: false, error: true, msg: "Trang chua nap jQuery." }); return; }
+
+    try {
+      var $form = $("#sz-filters form");
+      if (!$form.length) { reply({ ok: false, error: true, msg: "Khong tim thay form #sz-filters." }); return; }
+
+      // 1) Reset ve mac dinh (theo dung logic nut 'Reset Filter' cua SpamZilla, bo confirm + reload).
+      $('input[name="quick_filter_id"]').val("");
+      $('input[name="keyword_search"], input[name="keyword_search_xs"], input[name="Filter[keyword]"]').val("");
+      $('#sz-filters select, #sz-filters input[type="number"], #sz-filters input[type="text"]').val("");
+      $('#sz-filters input[type="checkbox"]').prop("checked", true);
+      $('#sz-filters [name="Filter[google_index]"], '
+        + '#sz-filters [name="Filter[processed_sz]"], '
+        + '#sz-filters [name="Filter[expiry_period]"], '
+        + '#sz-filters [name="Filter[remove_reviewed]"], '
+        + '#sz-filters [name="Filter[remove_watchlist]"], '
+        + '#sz-filters [name="Filter[has_gbp]"]').prop("checked", false);
+      $('input[name="Filter[gbp_rating_from]"]').val(1);
+      $('input[name="Filter[gbp_rating_to]"]').val(5);
+
+      // 2) Ap dat cac tuy chon yeu cau.
+      $('[name="Filter[sz_score_from]"]').val(0);   // SZ Score: Min 0
+      $('[name="Filter[sz_score_to]"]').val("");    //           Max trong
+      $('[name="Filter[sz_age_from]"]').val(3);     // SZ Age:   Min 3
+      $('[name="Filter[sz_age_to]"]').val("");      //           Max trong
+      $('[name="Filter[remove_reviewed]"]').prop("checked", true);   // Remove Reviewed: tick
+      $('[name="Filter[include_domains]"]').val(domains.join(", "));  // Include Domains (<=20)
+
+      // Domain Source: chi tick 'Expired Domains - Register Now!' + 'Pending Delete', bo het con lai.
+      $('[name="Filter[domain_sources][]"]').prop("checked", false);
+      $('[name="Filter[domain_sources][]"][value="expired"]').prop("checked", true);
+      $('[name="Filter[domain_sources][]"][value="pending-delete"]').prop("checked", true);
+      $('input[name="all_data_sources"]').prop("checked", false);
+
+      // 3) Serialize form + POST /filter/save/ (giong het onSaveFilterFormSubmit cua trang).
+      var data = $form.serializeArray();
+      var params = {
+        name: name,
+        isDefault: 0,
+        sendEmail: 0,
+        selectedFilter: "",
+        data: JSON.stringify(data)
+      };
+      // Them CSRF token (Yii) phong khi yii.js khong tu chen.
+      var tokenMeta = document.querySelector('meta[name="csrf-token"]');
+      var paramMeta = document.querySelector('meta[name="csrf-param"]');
+      if (tokenMeta && paramMeta) {
+        params[paramMeta.getAttribute("content")] = tokenMeta.getAttribute("content");
+      }
+
+      $.ajax({
+        url: "/filter/save/",
+        type: "POST",
+        data: params,
+        success: function (response) {
+          if (response && response.error) {
+            reply({ ok: false, error: true, msg: response.msg || "Server bao loi khi luu." });
+          } else {
+            reply({ ok: true, msg: (response && response.name) || name });
+          }
+        },
+        error: function (xhr) {
+          reply({ ok: false, error: true, msg: "HTTP " + (xhr && xhr.status) });
+        }
+      });
+    } catch (err) {
+      reply({ ok: false, error: true, msg: String((err && err.message) || err) });
+    }
+  });
+
   // ---- (2) Dem request dang bay -> bao "mang ranh" ----
   var pending = 0;
   var idleTimer = null;

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "SpamZilla Auto Reviewed",
-  "version": "1.3.1",
-  "description": "Tu dong review domain (chi trang 1 -> re-query, hop voi filter loai tru reviewed), lap qua tung filter, gom domain va luu ra file .txt.",
+  "version": "1.4.0",
+  "description": "Tu dong review domain + Tao Filter tu CSV (nap danh sach Include Domains -> tu set SZ Score/Age, Remove Reviewed, Domain Source va luu tung filter <=20 domain).",
   "icons": {},
   "permissions": ["storage"],
   "content_scripts": [

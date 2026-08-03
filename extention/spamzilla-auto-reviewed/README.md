@@ -33,6 +33,58 @@ Chạy trong Chrome thật của bạn nên **không dính Cloudflare bot-detect
 > chuyển filter. Vì vậy bạn có thể **tự chuyển từng filter + bấm "Bắt đầu"** cho mỗi cái
 > (nếu auto-duyệt không hợp UI), domain vẫn cộng dồn; cuối cùng bấm **Lưu TXT** là đủ.
 
+## 🆕 Tạo Filter từ CSV (v1.4)
+
+Mục **"▸ Tạo Filter từ CSV"** ở cuối bảng điều khiển giúp **nạp 1 file danh sách domain →
+tự tạo & lưu hàng loạt Saved Filter** trên SpamZilla, mỗi filter tối đa **20 domain** ở ô
+**Include Domains**. Mỗi filter được set sẵn:
+
+| Mục | Giá trị |
+|-----|---------|
+| **SZ Score** | Min `0`, Max để trống |
+| **SZ Age** | Min `3`, Max để trống |
+| **Remove Reviewed** | ✅ tick |
+| **Include Domains** | 20 domain của batch (phân cách bằng dấu phẩy) |
+| **Domain Source** | Chỉ tick **Expired Domains - Register Now!** + **Pending Delete**, bỏ hết còn lại |
+
+Mọi thiết lập khác được **reset về mặc định** (đúng như nút *Reset Filter* của SpamZilla)
+trước khi áp 5 mục trên → mỗi filter đồng nhất, chỉ khác nhau danh sách Include Domains.
+
+### Cách dùng
+
+1. Bấm **"▸ Tạo Filter từ CSV"** để mở mục này.
+2. **Chọn file** (`.csv` / `.txt`) chứa danh sách domain.
+   - File có dòng tiêu đề kiểu `===== Batch 1/39 (…) =====`: mỗi tiêu đề là **1 filter**,
+     **tên filter = nguyên văn dòng tiêu đề** (khớp cách bạn đã đặt tên trước đây). Nhóm nào
+     >20 domain sẽ tự tách thành `... (2)`, `... (3)`…
+   - File CSV phẳng (không có tiêu đề): gom hết domain rồi **chia mỗi 20**, đặt tên theo
+     **Mẫu tên** — hỗ trợ `{prefix}` (Prefix tên / mặc định lấy từ tên file), `{i}` (số thứ tự),
+     `{n}` (tổng số filter). Mặc định: `{prefix} {i}/{n}`.
+3. Xem trước **số filter · số domain** + vài tên đầu tiên ở ô thông tin.
+4. Bấm **"▶ Tạo & Lưu filter"**. Extension lần lượt set field + gọi `POST /filter/save/`
+   (dùng chính jQuery + CSRF của trang) cho từng batch, có **nghỉ giữa mỗi lần** (mặc định
+   800ms, chỉnh được) và **thử lại 1 lần** khi lỗi. Nút **■ Dừng** để ngắt.
+5. Kết quả hiện ở dòng trạng thái: `X lưu OK, Y lỗi / tổng`. Reload trang để thấy filter mới
+   trong dropdown / *Load Filter*.
+
+### Bỏ qua filter trùng tên
+
+Tick **"Bỏ qua filter trùng tên"** (mặc định bật) để **không tạo lại** những filter đã tồn tại.
+Extension đọc tên filter đã có từ dropdown **quick-filters**, select **user_filters** (modal Save)
+và bảng **Load Filter**, so khớp theo tên (đã gom khoảng trắng thừa). Ví dụ bạn đã tạo tay:
+
+```
+===== Batch 1/39  (20 domain, DR 95-100) =====
+===== Batch 2/39  (20 domain, DR 94-95) =====
+```
+
+→ khi nạp lại file 39 batch, 2 filter này bị **⏭ bỏ qua**, chỉ 37 filter còn lại được tạo mới.
+Ô xem trước hiển thị sẵn *"N filter đã tồn tại → sẽ bỏ qua"* trước khi chạy; kết quả cuối ghi rõ
+`X lưu OK, S bỏ qua (trùng), Y lỗi`. Bỏ tick nếu muốn tạo mới bất chấp trùng tên.
+
+> ⚠️ Lưu ý: khi **bỏ tick** dedup, chạy lại cùng file sẽ tạo **trùng tên**. Domain luôn được
+> **chuẩn hoá + khử trùng trong từng batch** (bỏ `www.`, `http(s)://`).
+
 ## Logic xử lý (v1.3 — hợp với filter loại trừ reviewed)
 
 Filter SpamZilla thường bật **loại trừ domain đã reviewed**. Nếu đi **tiến lên từng trang**,

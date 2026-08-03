@@ -34,6 +34,15 @@
     collected: new Set() // TOAN BO domain da gom (qua moi trang / moi filter) -> luu TXT
   };
 
+  // Trang thai "Tao Filter tu CSV" (tinh nang moi: nap CSV -> tao & luu filter).
+  const fmState = {
+    running: false,
+    rawText: "",         // noi dung file da nap (de parse lai khi doi prefix/mau ten)
+    filters: [],         // [{ name, domains:[...] }] — moi phan tu = 1 saved filter
+    delay: 800,          // ms nghi giua moi lan luu
+    done: 0, ok: 0, fail: 0, skipped: 0
+  };
+
   // ---------- HELPER ----------
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   const qsa = (s) => Array.from(document.querySelectorAll(s));
@@ -410,8 +419,220 @@
     refreshUI();
   }
 
+  // ---------- TAO FILTER TU CSV ----------
+  // Chuan hoa ten filter de so sanh trung (gom khoang trang thua, trim). Giu nguyen chu/hoa-thuong.
+  function normName(s) { return String(s || "").replace(/\s+/g, " ").trim(); }
+
+  // Doc ten cac filter DA CO tren trang (dropdown quick-filters, select user_filters trong modal
+  // Save, bang trong modal Load) -> Set ten da chuan hoa. Dung de bo qua filter trung ten.
+  function getExistingFilterNames() {
+    const set = new Set();
+    qsa('select[name="quick-filters"] option, select[name="user_filters"] option').forEach(o => {
+      if (o.value === "") return;                    // bo option "Select a Filter"
+      const nm = normName(o.textContent);
+      if (nm) set.add(nm);
+    });
+    qsa('#load-filter-modal a.filtername').forEach(a => {
+      const nm = normName(a.textContent);
+      if (nm) set.add(nm);
+    });
+    return set;
+  }
+
+  // Tach cac token domain trong 1 doan text (phan cach bang phay / khoang trang / cham phay).
+  function extractDomains(s) {
+    const out = [];
+    String(s || "").split(/[\s,;]+/).forEach(tok => {
+      const d = normalizeDomain(tok);
+      if (d) out.push(d);
+    });
+    return out;
+  }
+  function chunk(arr, size) {
+    const r = [];
+    for (let i = 0; i < arr.length; i += size) r.push(arr.slice(i, i + size));
+    return r;
+  }
+
+  // Phan tich file -> danh sach filter. Moi filter toi da 20 domain.
+  //  - Neu file co dong tieu de kieu "===== ... =====": moi tieu de la 1 nhom, ten filter = dong
+  //    tieu de nguyen van (khop convention saved-filter cua ban). Nhom >20 domain se tu tach.
+  //  - Neu KHONG co tieu de (CSV thuong): gom het domain roi chia moi 20, dat ten theo "mau ten".
+  function buildFilters(text, prefix, template) {
+    const headerRe = /^\s*=+\s*(.+?)\s*=+\s*$/;   // ===== ten =====
+    const lines = String(text || "").split(/\r?\n/);
+    let raw = [];
+    let cur = null;
+    lines.forEach(line => {
+      if (headerRe.test(line)) { cur = { name: line.trim(), domains: [] }; raw.push(cur); return; }
+      const toks = extractDomains(line);
+      if (!toks.length) return;
+      if (!cur) { cur = { name: null, domains: [] }; raw.push(cur); }
+      cur.domains.push(...toks);
+    });
+
+    // Dedupe trong tung nhom, bo nhom rong.
+    raw = raw.map(g => {
+      const seen = new Set(), ds = [];
+      g.domains.forEach(d => { if (!seen.has(d)) { seen.add(d); ds.push(d); } });
+      return { name: g.name, domains: ds };
+    }).filter(g => g.domains.length);
+
+    // Tach moi nhom thanh cac phan <=20 domain.
+    const parts = [];
+    raw.forEach(g => {
+      const cks = chunk(g.domains, 20);
+      cks.forEach((c, k) => parts.push({ rawName: g.name, part: cks.length > 1 ? (k + 1) : 0, domains: c }));
+    });
+
+    // Dat ten filter.
+    const n = parts.length;
+    const tpl = template || "{prefix} {i}/{n}";
+    const pfx = prefix || "Batch";
+    parts.forEach((p, idx) => {
+      p.name = p.rawName
+        ? (p.part ? (p.rawName + " (" + p.part + ")") : p.rawName)
+        : tpl.replace(/\{prefix\}/g, pfx).replace(/\{i\}/g, idx + 1).replace(/\{n\}/g, n);
+      delete p.rawName; delete p.part;
+    });
+    return parts;
+  }
+
+  // Nho inject.js (MAIN world) dat field + luu 1 filter. Tra ve { ok, msg }.
+  function saveFilterViaPage(id, name, domains) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (d) => {
+        if (settled) return; settled = true;
+        window.removeEventListener("SZ_SAVE_FILTER_RESULT", onResult);
+        clearTimeout(timer);
+        resolve(d);
+      };
+      const onResult = (e) => {
+        let d; try { d = JSON.parse(e.detail); } catch (err) { return; }
+        if (!d || d.id !== id) return;
+        done(d);
+      };
+      const timer = setTimeout(() => done({ ok: false, error: true, msg: "Timeout cho phan hoi tu trang." }), 20000);
+      window.addEventListener("SZ_SAVE_FILTER_RESULT", onResult);
+      window.dispatchEvent(new CustomEvent("SZ_SAVE_FILTER", {
+        detail: JSON.stringify({ id, name, domains })
+      }));
+    });
+  }
+
+  async function runFilterMaker() {
+    if (fmState.running || state.running) return;
+    const filters = fmState.filters;
+    if (!filters.length) { setStatus("Chua co filter nao — chon file & phan tich truoc.", "warn"); return; }
+
+    fmState.running = true;
+    fmState.done = 0; fmState.ok = 0; fmState.fail = 0; fmState.skipped = 0;
+    if (elFmLog) elFmLog.textContent = "";
+    setAuto(true);   // phong khi co confirm() bung ra
+    fmRefreshUI();
+
+    // Bo qua filter trung ten: doc ten da co, va cong don ca nhung ten vua luo trong lan chay nay.
+    const skipDup = !elFmSkipDup || elFmSkipDup.checked;
+    const existing = skipDup ? getExistingFilterNames() : new Set();
+
+    try {
+      for (let i = 0; i < filters.length; i++) {
+        if (!fmState.running) { setStatus("Da dung.", "warn"); break; }
+        const f = filters[i];
+        const key = normName(f.name);
+
+        if (skipDup && existing.has(key)) {
+          fmState.skipped += 1; fmState.done += 1;
+          fmLog("⏭ " + f.name + " — da ton tai, bo qua");
+          fmRefreshUI();
+          continue;
+        }
+
+        setStatus("Luu " + (i + 1) + "/" + filters.length + ": " + f.name + " (" + f.domains.length + " domain)...", "run");
+
+        let res = await saveFilterViaPage("fm_" + Date.now() + "_" + i, f.name, f.domains);
+        if (!res.ok && fmState.running) {                       // thu lai 1 lan
+          await sleep(1000);
+          res = await saveFilterViaPage("fm_" + Date.now() + "_r" + i, f.name, f.domains);
+        }
+
+        fmState.done += 1;
+        if (res.ok) { fmState.ok += 1; existing.add(key); }   // cong don de khong trung trong cung lan chay
+        else { fmState.fail += 1; fmLog("✗ " + f.name + " — " + (res.msg || res.error || "loi")); }
+        fmRefreshUI();
+        await sleep(Math.max(200, fmState.delay));
+      }
+      if (fmState.running) {
+        setStatus("Xong: " + fmState.ok + " luu OK, " + fmState.skipped + " bo qua (trung), " +
+                  fmState.fail + " loi / " + filters.length + " filter.",
+                  (fmState.fail ? "warn" : "done"));
+      }
+    } catch (err) {
+      console.error("[SZ FilterMaker]", err);
+      setStatus("Loi: " + ((err && err.message) || err), "warn");
+    } finally {
+      fmState.running = false;
+      setAuto(false);
+      fmRefreshUI();
+    }
+  }
+
+  function fmLog(msg) {
+    if (!elFmLog) return;
+    const line = document.createElement("div");
+    line.textContent = msg;
+    elFmLog.appendChild(line);
+    elFmLog.scrollTop = elFmLog.scrollHeight;
+  }
+
+  // Doc lai file da nap + rebuild danh sach filter theo prefix/mau ten hien tai.
+  function fmReparse() {
+    if (!fmState.rawText) return;
+    fmState.filters = buildFilters(
+      fmState.rawText,
+      (elFmPrefix && elFmPrefix.value.trim()) || "",
+      (elFmTpl && elFmTpl.value.trim()) || ""
+    );
+    fmRenderInfo();
+    fmRefreshUI();
+  }
+
+  function fmRenderInfo() {
+    if (!elFmInfo) return;
+    const fs = fmState.filters;
+    if (!fs.length) { elFmInfo.textContent = fmState.rawText ? "Khong tim thay domain nao trong file." : "Chua chon file."; return; }
+    const total = fs.reduce((s, f) => s + f.domains.length, 0);
+    const preview = fs.slice(0, 3).map(f => "• " + f.name + " (" + f.domains.length + ")").join("\n");
+    const more = fs.length > 3 ? "\n… +" + (fs.length - 3) + " filter nua" : "";
+    let dupLine = "";
+    if (!elFmSkipDup || elFmSkipDup.checked) {
+      const existing = getExistingFilterNames();
+      const dup = fs.reduce((c, f) => c + (existing.has(normName(f.name)) ? 1 : 0), 0);
+      if (dup) dupLine = "\n⏭ " + dup + " filter da ton tai → se bo qua (" + (fs.length - dup) + " se tao moi)";
+    }
+    elFmInfo.textContent = fs.length + " filter · " + total + " domain" + dupLine + "\n" + preview + more;
+  }
+
+  function fmRefreshUI() {
+    if (!elFmRun) return;
+    const busy = fmState.running || state.running;
+    elFmRun.disabled = busy || !fmState.filters.length;
+    elFmStop.disabled = !fmState.running;
+    if (elFmFile) elFmFile.disabled = busy;
+    if (elFmPrefix) elFmPrefix.disabled = busy;
+    if (elFmTpl) elFmTpl.disabled = busy;
+    if (elFmDelay) elFmDelay.disabled = busy;
+    if (fmState.running) {
+      elFmRun.textContent = "▶ Dang luu " + fmState.done + "/" + fmState.filters.length + "…";
+    } else {
+      elFmRun.textContent = "▶ Tao & Luu filter";
+    }
+  }
+
   // ---------- GIAO DIEN (panel noi) ----------
   let elPanel, elStatus, elStart, elStop, elDelay, elMax, elCount, elCollected;
+  let elFmFile, elFmPrefix, elFmTpl, elFmDelay, elFmInfo, elFmRun, elFmStop, elFmLog, elFmBody, elFmToggle, elFmSkipDup;
 
   function buildUI() {
     elPanel = document.createElement("div");
@@ -448,6 +669,35 @@
         <div id="sz-collected" class="sz-count">Bo nho: 0 domain</div>
         <div id="sz-count" class="sz-count">Da review: 0 lan · 0 domain</div>
         <div id="sz-status" class="sz-status sz-idle">San sang.</div>
+        <div class="sz-sep"></div>
+        <div id="sz-fm-toggle" class="sz-fm-head">▸ Tao Filter tu CSV</div>
+        <div id="sz-fm-body" class="sz-fm-body">
+          <div class="sz-row">
+            <input id="sz-fm-file" type="file" accept=".csv,.txt" class="sz-file">
+          </div>
+          <div class="sz-row sz-cfg">
+            <label>Prefix ten
+              <input id="sz-fm-prefix" type="text" placeholder="Batch">
+            </label>
+            <label>Nghi (ms)
+              <input id="sz-fm-delay" type="number" min="200" step="100" value="800">
+            </label>
+          </div>
+          <div class="sz-row sz-cfg">
+            <label>Mau ten (CSV phang) — {prefix} {i} {n}
+              <input id="sz-fm-tpl" type="text" value="{prefix} {i}/{n}">
+            </label>
+          </div>
+          <div class="sz-row">
+            <label class="sz-chk"><input id="sz-fm-skipdup" type="checkbox" checked> Bo qua filter trung ten</label>
+          </div>
+          <div id="sz-fm-info" class="sz-count sz-pre">Chua chon file.</div>
+          <div class="sz-row">
+            <button id="sz-fm-run" class="sz-btn sz-go" disabled>▶ Tao &amp; Luu filter</button>
+            <button id="sz-fm-stop" class="sz-btn sz-stop" disabled>■ Dung</button>
+          </div>
+          <div id="sz-fm-log" class="sz-fm-log"></div>
+        </div>
       </div>
     `;
     document.body.appendChild(elPanel);
@@ -497,6 +747,21 @@
       #sz-auto-panel .sz-done{background:#1c2f3b;color:#74c0fc}
       #sz-auto-panel .sz-warn{background:#3b2420;color:#ffa94d}
       #sz-auto-panel.sz-collapsed .sz-body{display:none}
+      #sz-auto-panel .sz-sep{height:1px;background:#3a4150;margin:2px 0}
+      #sz-auto-panel .sz-fm-head{cursor:pointer;font-weight:600;font-size:12.5px;color:#d0bfff;
+        user-select:none;padding:2px 0}
+      #sz-auto-panel .sz-fm-head:hover{color:#e5dbff}
+      #sz-auto-panel .sz-fm-body{display:none;flex-direction:column;gap:9px}
+      #sz-auto-panel.sz-fm-open .sz-fm-body{display:flex}
+      #sz-auto-panel .sz-file{flex:1;font-size:11px;color:#aeb6c4;background:#11151c;
+        border:1px solid #3a4150;border-radius:6px;padding:5px 6px;box-sizing:border-box;max-width:100%}
+      #sz-auto-panel .sz-file::-webkit-file-upload-button{background:#3a4150;color:#e8edf4;
+        border:0;border-radius:5px;padding:4px 8px;font-size:11px;cursor:pointer;margin-right:6px}
+      #sz-auto-panel .sz-pre{white-space:pre-line;line-height:1.4}
+      #sz-auto-panel .sz-chk{display:flex;align-items:center;gap:6px;font-size:12px;color:#aeb6c4;cursor:pointer}
+      #sz-auto-panel .sz-chk input{margin:0}
+      #sz-auto-panel .sz-fm-log{font-size:11px;color:#ffa8a8;max-height:96px;overflow-y:auto;
+        line-height:1.4;word-break:break-word}
     `;
     document.head.appendChild(css);
 
@@ -534,6 +799,45 @@
       elPanel.classList.toggle("sz-collapsed");
     });
 
+    // --- Tao Filter tu CSV ---
+    elFmFile   = qs("#sz-fm-file");
+    elFmPrefix = qs("#sz-fm-prefix");
+    elFmTpl    = qs("#sz-fm-tpl");
+    elFmDelay  = qs("#sz-fm-delay");
+    elFmInfo   = qs("#sz-fm-info");
+    elFmRun    = qs("#sz-fm-run");
+    elFmStop   = qs("#sz-fm-stop");
+    elFmLog    = qs("#sz-fm-log");
+    elFmBody   = qs("#sz-fm-body");
+    elFmToggle = qs("#sz-fm-toggle");
+    elFmSkipDup = qs("#sz-fm-skipdup");
+
+    elFmToggle.addEventListener("click", () => {
+      const open = elPanel.classList.toggle("sz-fm-open");
+      elFmToggle.textContent = (open ? "▾" : "▸") + " Tao Filter tu CSV";
+    });
+
+    elFmFile.addEventListener("change", () => {
+      const file = elFmFile.files && elFmFile.files[0];
+      if (!file) return;
+      if (!elFmPrefix.value) elFmPrefix.value = file.name.replace(/\.[^.]+$/, "");
+      const reader = new FileReader();
+      reader.onload = () => { fmState.rawText = String(reader.result || ""); fmReparse(); };
+      reader.onerror = () => setStatus("Khong doc duoc file.", "warn");
+      reader.readAsText(file);
+    });
+    elFmPrefix.addEventListener("input", fmReparse);
+    elFmTpl.addEventListener("input", fmReparse);
+    elFmSkipDup.addEventListener("change", fmRenderInfo);
+    elFmDelay.addEventListener("change", () => {
+      fmState.delay = Math.max(200, parseInt(elFmDelay.value, 10) || 800);
+    });
+    elFmRun.addEventListener("click", () => {
+      fmState.delay = Math.max(200, parseInt(elFmDelay.value, 10) || 800);
+      runFilterMaker();
+    });
+    elFmStop.addEventListener("click", () => { fmState.running = false; });
+
     loadCollected();   // khoi phuc bo nho domain da gom
   }
 
@@ -556,6 +860,7 @@
     elCount.textContent = "Da review: " + state.processed + " lan · " +
                           state.domainsDone + " domain";
     elCollected.textContent = "Bo nho: " + state.collected.size + " domain";
+    fmRefreshUI();   // dong bo trang thai nut Tao Filter khi review dang chay
   }
 
   // Khoi tao
