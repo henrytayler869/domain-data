@@ -15,7 +15,7 @@ import { markExcluded } from "@/lib/ahrefs-db";
  * Bảng tự cập nhật cột Wayback khi run xong. Bounded 120 domain/lần (né timeout).
  */
 const CHECK_CAP = 120;
-const WB_BATCH = 50;
+const WB_BATCH = 5;   // deep scan → batch nhỏ để run không timeout
 const WB_CAP = 30;
 
 export async function POST() {

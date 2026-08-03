@@ -77,14 +77,28 @@ export interface WaybackResultItem {
   errorReason: string | null;
 }
 
+// ── Quét SÂU mặc định ──────────────────────────────────────────────────────────
+// Đánh giá backlink history dựa vào Wayback: bỏ sót bet/adult = mua nhầm = mất tiền.
+// Nên MẶC ĐỊNH quét sâu (nhiều snapshot) cho MỌI domain. Batch nhỏ + timeout run đủ
+// dài để 1 run không bị Apify timeout (caller phải chia batch nhỏ — xem reconciler).
+export const WAYBACK_MAX_SNAPSHOTS = 150;      // số snapshot/domain actor kiểm tra
+export const WAYBACK_RUN_TIMEOUT_SECS = 3600;  // timeout mỗi Apify run (batch nhỏ → đủ)
+
+export interface StartRunOpts {
+  maxSnapshots?: number;   // override độ sâu quét
+  timeoutSecs?: number;    // override timeout run
+}
+
 /** Trigger an async actor run. Returns immediately with runId + datasetId. */
-export async function startWaybackRun(domains: string[]): Promise<ApifyRunMeta> {
+export async function startWaybackRun(domains: string[], opts: StartRunOpts = {}): Promise<ApifyRunMeta> {
   if (!domains.length) throw new Error("domains rỗng");
-  const url = `${APIFY_BASE}/acts/${encodeURIComponent(actorId())}/runs?token=${token()}`;
+  const maxSnapshots = opts.maxSnapshots ?? WAYBACK_MAX_SNAPSHOTS;
+  const timeoutSecs = opts.timeoutSecs ?? WAYBACK_RUN_TIMEOUT_SECS;
+  const url = `${APIFY_BASE}/acts/${encodeURIComponent(actorId())}/runs?token=${token()}&timeout=${timeoutSecs}`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ domains }),
+    body: JSON.stringify({ domains, maxSnapshotsToCheck: maxSnapshots }),
   });
   const body = await res.json();
   if (!res.ok) {

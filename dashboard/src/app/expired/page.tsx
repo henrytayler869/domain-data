@@ -248,7 +248,7 @@ export default function ExpiredPage() {
   const startWayback = useCallback(async (targets: string[]) => {
     if (!targets.length) return;
     setWaybackStarting(true);
-    const BATCH = 10, CONC = 5;
+    const BATCH = 5, CONC = 5;   // deep scan → batch nhỏ để run không timeout
     const batches: string[][] = [];
     for (let i = 0; i < targets.length; i += BATCH) batches.push(targets.slice(i, i + BATCH));
     let cursor = 0, ok = 0;

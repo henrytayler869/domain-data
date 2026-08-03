@@ -30,10 +30,13 @@ import { startGateJob } from "./gname-gate";
 import { readReconcileState, writeReconcileState, type CreditFlag, type ReconcileState } from "./pipeline-status";
 
 const CAP = 30;                 // giữ ≤30 concurrent (limit Apify = 32, chừa margin)
-const BATCH = 50;               // domain / Wayback run
+// Quét SÂU (maxSnapshots cao) → 1 run nặng hơn nhiều → phải chia batch NHỎ để không
+// bị Apify timeout. Batch=50 sâu sẽ timeout; batch nhỏ + retry đảm bảo mọi domain xong.
+const BATCH = 5;                // domain / Wayback run (deep → nhỏ). Retry → batch=1.
+const WB_MAX_ATTEMPTS = 6;      // fail quá số lần → tạm bỏ (log) tránh loop vô hạn
+const WB_FAIL_WINDOW_H = 48;    // cửa sổ đếm run fail để retry
 const MAX_PRICE = 26;
 const AVAIL_WINDOW_H = 24;      // available cache còn hạn
-const DISPATCH_CAP_DOMAINS = 40 * BATCH;  // trần domain dispatch Wayback mỗi tick
 
 // ── Rating (RE-ARM + credit-aware) ────────────────────────────────────────────
 const RATING_BATCH = 140;       // domain / lần gửi N8N khi credit OK
@@ -82,6 +85,8 @@ export interface DispatchSummary {
   dispatched: number;
   dispatchedDomains: number;
   remainingToWayback: number;
+  waybackRetried: number;    // domain gửi lại (đã từng fail)
+  waybackGivenUp: number;    // fail ≥ WB_MAX_ATTEMPTS → tạm bỏ (soi tay)
   activeAfter: number;
 }
 
@@ -135,29 +140,54 @@ export async function dispatchTick(): Promise<DispatchSummary> {
   // ── 3. GNAME backfill (rated-good chưa check → gate job nền) ──────────────────
   const gname = await gnameBackfill();
 
-  // ── 4. DISPATCH Wayback cho available(≤$26) CHƯA check & chưa in-flight ───────
+  // ── 4. DISPATCH Wayback (DEEP, batch nhỏ, AUTO-RETRY leo thang) ───────────────
+  // "Mọi domain phải có kết quả quét sâu" → run TIMED-OUT/FAILED không làm mất domain:
+  // domain đó rớt khỏi in-flight (run terminal) → tick sau tự gửi lại, CÔ LẬP batch=1
+  // (gần như luôn xong). Cap WB_MAX_ATTEMPTS chống loop nếu actor thực sự không quét được.
   const inFlight = new Set<string>();
   for (const r of pending) for (const t of r.targets) inFlight.add(String(t).toLowerCase());
+
+  // Đếm số lần fail gần đây của mỗi domain (run TIMED-OUT/FAILED/ABORTED).
+  const failCounts = new Map<string, number>();
+  {
+    const since = new Date(Date.now() - WB_FAIL_WINDOW_H * 3600 * 1000).toISOString();
+    const failed = await pageAll<{ targets: string[]; status: string }>(
+      () => sb.from("wayback_runs").select("targets,status").in("status", ["TIMED-OUT", "FAILED", "ABORTED"]).gte("started_at", since),
+    );
+    for (const r of failed) for (const t of (r.targets ?? [])) {
+      const d = String(t).toLowerCase();
+      failCounts.set(d, (failCounts.get(d) ?? 0) + 1);
+    }
+  }
+
   const toWayback = [...acquirable.keys()].filter((d) => {
     if (acquirable.get(d)!.status !== "available") return false;
     if (checked.has(d) || inFlight.has(d)) return false;
     const p = price[tldOf(d)];
     return p != null && Number(p) <= MAX_PRICE;
   });
+  // Bỏ domain fail quá nhiều (log để soi tay) — KHÔNG coi là clean (không có result).
+  const givenUp = toWayback.filter((d) => (failCounts.get(d) ?? 0) >= WB_MAX_ATTEMPTS);
+  const dispatchable = toWayback.filter((d) => (failCounts.get(d) ?? 0) < WB_MAX_ATTEMPTS);
+  // Đã từng fail → cô lập batch=1 (ưu tiên). Chưa từng → gom batch nhỏ.
+  const retryGroups = dispatchable.filter((d) => failCounts.get(d)).map((d) => [d]);
+  const fresh = dispatchable.filter((d) => !failCounts.get(d));
+  const freshGroups: string[][] = [];
+  for (let i = 0; i < fresh.length; i += BATCH) freshGroups.push(fresh.slice(i, i + BATCH));
+  const groups = [...retryGroups, ...freshGroups]; // retry trước để không kẹt mãi
 
   const active = await countActiveRuns();
-  const maxDomains = Math.min(Math.max(0, CAP - active) * BATCH, DISPATCH_CAP_DOMAINS);
-  const dispatchList = toWayback.slice(0, maxDomains);
-  let dispatched = 0, dispatchedDomains = 0;
-  for (let i = 0; i < dispatchList.length; i += BATCH) {
-    const batch = dispatchList.slice(i, i + BATCH);
+  const maxRuns = Math.max(0, CAP - active);        // mỗi run = 1 slot concurrency
+  let dispatched = 0, dispatchedDomains = 0, waybackRetried = 0;
+  for (const g of groups.slice(0, maxRuns)) {
     try {
-      const run = await startWaybackRun(batch);
-      await createRun(run.runId, batch, run.status, run.datasetId);
-      dispatched++; dispatchedDomains += batch.length;
+      const run = await startWaybackRun(g);          // DEEP mặc định (maxSnapshots cao)
+      await createRun(run.runId, g, run.status, run.datasetId);
+      dispatched++; dispatchedDomains += g.length;
+      if (g.length === 1 && failCounts.get(g[0])) waybackRetried++;
     } catch { break; }   // đụng limit / lỗi → dừng, để tick sau
   }
-  const remainingToWayback = toWayback.length - dispatchedDomains;
+  const remainingToWayback = dispatchable.length - dispatchedDomains;
 
   // ── 5. HEARTBEAT ─────────────────────────────────────────────────────────────
   const state: ReconcileState = {
@@ -183,6 +213,7 @@ export async function dispatchTick(): Promise<DispatchSummary> {
     ratingBacklog: rating.backlog, ratingReArmed: rating.reArmed, ratingSent: rating.sent, ratingProbe: rating.probe, creditFlag: rating.creditFlag,
     gnameBacklog: gname.backlog, gnameKicked: gname.kicked, gnameJobId: gname.jobId,
     dispatched, dispatchedDomains, remainingToWayback,
+    waybackRetried, waybackGivenUp: givenUp.length,
     activeAfter: active + dispatched,
   };
 }

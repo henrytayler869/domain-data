@@ -292,9 +292,9 @@ export default function InventoryPage() {
     if (!targets.length) return;
     setWaybackStarting(true);
 
-    // Split into batches of 10 — Apify actor times out on large lists.
+    // Quét SÂU (maxSnapshots cao) → batch NHỎ để 1 run không timeout.
     // Concurrency cap 5 cân bằng tốc độ + an toàn API.
-    const BATCH_SIZE = 10;
+    const BATCH_SIZE = 5;
     const CONCURRENCY = 5;
     const batches: string[][] = [];
     for (let i = 0; i < targets.length; i += BATCH_SIZE) {

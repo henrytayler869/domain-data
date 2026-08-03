@@ -215,10 +215,10 @@ export default function DomainPickerPage() {
   const startWayback = useCallback(async (targets: string[]) => {
     if (!targets.length) return;
     // Apify tài khoản giới hạn 32 CONCURRENT run → tạo >32 là bị TỪ CHỐI (không phải
-    // xếp hàng). Nên: BATCH 50 (ít run) + THROTTLE — chỉ tạo khi số run đang chạy < 30,
-    // hết slot thì chờ Apify nhả (run cũ xong). RETRY + cảnh báo nếu thất bại (không
-    // nuốt lỗi im lặng → không mất domain âm thầm).
-    const BATCH = 50, CAP = 30;
+    // xếp hàng). Quét SÂU (maxSnapshots cao) → batch phải NHỎ để 1 run không timeout.
+    // BATCH 5 + THROTTLE (chỉ tạo khi run đang chạy < 30) + RETRY. Domain nào vẫn lỗi
+    // → reconciler nền tự gửi lại (không mất domain âm thầm).
+    const BATCH = 5, CAP = 30;
     const batches: string[][] = [];
     for (let i = 0; i < targets.length; i += BATCH) batches.push(targets.slice(i, i + BATCH));
     const getActive = async (): Promise<number> => {
