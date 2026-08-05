@@ -32,7 +32,7 @@ import type { RefBlacklistEntry } from "@/lib/ref-blacklist-db";
 import type { Withdrawal, WithdrawalStatus, WithdrawalWallet } from "@/lib/withdrawal-db";
 import { WEAK_VALUATION_MIN, VALUATION_MAX, valuateByRefs } from "@/lib/valuation";
 
-type SortKey = "domain" | "purchasePrice" | "sellPrice" | "expectedSellPrice" | "profit" | "rating" | "category" | "purchasedAt" | "soldAt" | "status";
+type SortKey = "domain" | "purchasePrice" | "sellPrice" | "expectedSellPrice" | "profit" | "rating" | "refs" | "category" | "purchasedAt" | "soldAt" | "status";
 
 interface ToastItem { id: number; message: string; isError: boolean }
 
@@ -51,6 +51,17 @@ function parseDetailRefs(detail: string | null): { domain: string; dr: number }[
     if (m) out.push({ domain: m[1].toLowerCase(), dr: Number(m[2]) });
   }
   return out;
+}
+
+// Thứ hạng chất lượng rating (cao = tốt) để SORT/FILTER đúng thứ tự — rating là chuỗi
+// có emoji nên không sort chuỗi trực tiếp được.
+function ratingRank(rating: string | null | undefined): number {
+  const s = rating ?? "";
+  if (s.includes("TỐT")) return 4;
+  if (s.includes("TRUNG BÌNH")) return 3;
+  if (s.includes("RỦI RO")) return 2;
+  if (s.includes("XẤU")) return 1;
+  return 0; // chưa đánh giá
 }
 
 // ── Bảng theo dõi bộ điều phối tự lành ────────────────────────────────────────
@@ -174,6 +185,7 @@ export default function InventoryPage() {
   const [waybackStarting, setWaybackStarting] = useState(false);
   const [expandedWayback, setExpandedWayback] = useState<Set<string>>(new Set());
   const [filterWayback, setFilterWayback] = useState<"flagged" | "clean" | "unchecked">("clean");
+  const [filterRating, setFilterRating] = useState<"all" | "tot" | "tb" | "rui" | "xau" | "none">("all");
 
   const blacklistSet = useMemo(
     () => new Set(userBlacklist.map((e) => e.domain.toLowerCase())),
@@ -520,6 +532,11 @@ export default function InventoryPage() {
         if (filterWayback === "clean" && !(wb && !isFlagged)) return false;
         if (filterWayback === "unchecked" && wb) return false;
       }
+      if (filterRating !== "all") {
+        const rank = ratingRank(assessByDomain.get(e.domain)?.rating ?? e.rating);
+        const want = { tot: 4, tb: 3, rui: 2, xau: 1, none: 0 }[filterRating];
+        if (rank !== want) return false;
+      }
       return true;
     });
     return [...list].sort((a, b) => {
@@ -540,6 +557,14 @@ export default function InventoryPage() {
         bv = b.soldAt ? new Date(b.soldAt).getTime() : -Infinity;
       } else if (sortKey === "status") {
         av = a.sellPrice != null ? 1 : 0; bv = b.sellPrice != null ? 1 : 0;
+      } else if (sortKey === "rating") {
+        // Sort theo RANK rating LIVE (assessByDomain) — đúng thứ tự chất lượng, khớp
+        // đúng cái đang hiển thị (không phải snapshot lúc mua / string emoji).
+        av = ratingRank(assessByDomain.get(a.domain)?.rating ?? a.rating);
+        bv = ratingRank(assessByDomain.get(b.domain)?.rating ?? b.rating);
+      } else if (sortKey === "refs") {
+        av = refsByDomain.get(a.domain)?.length ?? 0;
+        bv = refsByDomain.get(b.domain)?.length ?? 0;
       } else {
         av = (a[sortKey as keyof InventoryEntry] ?? "") as string;
         bv = (b[sortKey as keyof InventoryEntry] ?? "") as string;
@@ -547,7 +572,7 @@ export default function InventoryPage() {
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * sortDir;
       return String(av).localeCompare(String(bv)) * sortDir;
     });
-  }, [dateFiltered, searchTokens, searchSet, filterStatus, filterExpected, filterWayback, waybackByDomain, sortKey, sortDir]);
+  }, [dateFiltered, searchTokens, searchSet, filterStatus, filterExpected, filterWayback, filterRating, waybackByDomain, assessByDomain, refsByDomain, sortKey, sortDir]);
 
   // Pagination — applied on top of `filtered`
   const totalPages = pageSize > 0 ? Math.max(1, Math.ceil(filtered.length / pageSize)) : 1;
@@ -1362,6 +1387,19 @@ export default function InventoryPage() {
           <option value="flagged">🚨 Flagged</option>
           <option value="unchecked">— Chưa check</option>
         </select>
+        <select
+          value={filterRating}
+          onChange={(e) => setFilterRating(e.target.value as "all" | "tot" | "tb" | "rui" | "xau" | "none")}
+          className="h-8 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
+          title="Filter Đánh giá"
+        >
+          <option value="all">Mọi đánh giá</option>
+          <option value="tot">✅ TỐT</option>
+          <option value="tb">⚠️ TRUNG BÌNH</option>
+          <option value="rui">⚠️ RỦI RO</option>
+          <option value="xau">❌ XẤU</option>
+          <option value="none">— Chưa đánh giá</option>
+        </select>
         {(() => {
           // Trigger Wayback for holding + currently-filtered + unchecked domains.
           const candidates = filtered
@@ -1762,7 +1800,7 @@ export default function InventoryPage() {
                   <SortTh label="Lợi nhuận" col="profit" current={sortKey} dir={sortDir} onSort={() => handleSort("profit")} />
                   <SortTh label="Đánh giá" col="rating" current={sortKey} dir={sortDir} onSort={() => handleSort("rating")} />
                   <SortTh label="Phân loại" col="category" current={sortKey} dir={sortDir} onSort={() => handleSort("category")} />
-                  <th className="px-3 py-3 text-left text-xs font-semibold text-muted-foreground uppercase whitespace-nowrap">Refs</th>
+                  <SortTh label="Refs" col="refs" current={sortKey} dir={sortDir} onSort={() => handleSort("refs")} />
                   <th className="px-3 py-3 text-left text-xs font-semibold text-muted-foreground uppercase whitespace-nowrap" title="Wayback Machine: snapshot history + AI flagged content">Wayback</th>
                   <SortTh label="Ngày mua" col="purchasedAt" current={sortKey} dir={sortDir} onSort={() => handleSort("purchasedAt")} />
                   <th className="w-20" />
