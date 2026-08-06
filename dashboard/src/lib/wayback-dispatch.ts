@@ -137,8 +137,8 @@ export async function dispatchTick(): Promise<DispatchSummary> {
   // ── 2. RATING (re-arm + credit-aware) ─────────────────────────────────────────
   const rating = await ratingBackfill(clean, acquirable, n8nWebhookUrl, prev);
 
-  // ── 3. GNAME backfill (rated-good chưa check → gate job nền) ──────────────────
-  const gname = await gnameBackfill();
+  // ── 3. GNAME backfill (rated-good chưa check + domain chờ Wayback → re-check) ──
+  const gname = await gnameBackfill(checked);
 
   // ── 4. DISPATCH Wayback (DEEP, batch nhỏ, AUTO-RETRY leo thang) ───────────────
   // "Mọi domain phải có kết quả quét sâu" → run TIMED-OUT/FAILED không làm mất domain:
@@ -339,7 +339,7 @@ async function ratingBackfill(
 // ─── Stage 3: GNAME backfill ─────────────────────────────────────────────────
 interface GnameResult { backlog: number; kicked: number; jobId: string | null }
 
-async function gnameBackfill(): Promise<GnameResult> {
+async function gnameBackfill(wbChecked: Set<string>): Promise<GnameResult> {
   const sb = supabase();
 
   // Rated-good (TỐT / TRUNG BÌNH), chưa loại trừ.
@@ -373,18 +373,34 @@ async function gnameBackfill(): Promise<GnameResult> {
     }
   }
 
-  // Cần check = chưa mua VÀ (chưa từng check  HOẶC  lần check gần nhất là
-  // available/backorder nhưng đã quá hạn acquire-window 24h → refresh để Wayback
-  // stage bắt lại được). Registered/premium/error → KHÔNG re-check (tránh phồng).
-  const staleCutoff = Date.now() - GNAME_TTL_H * 3600 * 1000;
-  const needGname = goodArr.filter((d) => {
-    if (owned.has(d)) return false;
+  const staleCutoffMs = Date.now() - GNAME_TTL_H * 3600 * 1000;
+  const staleCutoffISO = new Date(staleCutoffMs).toISOString();
+
+  // ── SET 1: rated-good cần check (chưa từng check HOẶC available/backorder quá hạn
+  //    24h). Giá trị map = checkedAt (null nếu chưa từng check → ưu tiên trước).
+  const need = new Map<string, string | null>();
+  for (const d of goodArr) {
+    if (owned.has(d)) continue;
     const l = latest.get(d);
-    if (!l) return true;                                   // chưa từng check
-    if ((l.status === "available" || l.status === "backorder") && Date.parse(l.checkedAt) < staleCutoff) return true;
-    return false;
-  });
-  const backlog = needGname.length;
+    if (!l) { need.set(d, null); continue; }               // chưa từng check
+    if ((l.status === "available" || l.status === "backorder") && Date.parse(l.checkedAt) < staleCutoffMs) need.set(d, l.checkedAt);
+  }
+
+  // ── SET 2: domain ĐANG CHỜ Wayback — available + gname STALE >24h — BẤT KỂ rating.
+  //    Vì pipeline chạy gname→wayback→rating: domain chờ wayback thường CHƯA rating,
+  //    không nằm trong SET 1. Re-check để hàng đợi wayback luôn tươi: domain bị đăng
+  //    ký thì rớt (khỏi phí wayback), còn available thì ở lại + được scan.
+  //    gname_checks upsert 1 dòng/domain → status=available + checked_at<cutoff = latest stale.
+  const availStale = await pageAll<{ domain: string; checked_at: string }>(
+    () => sb.from("gname_checks").select("domain,checked_at").eq("status", "available").lt("checked_at", staleCutoffISO),
+  );
+  for (const r of availStale) {
+    const d = String(r.domain).toLowerCase();
+    if (owned.has(d) || wbChecked.has(d)) continue;        // đã mua / đã scan → khỏi re-check
+    if (!need.has(d)) need.set(d, r.checked_at);
+  }
+
+  const backlog = need.size;
   if (!backlog) return { backlog: 0, kicked: 0, jobId: null };
 
   // Không xếp chồng job: nếu đang có gate job chạy (cập nhật trong 10' qua) → chờ.
@@ -393,7 +409,11 @@ async function gnameBackfill(): Promise<GnameResult> {
     .from("gname_gate_jobs").select("id").eq("status", "running").gte("updated_at", runningCutoff).limit(1);
   if (runningJobs && runningJobs.length) return { backlog, kicked: 0, jobId: null };
 
-  const batch = needGname.slice(0, GNAME_JOB_CAP);
+  // Ưu tiên: chưa từng check (null) trước, rồi CŨ NHẤT trước (sắp rớt khỏi hàng đợi).
+  const batch = [...need.entries()]
+    .sort((a, b) => (a[1] === null ? 0 : Date.parse(a[1])) - (b[1] === null ? 0 : Date.parse(b[1])))
+    .slice(0, GNAME_JOB_CAP)
+    .map(([d]) => d);
   const jobId = await startGateJob(batch);
   return { backlog, kicked: batch.length, jobId };
 }
