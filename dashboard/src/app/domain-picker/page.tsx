@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
-import { Upload, Loader2, Copy, RotateCcw, Rocket, Send, ShoppingCart, RefreshCw, Ban } from "lucide-react";
+import { Upload, Loader2, Copy, RotateCcw, Rocket, Send, ShoppingCart, RefreshCw, Ban, Eye, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { parseCsv, parseUnifiedCsv } from "@/lib/picker-csv";
@@ -46,6 +46,10 @@ function parseDomains(text: string): string[] {
 }
 const tldOf = (d: string) => d.split(".").pop() ?? "";
 const DOMAIN_RE = /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/;
+
+// Watchlist entry (shape khớp /api/picker/watchlist). Định nghĩa local để không kéo
+// lib server (supabase) vào bundle client.
+interface WLEntry { domain: string; rating: string | null; category: string | null; detail: string | null; note: string | null; addedAt: string }
 
 // Có ref domain "mạnh" (DR ≥ 90) không — đồng bộ với ĐK1 Backlink mạnh ở Backlink DB.
 //   Marker N8N "DR>90:N" đếm sẵn ref DR>90 (strict) → N>0 là chắc chắn có ref mạnh
@@ -157,6 +161,11 @@ export default function DomainPickerPage() {
   const [selectedBuy, setSelectedBuy] = useState<Set<string>>(new Set());
   const [buying, setBuying] = useState(false);
   const [buyNote, setBuyNote] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [filterBuyRating, setFilterBuyRating] = useState<"all" | "tot" | "tb">("all");
+  // Watchlist — domain "xem xét mua sau"
+  const [watchlist, setWatchlist] = useState<WLEntry[]>([]);
+  const [watchlistOpen, setWatchlistOpen] = useState(false);
+  const [wlBusy, setWlBusy] = useState(false);
   const [uploadingResult, setUploadingResult] = useState(false);
   const [pollExhausted, setPollExhausted] = useState(false);
   const resultFileRef = useRef<HTMLInputElement>(null);
@@ -284,6 +293,14 @@ export default function DomainPickerPage() {
     const base = cleanDomains.length ? cleanDomains : Object.keys(ratings);
     return base.filter((d) => isGood(d) && !owned.has(d) && !excluded.has(d));   // ẩn đã mua + đã loại trừ
   }, [cleanDomains, ratings, details, owned, excluded]);
+  // Bảng Bước 6 lọc theo Rating (buyList chỉ có TỐT/TB).
+  const displayBuyList = useMemo(() => {
+    if (filterBuyRating === "all") return buyList;
+    return buyList.filter((d) => {
+      const r = ratings[d] ?? "";
+      return filterBuyRating === "tot" ? r.includes("TỐT") : r.includes("TRUNG BÌNH");
+    });
+  }, [buyList, filterBuyRating, ratings]);
   // Bảng trạng thái (step ≥ 3): ẩn domain Gname trả "registered" (đã đăng ký /
   // reserved — không mua được) khỏi view. Vẫn giữ available/backorder/premium,
   // domain đang check (status chưa có) và domain lỗi để còn theo dõi.
@@ -652,11 +669,11 @@ export default function DomainPickerPage() {
   const resumeFromDb = useCallback(async () => {
     setResuming(true);
     try {
-      const r = await fetch("/api/picker/resume?hours=12");
+      const r = await fetch("/api/picker/resume?hours=72");
       const d = await r.json();
       if (!r.ok) throw new Error(d.error);
       const cands: { domain: string; gnameStatus: "available" | "backorder"; dropEta: string | null; rating: string | null; category: string | null; detail: string | null }[] = d.candidates ?? [];
-      if (!cands.length) { toast("Chưa có domain mua được nào để khôi phục (12h qua) — chờ rating N8N rồi bấm lại", true); return; }
+      if (!cands.length) { toast("Chưa có domain mua được nào để khôi phục (72h qua) — chờ rating N8N rồi bấm lại", true); return; }
       const doms = cands.map((c) => c.domain);
       setGated(doms);
       setWbResults(cands.map((c) => ({ targetDomain: c.domain, snapshotCount: 1, hasBetting: false, hasAdult: false, errorReason: null })));
@@ -672,6 +689,70 @@ export default function DomainPickerPage() {
     } catch (e) { toast(`❌ ${e instanceof Error ? e.message : "lỗi khôi phục"}`, true); }
     finally { setResuming(false); }
   }, [toast]);
+
+  // ── Watchlist (xem xét mua sau) ─────────────────────────────────────────────
+  const loadWatchlist = useCallback(async () => {
+    try {
+      const r = await fetch("/api/picker/watchlist");
+      const d = await r.json();
+      if (r.ok) setWatchlist(d.entries ?? []);
+    } catch { /* im lặng */ }
+  }, []);
+  useEffect(() => { loadWatchlist(); }, [loadWatchlist]);
+
+  const addToWatchlist = useCallback(async (domains: string[]) => {
+    if (!domains.length) return;
+    setWlBusy(true);
+    try {
+      const entries = domains.map((d) => ({ domain: d, rating: ratings[d] ?? null, category: categories[d] ?? null, detail: details[d] ?? null }));
+      const r = await fetch("/api/picker/watchlist", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ entries }) });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error);
+      await loadWatchlist();
+      setSelectedBuy(new Set());
+      toast(`👁 Đã thêm ${data.added} domain vào Watchlist (xem xét mua sau)`);
+    } catch (e) { toast(`❌ ${e instanceof Error ? e.message : "lỗi"}`, true); }
+    finally { setWlBusy(false); }
+  }, [ratings, categories, details, loadWatchlist, toast]);
+
+  const removeFromWatchlist = useCallback(async (domains: string[]) => {
+    if (!domains.length) return;
+    setWlBusy(true);
+    try {
+      const r = await fetch("/api/picker/watchlist/remove", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains }) });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error);
+      await loadWatchlist();
+      toast(`Đã bỏ ${data.removed} domain khỏi Watchlist`);
+    } catch (e) { toast(`❌ ${e instanceof Error ? e.message : "lỗi"}`, true); }
+    finally { setWlBusy(false); }
+  }, [loadWatchlist, toast]);
+
+  // Mua từ Watchlist: check Gname (status có thể đã đổi) → xác nhận → register thật.
+  const buyFromWatchlist = useCallback(async (items: WLEntry[]) => {
+    if (!items.length) return;
+    setWlBusy(true);
+    try {
+      const doms = items.map((i) => i.domain);
+      const chk = await (await fetch("/api/gname/check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains: doms }) })).json();
+      const stat = new Map<string, string>((chk.results ?? []).map((r: { domain: string; status: string }) => [r.domain.toLowerCase(), r.status]));
+      const buyable = doms.filter((d) => { const s = stat.get(d); return s === "available" || s === "backorder"; });
+      const skipped = doms.length - buyable.length;
+      if (!buyable.length) { toast("❌ Không domain nào mua được (registered/premium/lỗi)", true); return; }
+      const nBo = buyable.filter((d) => stat.get(d) === "backorder").length;
+      if (!confirm(`⚡ MUA THẬT ${buyable.length} domain qua Gname: ${buyable.length - nBo} đăng ký + ${nBo} backorder${skipped ? ` · bỏ qua ${skipped}` : ""}.\nTrừ tiền/deposit từ số dư Gname. Xác nhận?`)) return;
+      const byDom = new Map(items.map((i) => [i.domain, i]));
+      const meta: Record<string, { rating: string | null; category: string | null; mode: "register" | "backorder" }> = {};
+      for (const d of buyable) meta[d] = { rating: byDom.get(d)?.rating ?? null, category: byDom.get(d)?.category ?? null, mode: stat.get(d) === "backorder" ? "backorder" : "register" };
+      const res = await fetch("/api/gname/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains: buyable, meta }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      const okList: string[] = (data.results ?? []).filter((r: { ok: boolean }) => r.ok).map((r: { domain: string }) => r.domain);
+      if (okList.length) { await removeFromWatchlist(okList); toast(`✅ Mua ${okList.length} domain · tổng $${(data.totalCharged ?? 0).toFixed(2)} · đã lưu Kho`); }
+      else toast("⚠️ 0 domain mua được", true);
+    } catch (e) { toast(`❌ ${e instanceof Error ? e.message : "lỗi"}`, true); }
+    finally { setWlBusy(false); }
+  }, [removeFromWatchlist, toast]);
 
   const priceStr = (d: string): string => {
     const info = priceOf(rdap[d]?.status, tldOf(d), pricing, boChannel);
@@ -735,8 +816,58 @@ export default function DomainPickerPage() {
         <Button size="sm" variant="ghost" onClick={resumeFromDb} disabled={resuming} className="ml-auto gap-1.5 text-xs" title="Hiện lại domain mua được + clean gần đây từ DB (khi tab bị đóng/reload giữa chừng)">
           {resuming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}Khôi phục từ DB
         </Button>
+        <Button size="sm" variant="ghost" onClick={() => setWatchlistOpen((v) => !v)} className={cn("gap-1.5 text-xs", watchlistOpen && "bg-violet-100 dark:bg-violet-950/40 text-violet-700")} title="Danh sách domain để xem xét mua sau">
+          <Eye className="h-3.5 w-3.5" />Watchlist{watchlist.length > 0 ? ` (${watchlist.length})` : ""}
+        </Button>
         <Button size="sm" variant="ghost" onClick={reset} className="gap-1.5 text-xs"><RotateCcw className="h-3.5 w-3.5" />Làm lại</Button>
       </div>
+
+      {/* ── Watchlist panel (xem xét mua sau) ─────────────────────────────────── */}
+      {watchlistOpen && (
+        <div className="rounded-xl border bg-card p-4 flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2">
+              <Eye className="h-4 w-4 text-violet-600" />
+              <span className="text-sm font-medium">Watchlist — xem xét mua sau</span>
+              <span className="text-xs text-muted-foreground">({watchlist.length} domain)</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" onClick={loadWatchlist} className="gap-1.5 text-xs"><RefreshCw className="h-3.5 w-3.5" />Tải lại</Button>
+              <Button size="sm" disabled={wlBusy || watchlist.length === 0} onClick={() => buyFromWatchlist(watchlist)} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white">
+                {wlBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShoppingCart className="h-4 w-4" />}Mua tất cả ({watchlist.length})
+              </Button>
+            </div>
+          </div>
+          {watchlist.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-2 text-center">Chưa có domain nào. Ở Bước 6, chọn domain rồi bấm <b>👁 Watchlist</b> để lưu xem sau.</p>
+          ) : (
+            <div className="rounded-lg border overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
+                  <tr><th className="px-3 py-2">Domain</th><th className="px-3 py-2">Rating</th><th className="px-3 py-2">Phân loại</th><th className="px-3 py-2">Ref (DK1/DK2)</th><th className="px-3 py-2">Thêm lúc</th><th className="px-3 py-2 w-24"></th></tr>
+                </thead>
+                <tbody>
+                  {watchlist.map((w) => (
+                    <tr key={w.domain} className="border-b last:border-0 hover:bg-muted/30">
+                      <td className="px-3 py-1.5 font-medium"><a href={`https://${w.domain}`} target="_blank" rel="noreferrer" className="hover:underline">{w.domain}</a></td>
+                      <td className="px-3 py-1.5 text-xs">{(w.rating ?? "").includes("TỐT") ? <span className="text-emerald-700 font-medium">✅ TỐT</span> : (w.rating ?? "").includes("TRUNG BÌNH") ? <span className="text-amber-600">⚠️ TB</span> : <span className="text-muted-foreground">{w.rating ?? "—"}</span>}</td>
+                      <td className="px-3 py-1.5 text-xs max-w-[180px] truncate" title={w.category ?? ""}>{w.category ?? "—"}</td>
+                      <td className="px-3 py-1.5 text-xs text-muted-foreground max-w-[300px] truncate" title={w.detail ?? ""}>{w.detail ?? "—"}</td>
+                      <td className="px-3 py-1.5 text-xs text-muted-foreground whitespace-nowrap">{new Date(w.addedAt).toLocaleDateString()}</td>
+                      <td className="px-3 py-1.5">
+                        <div className="flex items-center gap-1">
+                          <Button size="sm" variant="ghost" disabled={wlBusy} onClick={() => buyFromWatchlist([w])} className="h-7 gap-1 text-xs text-emerald-700" title="Mua thật qua Gname"><ShoppingCart className="h-3.5 w-3.5" />Mua</Button>
+                          <Button size="sm" variant="ghost" disabled={wlBusy} onClick={() => removeFromWatchlist([w.domain])} className="h-7 w-7 p-0 text-rose-600" title="Bỏ khỏi watchlist"><Trash2 className="h-3.5 w-3.5" /></Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Bước 1: input + chạy */}
       {step === 1 && (
@@ -857,11 +988,21 @@ export default function DomainPickerPage() {
             </div>
           ) : (
             <>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <label className="flex items-center gap-1.5 text-sm cursor-pointer">
-                  <input type="checkbox" checked={selectedBuy.size === buyList.length && buyList.length > 0} onChange={(e) => setSelectedBuy(e.target.checked ? new Set(buyList) : new Set())} />
-                  All ({buyList.length})
+                  <input type="checkbox" checked={displayBuyList.length > 0 && displayBuyList.every((d) => selectedBuy.has(d))} onChange={(e) => setSelectedBuy(e.target.checked ? new Set(displayBuyList) : new Set())} />
+                  All ({displayBuyList.length})
                 </label>
+                <select
+                  value={filterBuyRating}
+                  onChange={(e) => setFilterBuyRating(e.target.value as "all" | "tot" | "tb")}
+                  className="h-8 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
+                  title="Lọc theo Rating"
+                >
+                  <option value="all">Mọi rating</option>
+                  <option value="tot">✅ TỐT</option>
+                  <option value="tb">⚠️ TRUNG BÌNH</option>
+                </select>
                 {(() => {
                   const sel = Array.from(selectedBuy);
                   const modeOf = (d: string) => priceOf(rdap[d]?.status, tldOf(d), pricing, boChannel).mode;
@@ -874,6 +1015,9 @@ export default function DomainPickerPage() {
                       </Button>
                       <Button size="sm" disabled={buying || boSel.length === 0} onClick={() => buyDomains(boSel)} className="gap-1.5 bg-amber-500 hover:bg-amber-600 text-white">
                         {buying ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShoppingCart className="h-4 w-4" />}🟠 Backorder ({boSel.length})
+                      </Button>
+                      <Button size="sm" variant="outline" disabled={wlBusy || sel.length === 0} onClick={() => addToWatchlist(sel)} className="gap-1.5 text-violet-700 border-violet-200 hover:bg-violet-50" title="Lưu các domain đã chọn để xem xét mua sau">
+                        {wlBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}Watchlist ({sel.length})
                       </Button>
                       <Button size="sm" variant="outline" disabled={buying || sel.length === 0} onClick={() => excludeDomains(sel)} className="gap-1.5 text-rose-600 border-rose-200 hover:bg-rose-50" title="Loại các domain đã chọn khỏi danh sách (không quay lại lần chạy sau)">
                         <Ban className="h-4 w-4" />Loại trừ ({sel.length})
@@ -888,7 +1032,7 @@ export default function DomainPickerPage() {
                     <tr><th className="px-3 py-2 w-8"></th><th className="px-3 py-2">Domain</th><th className="px-3 py-2">Rating</th><th className="px-3 py-2">Phân loại</th><th className="px-3 py-2">Ref (DK1/DK2)</th><th className="px-3 py-2">Giá</th></tr>
                   </thead>
                   <tbody>
-                    {buyList.map((d) => (
+                    {displayBuyList.map((d) => (
                       <tr key={d} className="border-b last:border-0 hover:bg-muted/30">
                         <td className="px-3 py-1.5"><input type="checkbox" checked={selectedBuy.has(d)} onChange={() => setSelectedBuy((p) => { const n = new Set(p); if (n.has(d)) n.delete(d); else n.add(d); return n; })} /></td>
                         <td className="px-3 py-1.5 font-medium"><a href={`https://${d}`} target="_blank" rel="noreferrer" className="hover:underline">{d}</a></td>
