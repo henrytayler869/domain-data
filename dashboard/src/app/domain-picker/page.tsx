@@ -51,18 +51,18 @@ const DOMAIN_RE = /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/;
 // lib server (supabase) vào bundle client.
 interface WLEntry { domain: string; rating: string | null; category: string | null; detail: string | null; note: string | null; addedAt: string }
 
-// Có ref domain "mạnh" (DR ≥ 90) không — đồng bộ với ĐK1 Backlink mạnh ở Backlink DB.
-//   Marker N8N "DR>90:N" đếm sẵn ref DR>90 (strict) → N>0 là chắc chắn có ref mạnh
-//   (>90 ⊂ ≥90). NGOÀI RA quét "(DR NN)" trong ref list cho NN ≥ 90 để bắt cả ref
-//   DR đúng 90 mà marker (>90) bỏ sót.
-function hasStrongRef90(detail: string | null | undefined): boolean {
-  if (!detail) return false;
-  const m = detail.match(/DR\s*>?\s*90\s*:\s*(\d+)/i);
-  if (m && Number(m[1]) > 0) return true;
-  const re = /\(\s*DR\s*(\d+)\s*\)/gi;
-  let x: RegExpExecArray | null;
-  while ((x = re.exec(detail))) if (Number(x[1]) >= 90) return true;
-  return false;
+// Trích ref { domain, dr } từ chuỗi detail (ref-summary). KHÔNG dùng marker "DR>90:N"
+// của N8N vì marker đếm cả ref spam bị blacklist — để đếm ref SẠCH phải quét ref list
+// thật rồi lọc blacklist ở component (đồng bộ ĐK1 với Kho/Backlink DB).
+function parseDetailRefs(detail: string | null | undefined): { domain: string; dr: number }[] {
+  if (!detail) return [];
+  const body = detail.includes("|") ? detail.slice(detail.indexOf("|") + 1) : detail;
+  const out: { domain: string; dr: number }[] = [];
+  for (const part of body.split(/[;\n]+/)) {
+    const m = part.match(/([a-z0-9][a-z0-9.-]*\.[a-z]{2,})\s*\(\s*DR\s*(\d+)/i);
+    if (m) out.push({ domain: m[1].toLowerCase(), dr: Number(m[2]) });
+  }
+  return out;
 }
 
 // Kênh backorder Gname (Channel 2 = $26) — giá + deposit + TLD hỗ trợ.
@@ -131,6 +131,13 @@ export default function DomainPickerPage() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [owned, setOwned] = useState<Set<string>>(new Set());
+  // Ref Domain Blacklist (user) — để lọc ref spam khi tính ĐK1 (đồng bộ Kho/Backlink DB).
+  const [blacklistSet, setBlacklistSet] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    fetch("/api/ref-blacklist").then((r) => r.json()).then((d) => {
+      setBlacklistSet(new Set((Array.isArray(d) ? d : []).map((e: { domain?: string }) => (e.domain ?? "").toLowerCase())));
+    }).catch(() => {});
+  }, []);
   const [excluded, setExcluded] = useState<Set<string>>(new Set()); // domain đã bấm "Loại trừ" ở Bước 6
   const [wbFlagged, setWbFlagged] = useState<Set<string>>(new Set());
   const [wbNoSnap, setWbNoSnap] = useState<Set<string>>(new Set());
@@ -280,19 +287,27 @@ export default function DomainPickerPage() {
   const wbByDomain = useMemo(() => { const m = new Map<string, WaybackRow>(); for (const r of wbResults) m.set(r.targetDomain, r); return m; }, [wbResults]);
   const inFlightWb = useMemo(() => { const s = new Set<string>(); for (const r of wbRuns) if (r.status === "READY" || r.status === "RUNNING") for (const d of r.targets) s.add(d); return s; }, [wbRuns]);
   const cleanDomains = useMemo(() => gated.filter((d) => { const wb = wbByDomain.get(d); return !!wb && !wb.hasBetting && !wb.hasAdult && (wb.snapshotCount ?? 0) > 0; }), [gated, wbByDomain]);
-  // Bước 6: chỉ giữ domain rating Tốt / Trung bình. Ưu tiên tập Clean của lần chạy;
-  // nếu vào thẳng Bước 6 (upload kết quả rời) thì lấy toàn bộ domain đã có rating.
+  // Ref SẠCH (đã lọc blacklist) cho mỗi domain — nguồn duy nhất cho ĐK1 + cột Ref.
+  const cleanRefsByDomain = useMemo(() => {
+    const m = new Map<string, { domain: string; dr: number }[]>();
+    for (const [d, detail] of Object.entries(details)) {
+      m.set(d, parseDetailRefs(detail).filter((r) => !blacklistSet.has(r.domain)).sort((a, b) => b.dr - a.dr));
+    }
+    return m;
+  }, [details, blacklistSet]);
+  // Bước 6: chỉ giữ domain Tốt / Trung bình VÀ có ≥1 ref SẠCH DR≥90 (đồng bộ ĐK1).
   const buyList = useMemo(() => {
-    // TỐT → luôn giữ. TRUNG BÌNH → chỉ giữ nếu CÓ ref DR ≥ 90 (không có thì loại).
+    // Yêu cầu ≥1 ref SẠCH DR≥90 — KỂ CẢ domain TỐT: rating có thể sai (AI đếm free-host
+    // spam là mạnh), nhưng nếu 0 ref sạch mạnh thì KHÔNG cho vào đáng-mua.
+    const hasCleanStrong = (d: string) => (cleanRefsByDomain.get(d) ?? []).some((r) => r.dr >= 90);
     const isGood = (d: string) => {
       const r = ratings[d] ?? "";
-      if (r.includes("TỐT")) return true;
-      if (r.includes("TRUNG BÌNH")) return hasStrongRef90(details[d]);
-      return false;
+      if (!r.includes("TỐT") && !r.includes("TRUNG BÌNH")) return false;
+      return hasCleanStrong(d);
     };
     const base = cleanDomains.length ? cleanDomains : Object.keys(ratings);
     return base.filter((d) => isGood(d) && !owned.has(d) && !excluded.has(d));   // ẩn đã mua + đã loại trừ
-  }, [cleanDomains, ratings, details, owned, excluded]);
+  }, [cleanDomains, ratings, cleanRefsByDomain, owned, excluded]);
   // Bảng Bước 6 lọc theo Rating (buyList chỉ có TỐT/TB).
   const displayBuyList = useMemo(() => {
     if (filterBuyRating === "all") return buyList;
@@ -1038,7 +1053,9 @@ export default function DomainPickerPage() {
                         <td className="px-3 py-1.5 font-medium"><a href={`https://${d}`} target="_blank" rel="noreferrer" className="hover:underline">{d}</a></td>
                         <td className="px-3 py-1.5 text-xs">{(ratings[d] ?? "").includes("TỐT") ? <span className="text-emerald-700 font-medium">✅ TỐT</span> : <span className="text-amber-600">⚠️ TRUNG BÌNH</span>}</td>
                         <td className="px-3 py-1.5 text-xs max-w-[180px] truncate" title={categories[d] ?? ""}>{categories[d] ?? "—"}</td>
-                        <td className="px-3 py-1.5 text-xs text-muted-foreground max-w-[320px] truncate" title={details[d] ?? ""}>{details[d] ?? "—"}</td>
+                        <td className="px-3 py-1.5 text-xs text-muted-foreground max-w-[320px] truncate" title={(cleanRefsByDomain.get(d) ?? []).map((r) => `${r.domain} (DR ${r.dr})`).join("; ")}>
+                          {(() => { const cr = cleanRefsByDomain.get(d) ?? []; return cr.length ? cr.map((r) => `${r.domain} (DR ${r.dr})`).join("; ") : "—"; })()}
+                        </td>
                         <td className="px-3 py-1.5 tabular-nums text-xs">{priceStr(d)}</td>
                       </tr>
                     ))}
