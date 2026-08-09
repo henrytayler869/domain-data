@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { readReconcileState, isTickHealthy, TICK_STALE_MINUTES } from "@/lib/pipeline-status";
 
+export const dynamic = "force-dynamic";   // heartbeat realtime — không prerender snapshot cũ
+
 /**
  * GET /api/pipeline/status
  *   → trạng thái bộ điều phối tự lành (heartbeat + tồn đọng mỗi tầng). Session-gated

@@ -263,7 +263,7 @@ export default function InventoryPage() {
     try {
       // Inventory TRƯỚC → có danh sách domain để scope Wayback (chỉ lấy wayback của
       // domain trong kho, không tải hết 6000+ dòng ~10MB/7s).
-      const invData = await (await fetch("/api/inventory")).json();
+      const invData = await (await fetch("/api/inventory", { cache: "no-store" })).json();
       const entriesArr = (Array.isArray(invData) ? invData : []) as InventoryEntry[];
       setEntries(entriesArr);
       domains = entriesArr.map((e) => e.domain).filter(Boolean);

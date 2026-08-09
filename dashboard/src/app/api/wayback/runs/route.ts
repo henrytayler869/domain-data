@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { startWaybackRun } from "@/lib/apify-wayback";
 import { createRun, listRecentRuns } from "@/lib/wayback-db";
 
+export const dynamic = "force-dynamic";   // runs cập nhật liên tục (reconciler) — không cache
+
 /**
  * POST /api/wayback/runs
  *   Body: { targets: string[] }

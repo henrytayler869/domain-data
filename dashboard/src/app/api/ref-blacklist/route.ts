@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { readAll, clearAll } from "@/lib/ref-blacklist-db";
 
+export const dynamic = "force-dynamic";   // luôn đọc realtime, không prerender snapshot cũ
+
 // GET — list all user-added blacklist entries
 export async function GET() {
   try {

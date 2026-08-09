@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readAll, addEntry, AddInput } from "@/lib/withdrawal-db";
 
+export const dynamic = "force-dynamic";   // dữ liệu tiền — luôn đọc realtime, không cache
+
 export async function GET() {
   try {
     const entries = await readAll();
