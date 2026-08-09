@@ -29,7 +29,7 @@ import { readSettings } from "./settings";
 import { startGateJob } from "./gname-gate";
 import { readReconcileState, writeReconcileState, type CreditFlag, type ReconcileState } from "./pipeline-status";
 
-const CAP = 30;                 // giữ ≤30 concurrent (limit Apify = 32, chừa margin)
+const CAP = 100;                // ≤100 concurrent (limit Apify sau nâng cấp = 128, chừa margin)
 // Quét SÂU (maxSnapshots cao) → 1 run nặng hơn nhiều → phải chia batch NHỎ để không
 // bị Apify timeout. Batch=50 sâu sẽ timeout; batch nhỏ + retry đảm bảo mọi domain xong.
 const BATCH = 5;                // domain / Wayback run (deep → nhỏ). Retry → batch=1.

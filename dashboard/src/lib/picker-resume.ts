@@ -3,9 +3,10 @@
  * reload) nhưng gate + Wayback đã xong: gom lại các domain "mua được + clean" gần
  * đây kèm rating (nếu N8N đã trả) để hiện lại ở Bước 6 mà không phải chạy lại.
  *
- * Ứng viên = domain CLEAN (wayback_results: snapshot>0, không betting/adult) VÀ
- * mua được (gname_checks: available/backorder) trong `hours` giờ qua, chưa mua
- * (domain_inventory) và chưa bị loại trừ (target_assessment.excluded_at).
+ * Ứng viên = domain CLEAN (wayback_results: snapshot>0, không betting/adult — BẤT KỂ
+ * thời điểm scan, vì lịch sử sạch là vĩnh viễn) VÀ còn mua được (gname_checks:
+ * available/backorder, xác nhận trong `hours` giờ qua — availability CÓ đổi nên phải
+ * fresh) VÀ rated TỐT/TB, chưa mua (domain_inventory), chưa bị loại trừ (excluded_at).
  */
 
 import { supabase } from "./supabase";
@@ -29,7 +30,9 @@ export async function readResumeCandidates(hours = 12): Promise<ResumeCandidate[
   const sb = supabase();
   const cutoff = new Date(Date.now() - hours * 3600 * 1000).toISOString();
 
-  // 1) CLEAN gần đây từ wayback_results.
+  // 1) CLEAN từ wayback_results — BẤT KỂ thời điểm scan. Lịch sử sạch là vĩnh viễn:
+  //    domain scan sạch tuần trước vẫn sạch. KHÔNG gate theo checked_at — nếu gate, lúc
+  //    Wayback kẹt vài ngày (vd Apify vượt hạn mức) sẽ trả rỗng dù DB đầy domain mua được.
   const cleanDomains: string[] = [];
   {
     const PAGE = 1000;
@@ -37,8 +40,7 @@ export async function readResumeCandidates(hours = 12): Promise<ResumeCandidate[
     for (;;) {
       const { data, error } = await sb
         .from("wayback_results")
-        .select("target_domain,snapshot_count,has_betting,has_adult,checked_at")
-        .gte("checked_at", cutoff)
+        .select("target_domain,snapshot_count,has_betting,has_adult")
         .range(offset, offset + PAGE - 1);
       if (error) throw new Error(error.message);
       if (!data || !data.length) break;
