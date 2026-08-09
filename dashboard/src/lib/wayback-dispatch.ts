@@ -29,7 +29,9 @@ import { readSettings } from "./settings";
 import { startGateJob } from "./gname-gate";
 import { readReconcileState, writeReconcileState, type CreditFlag, type ReconcileState } from "./pipeline-status";
 
-const CAP = 100;                // ≤100 concurrent (limit Apify sau nâng cấp = 128, chừa margin)
+const CAP = 40;                 // ≤40 concurrent. Apify cho 128 NHƯNG mỗi run xong reconciler
+// phải poll + ingest JSONB nặng (content_history/problematic) → CAP=100 dồn nhiều giờ làm
+// NGHẼN Supabase (readAll Kho 2,3s→83s, query treo). 40 = throughput khá hơn 30 mà DB thở được.
 // Quét SÂU (maxSnapshots cao) → 1 run nặng hơn nhiều → phải chia batch NHỎ để không
 // bị Apify timeout. Batch=50 sâu sẽ timeout; batch nhỏ + retry đảm bảo mọi domain xong.
 const BATCH = 5;                // domain / Wayback run (deep → nhỏ). Retry → batch=1.
