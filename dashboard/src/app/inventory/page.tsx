@@ -181,7 +181,6 @@ export default function InventoryPage() {
     error: string | null;
   };
   const [waybackResults, setWaybackResults] = useState<WaybackRow[]>([]);
-  const [waybackRuns, setWaybackRuns] = useState<WaybackRunT[]>([]);
   const [waybackStarting, setWaybackStarting] = useState(false);
   const [expandedWayback, setExpandedWayback] = useState<Set<string>>(new Set());
   // Bulk chỉ tải cột nhẹ; JSONB chi tiết (content_history/problematic) lazy-load khi mở rộng.
@@ -271,16 +270,16 @@ export default function InventoryPage() {
       setEntries(entriesArr);
       domains = entriesArr.map((e) => e.domain).filter(Boolean);
       // Meta còn lại + Wayback (scoped) song song.
-      const [blData, wData, wbResData, wbRunsData] = await Promise.all([
+      // Kho KHÔNG theo dõi pipeline runs (đó là việc của Domain Picker). Chỉ lấy wayback
+      // results SCOPED + NHẸ cho domain đang giữ (badge flagged/clean từng domain).
+      const [blData, wData, wbResData] = await Promise.all([
         fetch("/api/ref-blacklist").then((r) => r.json()),
         fetch("/api/withdrawals").then((r) => r.json()),
         fetch("/api/wayback/results", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ targets: domains }) }).then((r) => r.json()),
-        fetch("/api/wayback/runs").then((r) => r.json()),
       ]);
       setUserBlacklist(Array.isArray(blData) ? blData : []);
       setWithdrawals(Array.isArray(wData) ? wData : []);
       setWaybackResults(wbResData.rows ?? []);
-      setWaybackRuns(wbRunsData.runs ?? []);
     } catch { /* ignore */ }
     setLoading(false);
     // Refs/đánh giá tải nền — bảng đã hiện, cột đánh giá/ref điền sau khi xong.
@@ -289,17 +288,23 @@ export default function InventoryPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  // ── Wayback (light reload to refresh only wayback state without blocking the page) ──
-  const reloadWayback = useCallback(async () => {
+  // Refresh SCOPED + NHẸ cho vài domain (sau khi user tự bấm Check Wayback). TUYỆT ĐỐI
+  // không dùng GET /api/wayback/results (readAllResults = TẤT CẢ dòng + JSONB nặng → treo).
+  const reloadWaybackFor = useCallback(async (targets: string[]) => {
+    if (!targets.length) return;
     try {
-      const [r, ru] = await Promise.all([
-        fetch("/api/wayback/results"),
-        fetch("/api/wayback/runs"),
-      ]);
+      const r = await fetch("/api/wayback/results", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targets }),
+      });
       const d = await r.json();
-      const dr = await ru.json();
-      setWaybackResults(d.rows ?? []);
-      setWaybackRuns(dr.runs ?? []);
+      const fresh = (d.rows ?? []) as WaybackRow[];
+      setWaybackResults((prev) => {
+        const m = new Map(prev.map((x) => [x.targetDomain, x]));
+        for (const row of fresh) m.set(row.targetDomain, row);
+        return [...m.values()];
+      });
     } catch { /* ignore */ }
   }, []);
 
@@ -354,38 +359,15 @@ export default function InventoryPage() {
         const firstErr = failed[0]?.status === "rejected" ? String((failed[0] as PromiseRejectedResult).reason).slice(0, 80) : "unknown";
         showToast(`⚠️ ${ok}/${batches.length} runs OK · ${failed.length} lỗi (${firstErr})`, true);
       }
-      await reloadWayback();
+      await reloadWaybackFor(targets);
     } finally {
       setWaybackStarting(false);
     }
-  }, [reloadWayback, showToast]);
+  }, [reloadWaybackFor, showToast]);
 
-  const pollWaybackRun = useCallback(async (runId: string) => {
-    try {
-      const res = await fetch(`/api/wayback/runs/${encodeURIComponent(runId)}`);
-      const data = await res.json();
-      if (!res.ok) return;
-      if (data.ingested?.count) {
-        const ex = data.ingested.autoExcluded ?? 0;
-        showToast(
-          ex > 0
-            ? `✅ Wayback ingested ${data.ingested.count} kết quả · 🚫 auto loại trừ ${ex} flagged khỏi picker`
-            : `✅ Wayback ingested ${data.ingested.count} kết quả`,
-        );
-      }
-      await reloadWayback();
-    } catch { /* ignore */ }
-  }, [reloadWayback, showToast]);
-
-  // Auto-poll any RUNNING runs every 10s.
-  useEffect(() => {
-    const running = waybackRuns.filter((r) => r.status === "READY" || r.status === "RUNNING");
-    if (running.length === 0) return;
-    const id = setInterval(() => {
-      for (const r of running) pollWaybackRun(r.runId);
-    }, 10000);
-    return () => clearInterval(id);
-  }, [waybackRuns, pollWaybackRun]);
+  // (Đã bỏ) Trước đây Kho auto-poll MỌI run pipeline mỗi 10s, mỗi lần gọi readAllResults
+  // (TẤT CẢ wayback_results + JSONB nặng) → với 100 run pipeline = 100 lần tải toàn bảng/10s
+  // → treo cả Kho + nghẽn DB. Ingest do reconciler lo server-side; Kho không cần poll.
 
   const profitOf = (e: InventoryEntry) =>
     e.sellPrice != null && e.purchasePrice != null ? e.sellPrice - e.purchasePrice : null;
@@ -511,15 +493,6 @@ export default function InventoryPage() {
     finally { setWbDetailLoading((p) => { const n = new Set(p); n.delete(domain); return n; }); }
   }, [wbFullLoaded]);
 
-  const inFlightWaybackTargets = useMemo(() => {
-    const s = new Set<string>();
-    for (const r of waybackRuns) {
-      if (r.status === "READY" || r.status === "RUNNING") {
-        for (const d of r.targets) s.add(d);
-      }
-    }
-    return s;
-  }, [waybackRuns]);
 
   // Tìm kiếm nhiều domain cùng lúc: tách theo xuống dòng / dấu phẩy / ; / khoảng
   // trắng, dọn protocol/www/path để dán cả URL cũng khớp.
@@ -1427,7 +1400,7 @@ export default function InventoryPage() {
           const candidates = filtered
             .filter((e) => e.sellPrice == null) // holding only
             .map((e) => e.domain)
-            .filter((d) => !waybackByDomain.has(d) && !inFlightWaybackTargets.has(d));
+            .filter((d) => !waybackByDomain.has(d));
           if (candidates.length === 0) return null;
           return (
             <Button
@@ -1442,12 +1415,6 @@ export default function InventoryPage() {
             </Button>
           );
         })()}
-        {inFlightWaybackTargets.size > 0 && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300 px-2 py-1 text-[11px] font-medium">
-            <Loader2 className="h-3 w-3 animate-spin" />
-            {inFlightWaybackTargets.size} đang chạy
-          </span>
-        )}
         {(() => {
           const toValuate = visibleEntries.filter((e) => selected.has(e.domain) && e.sellPrice == null).length;
           return (
@@ -2008,7 +1975,7 @@ export default function InventoryPage() {
                         <WaybackCell
                           domain={e.domain}
                           row={waybackByDomain.get(e.domain) ?? null}
-                          inFlight={inFlightWaybackTargets.has(e.domain)}
+                          inFlight={false}
                           expanded={expandedWayback.has(e.domain)}
                           onToggleExpand={() => {
                             const next = new Set(expandedWayback);
