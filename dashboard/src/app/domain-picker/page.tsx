@@ -295,19 +295,26 @@ export default function DomainPickerPage() {
     }
     return m;
   }, [details, blacklistSet]);
-  // Bước 6: chỉ giữ domain Tốt / Trung bình VÀ có ≥1 ref SẠCH DR≥90 (đồng bộ ĐK1).
+  // Phân hạng ref SẠCH: ĐK1 = có ref DR≥90 (mua được ngay); ĐK2 = ref mạnh nhất DR 70–89
+  // (cần kiểm traffic ≥1M trước khi mua); null = 0 ref sạch DR≥70 (rating dựa ref spam → loại).
+  const dkTier = useCallback((d: string): "DK1" | "DK2" | null => {
+    const refs = cleanRefsByDomain.get(d) ?? [];
+    if (refs.some((r) => r.dr >= 90)) return "DK1";
+    if (refs.some((r) => r.dr >= 70)) return "DK2";
+    return null;
+  }, [cleanRefsByDomain]);
+  // Bước 6: giữ domain Tốt/Trung bình VÀ có ≥1 ref SẠCH DR≥70 (ĐK1 hoặc ĐK2).
   const buyList = useMemo(() => {
-    // Yêu cầu ≥1 ref SẠCH DR≥90 — KỂ CẢ domain TỐT: rating có thể sai (AI đếm free-host
-    // spam là mạnh), nhưng nếu 0 ref sạch mạnh thì KHÔNG cho vào đáng-mua.
-    const hasCleanStrong = (d: string) => (cleanRefsByDomain.get(d) ?? []).some((r) => r.dr >= 90);
+    // Yêu cầu ≥1 ref SẠCH DR≥70 — KỂ CẢ domain TỐT: rating có thể sai (AI đếm free-host
+    // spam là mạnh); 0 ref sạch DR≥70 thì KHÔNG cho vào đáng-mua (case vrtulex/reflectz).
     const isGood = (d: string) => {
       const r = ratings[d] ?? "";
       if (!r.includes("TỐT") && !r.includes("TRUNG BÌNH")) return false;
-      return hasCleanStrong(d);
+      return dkTier(d) !== null;
     };
     const base = cleanDomains.length ? cleanDomains : Object.keys(ratings);
     return base.filter((d) => isGood(d) && !owned.has(d) && !excluded.has(d));   // ẩn đã mua + đã loại trừ
-  }, [cleanDomains, ratings, cleanRefsByDomain, owned, excluded]);
+  }, [cleanDomains, ratings, dkTier, owned, excluded]);
   // Bảng Bước 6 lọc theo Rating (buyList chỉ có TỐT/TB).
   const displayBuyList = useMemo(() => {
     if (filterBuyRating === "all") return buyList;
@@ -700,7 +707,7 @@ export default function DomainPickerPage() {
       setWbStarted(true); setGatingDone(true); setWebhookStatus("ok");
       setDone(new Set([1, 2, 3, 4, 5] as Step[]));
       setStep(6);
-      toast(`✅ Khôi phục ${cands.length} domain đáng mua (TỐT/TB) — bấm lại để cập nhật khi có thêm rating`);
+      toast(`✅ Khôi phục ${cands.length} domain đáng mua (ĐK1 DR≥90 + ĐK2 DR 70–89) — bấm lại để cập nhật khi có thêm rating`);
     } catch (e) { toast(`❌ ${e instanceof Error ? e.message : "lỗi khôi phục"}`, true); }
     finally { setResuming(false); }
   }, [toast]);
@@ -1053,8 +1060,13 @@ export default function DomainPickerPage() {
                         <td className="px-3 py-1.5 font-medium"><a href={`https://${d}`} target="_blank" rel="noreferrer" className="hover:underline">{d}</a></td>
                         <td className="px-3 py-1.5 text-xs">{(ratings[d] ?? "").includes("TỐT") ? <span className="text-emerald-700 font-medium">✅ TỐT</span> : <span className="text-amber-600">⚠️ TRUNG BÌNH</span>}</td>
                         <td className="px-3 py-1.5 text-xs max-w-[180px] truncate" title={categories[d] ?? ""}>{categories[d] ?? "—"}</td>
-                        <td className="px-3 py-1.5 text-xs text-muted-foreground max-w-[320px] truncate" title={(cleanRefsByDomain.get(d) ?? []).map((r) => `${r.domain} (DR ${r.dr})`).join("; ")}>
-                          {(() => { const cr = cleanRefsByDomain.get(d) ?? []; return cr.length ? cr.map((r) => `${r.domain} (DR ${r.dr})`).join("; ") : "—"; })()}
+                        <td className="px-3 py-1.5 text-xs text-muted-foreground max-w-[340px]" title={(cleanRefsByDomain.get(d) ?? []).map((r) => `${r.domain} (DR ${r.dr})`).join("; ")}>
+                          <div className="flex items-center gap-1.5">
+                            {dkTier(d) === "DK2"
+                              ? <span className="shrink-0 rounded bg-amber-100 dark:bg-amber-950/50 text-amber-700 dark:text-amber-400 px-1.5 py-0.5 text-[10px] font-medium" title="Ref sạch mạnh nhất DR 70–89 — cần kiểm traffic ≥1M (Ahrefs) trước khi mua">ĐK2 · kiểm traffic</span>
+                              : <span className="shrink-0 rounded bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400 px-1.5 py-0.5 text-[10px] font-medium" title="Có ref sạch DR≥90">ĐK1</span>}
+                            <span className="truncate">{(() => { const cr = cleanRefsByDomain.get(d) ?? []; return cr.length ? cr.map((r) => `${r.domain} (DR ${r.dr})`).join("; ") : "—"; })()}</span>
+                          </div>
                         </td>
                         <td className="px-3 py-1.5 tabular-nums text-xs">{priceStr(d)}</td>
                       </tr>

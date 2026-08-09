@@ -26,6 +26,18 @@ const chunk = <T>(a: T[], n: number): T[][] => {
   return out;
 };
 
+/** Trích ref { domain, dr } từ chuỗi detail — KHỚP parseDetailRefs ở picker (client). */
+function parseRefs(detail: string | null): { domain: string; dr: number }[] {
+  if (!detail) return [];
+  const body = detail.includes("|") ? detail.slice(detail.indexOf("|") + 1) : detail;
+  const out: { domain: string; dr: number }[] = [];
+  for (const part of body.split(/[;\n]+/)) {
+    const m = part.match(/([a-z0-9][a-z0-9.-]*\.[a-z]{2,})\s*\(\s*DR\s*(\d+)/i);
+    if (m) out.push({ domain: m[1].toLowerCase(), dr: Number(m[2]) });
+  }
+  return out;
+}
+
 export async function readResumeCandidates(hours = 12): Promise<ResumeCandidate[]> {
   const sb = supabase();
   const cutoff = new Date(Date.now() - hours * 3600 * 1000).toISOString();
@@ -74,7 +86,13 @@ export async function readResumeCandidates(hours = 12): Promise<ResumeCandidate[
   // 3) rating/category/detail + loại trừ, và 4) đã mua.
   const assess = new Map<string, { rating: string | null; category: string | null; detail: string | null; excluded: boolean }>();
   const owned = new Set<string>();
+  const blacklist = new Set<string>();
   await Promise.all([
+    (async () => {
+      const { data, error } = await sb.from("ref_blacklist").select("domain");
+      if (error) throw new Error(error.message);
+      for (const r of (data ?? []) as { domain: string }[]) blacklist.add(String(r.domain).toLowerCase());
+    })(),
     (async () => {
       for (const slice of chunk(cand, 300)) {
         const { data, error } = await sb
@@ -106,6 +124,11 @@ export async function readResumeCandidates(hours = 12): Promise<ResumeCandidate[
     const a = assess.get(domain);
     if (a?.excluded) continue;                    // đã bấm Loại trừ
     if (!isGoodRating(a?.rating ?? null)) continue;   // chỉ domain TỐT/TB
+    // Đồng bộ cổng buyList: phải có ≥1 ref SẠCH (đã lọc blacklist) DR≥70 = ĐK1 (DR≥90)
+    // hoặc ĐK2 (DR 70–89). Loại domain rating-tốt-ẢO (rating dựa ref spam/blacklist,
+    // 0 ref sạch mạnh) — chính là case vrtulex/reflectz. Client tự phân ĐK1/ĐK2 để gắn nhãn.
+    const cleanRefs = parseRefs(a?.detail ?? null).filter((r) => !blacklist.has(r.domain));
+    if (!cleanRefs.some((r) => r.dr >= 70)) continue;
     out.push({ domain, gnameStatus: aq.status, dropEta: aq.dropEta, rating: a!.rating, category: a?.category ?? null, detail: a?.detail ?? null });
   }
   return out;
