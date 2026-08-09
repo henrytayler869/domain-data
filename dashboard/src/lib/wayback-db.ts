@@ -134,6 +134,30 @@ export async function readResultsFor(targetsRaw: string[]): Promise<WaybackRow[]
   return out.map(rowToResult);
 }
 
+// Cột NHẸ (KHÔNG kéo JSONB content_history/problematic_snapshots — mỗi domain có thể
+// hàng chục snapshot → payload MB, select * cho ~900 domain timeout ~135s). Kho chỉ cần
+// badge flagged/clean + snapshot/age; chi tiết JSONB lazy-load riêng khi bấm mở rộng.
+const LIGHT_COLS = "target_domain,snapshot_count,first_year,last_year,domain_age,has_betting,has_adult,error_reason,checked_at";
+
+/** Như readResultsFor nhưng chỉ cột nhẹ (contentHistory/problematicSnapshots = []). */
+export async function readResultsForLight(targetsRaw: string[]): Promise<WaybackRow[]> {
+  const targets = Array.from(new Set(targetsRaw.map((t) => t.toLowerCase().trim()).filter(Boolean)));
+  if (!targets.length) return [];
+  const sb = supabase();
+  const CHUNK = 150;
+  const chunks: string[][] = [];
+  for (let i = 0; i < targets.length; i += CHUNK) chunks.push(targets.slice(i, i + CHUNK));
+  const parts = await Promise.all(
+    chunks.map((c) => sb.from(RESULTS_TABLE).select(LIGHT_COLS).in("target_domain", c)),
+  );
+  const out: ResultsDbRow[] = [];
+  for (const { data, error } of parts) {
+    if (error) throw new Error(error.message);
+    if (data) out.push(...(data as unknown as ResultsDbRow[]));  // JSONB thiếu → rowToResult map thành []
+  }
+  return out.map(rowToResult);
+}
+
 export interface CheckedDomain { domain: string; flagged: boolean; noSnapshot: boolean }
 
 /**

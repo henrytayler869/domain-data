@@ -184,6 +184,9 @@ export default function InventoryPage() {
   const [waybackRuns, setWaybackRuns] = useState<WaybackRunT[]>([]);
   const [waybackStarting, setWaybackStarting] = useState(false);
   const [expandedWayback, setExpandedWayback] = useState<Set<string>>(new Set());
+  // Bulk chỉ tải cột nhẹ; JSONB chi tiết (content_history/problematic) lazy-load khi mở rộng.
+  const [wbFullLoaded, setWbFullLoaded] = useState<Set<string>>(new Set());
+  const [wbDetailLoading, setWbDetailLoading] = useState<Set<string>>(new Set());
   const [filterWayback, setFilterWayback] = useState<"flagged" | "clean" | "unchecked">("clean");
   const [filterRating, setFilterRating] = useState<"all" | "tot" | "tb" | "rui" | "xau" | "none">("all");
 
@@ -488,6 +491,25 @@ export default function InventoryPage() {
     for (const r of waybackResults) m.set(r.targetDomain, r);
     return m;
   }, [waybackResults]);
+
+  // Lazy-load JSONB chi tiết (content_history/problematic) cho 1 domain khi bấm mở rộng —
+  // bulk chỉ có cột nhẹ. Fetch 1 domain ~100-300ms; cache qua wbFullLoaded để khỏi tải lại.
+  const loadWaybackDetail = useCallback(async (domain: string) => {
+    if (wbFullLoaded.has(domain)) return;
+    setWbDetailLoading((p) => new Set(p).add(domain));
+    try {
+      const res = await fetch("/api/wayback/results", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targets: [domain], full: true }),
+      });
+      const data = await res.json();
+      const full = (data.rows ?? [])[0] as WaybackRow | undefined;
+      if (full) setWaybackResults((prev) => prev.map((r) => (r.targetDomain === domain ? full : r)));
+      setWbFullLoaded((p) => new Set(p).add(domain));
+    } catch { /* giữ bản nhẹ nếu lỗi */ }
+    finally { setWbDetailLoading((p) => { const n = new Set(p); n.delete(domain); return n; }); }
+  }, [wbFullLoaded]);
 
   const inFlightWaybackTargets = useMemo(() => {
     const s = new Set<string>();
@@ -1990,7 +2012,8 @@ export default function InventoryPage() {
                           expanded={expandedWayback.has(e.domain)}
                           onToggleExpand={() => {
                             const next = new Set(expandedWayback);
-                            if (next.has(e.domain)) next.delete(e.domain); else next.add(e.domain);
+                            if (next.has(e.domain)) next.delete(e.domain);
+                            else { next.add(e.domain); void loadWaybackDetail(e.domain); }
                             setExpandedWayback(next);
                           }}
                           onCheck={() => startWaybackCheck([e.domain])}
@@ -2043,7 +2066,7 @@ export default function InventoryPage() {
                     {wb && wbExpanded && (
                       <tr className="bg-muted/20 border-b border-border/50">
                         <td colSpan={12} className="px-6 py-4">
-                          <WaybackDetail row={wb} />
+                          <WaybackDetail row={wb} loading={wbDetailLoading.has(e.domain)} />
                         </td>
                       </tr>
                     )}
@@ -2612,7 +2635,7 @@ function WaybackCell({
   );
 }
 
-function WaybackDetail({ row }: { row: WaybackRowT }) {
+function WaybackDetail({ row, loading }: { row: WaybackRowT; loading?: boolean }) {
   return (
     <div className="space-y-3 text-xs">
       <div className="flex flex-wrap gap-3 items-center">
@@ -2620,7 +2643,10 @@ function WaybackDetail({ row }: { row: WaybackRowT }) {
         <span className="text-muted-foreground">{row.snapshotCount} snapshots · {row.firstYear}–{row.lastYear} · age {row.domainAge}y</span>
         <span className="text-muted-foreground">checked {new Date(row.checkedAt).toLocaleString()}</span>
       </div>
-      {row.problematicSnapshots.length > 0 && (
+      {loading && (
+        <p className="text-muted-foreground italic flex items-center gap-1.5"><Loader2 className="h-3 w-3 animate-spin" /> Đang tải chi tiết…</p>
+      )}
+      {!loading && row.problematicSnapshots.length > 0 && (
         <div>
           <h4 className="font-semibold text-red-700 dark:text-red-300 mb-2">🚨 Problematic snapshots ({row.problematicSnapshots.length})</h4>
           <div className="space-y-2">
@@ -2644,7 +2670,7 @@ function WaybackDetail({ row }: { row: WaybackRowT }) {
           </div>
         </div>
       )}
-      {row.contentHistory.length > 0 && (
+      {!loading && row.contentHistory.length > 0 && (
         <div>
           <h4 className="font-semibold mb-2">📜 Content history ({row.contentHistory.length} snapshots)</h4>
           <div className="space-y-1">
@@ -2658,7 +2684,7 @@ function WaybackDetail({ row }: { row: WaybackRowT }) {
           </div>
         </div>
       )}
-      {row.contentHistory.length === 0 && row.problematicSnapshots.length === 0 && !row.errorReason && (
+      {!loading && row.contentHistory.length === 0 && row.problematicSnapshots.length === 0 && !row.errorReason && (
         <p className="text-muted-foreground italic">Không có content history.</p>
       )}
     </div>
