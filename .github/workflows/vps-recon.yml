@@ -1,0 +1,44 @@
+name: VPS recon (read-only)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  recon:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Recon (structure only, no secrets)
+        run: |
+          ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=no \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'bash -s' <<'EOF'
+          echo "===== CONTAINERS ====="
+          docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' 2>/dev/null
+          echo; echo "===== NETWORKS ====="
+          docker network ls --format '{{.Name}} ({{.Driver}})' 2>/dev/null
+          echo; echo "===== dashboard container networks ====="
+          docker inspect dashboard --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' 2>/dev/null || echo "(no dashboard container)"
+          echo; echo "===== compose services in /opt/n8n ====="
+          (cd /opt/n8n && docker compose config --services 2>/dev/null) || echo "(no compose)"
+          echo; echo "===== postgres container? ====="
+          docker ps --format '{{.Names}} | {{.Image}} | {{.Ports}}' 2>/dev/null | grep -i postgres || echo "no postgres container"
+          echo; echo "===== port usage (5432/8000/3000/3001) ====="
+          (ss -ltnp 2>/dev/null || netstat -ltn 2>/dev/null) | grep -E ':(5432|8000|3000|3001)\b' || echo "none of 5432/8000/3000/3001 in use"
+          echo; echo "===== RESOURCES ====="
+          free -h 2>/dev/null | head -2
+          echo; df -h / 2>/dev/null | tail -1
+          echo "cpus: $(nproc 2>/dev/null)"
+          echo; echo "===== TOOLS ====="
+          for t in docker pg_dump psql openssl; do printf "%s: " "$t"; command -v "$t" 2>/dev/null || echo MISSING; done
+          docker compose version 2>/dev/null | head -1
+          echo; echo "===== /opt/domaindata/dashboard exists? ====="
+          ls -la /opt/domaindata/dashboard/.env.local 2>/dev/null | awk '{print $1, $9}' || echo "(no .env.local)"
+          echo "===== app SUPABASE_URL host (chỉ host, không key) ====="
+          grep -m1 '^SUPABASE_URL=' /opt/domaindata/dashboard/.env.local 2>/dev/null | sed -E 's#^SUPABASE_URL=https?://([^/]+).*#\1#' || echo "(none)"
+          EOF
