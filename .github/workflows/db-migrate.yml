@@ -67,7 +67,7 @@ jobs:
           docker run --rm --network n8n_default -v /opt/domaindata/db:/w -w /w \
             -e SB_URL="$SB_URL" -e SB_KEY="$SB_KEY" \
             -e PG_URL="postgres://postgres:$DD_PG_PASSWORD@domaindata-db:5432/domaindata" \
-            node:20-alpine sh -c 'npm i --silent --no-audit --no-fund @supabase/supabase-js pg >/dev/null 2>&1 && node migrate.mjs'
+            node:22-alpine sh -c 'npm i --silent --no-audit --no-fund @supabase/supabase-js pg >/dev/null 2>&1 && node migrate.mjs'
           # 7) Up PostgREST + proxy
           docker compose --env-file "$ENVF" -f docker-compose.yml up -d postgrest proxy
           sleep 6
