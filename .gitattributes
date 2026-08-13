@@ -1,3 +1,8 @@
 # Shell scripts phải luôn LF để chạy được trên Linux (VPS/CI), kể cả khi máy dev
 # bật core.autocrlf=true.
 *.sh text eol=lf
+# Migration + workflow: LF bắt buộc (heredoc bash trên VPS vỡ nếu CRLF)
+migration/** text eol=lf
+.github/workflows/*.yml text eol=lf
+*.sql text eol=lf
+*.mjs text eol=lf

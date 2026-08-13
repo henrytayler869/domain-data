@@ -1,0 +1,10 @@
+# Rewrite path Supabase client (/rest/v1/*) → PostgREST root. Nội bộ n8n_default.
+:8080 {
+	handle_path /rest/v1/* {
+		reverse_proxy domaindata-postgrest:3000
+	}
+	handle /health {
+		respond "ok" 200
+	}
+	respond "domaindata proxy" 200
+}

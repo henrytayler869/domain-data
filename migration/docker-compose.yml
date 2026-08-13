@@ -1,0 +1,51 @@
+# Stack DB tự host cho DomainData — thay Supabase cloud. Cô lập, join network
+# n8n_default (external) để container dashboard thấy được. KHÔNG đụng compose /opt/n8n.
+name: domaindata
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: domaindata-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${DD_PG_PASSWORD}
+      POSTGRES_DB: domaindata
+    volumes:
+      - dd_pgdata:/var/lib/postgresql/data
+    networks: [n8n_default]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d domaindata"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  postgrest:
+    image: postgrest/postgrest:v12.2.3
+    container_name: domaindata-postgrest
+    restart: unless-stopped
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${DD_AUTHENTICATOR_PASSWORD}@domaindata-db:5432/domaindata
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${DD_JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [n8n_default]
+
+  proxy:
+    image: caddy:2-alpine
+    container_name: domaindata-proxy
+    restart: unless-stopped
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on: [postgrest]
+    networks: [n8n_default]
+
+volumes:
+  dd_pgdata:
+
+networks:
+  n8n_default:
+    external: true
