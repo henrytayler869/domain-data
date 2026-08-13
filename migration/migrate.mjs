@@ -68,8 +68,12 @@ for (const [t, cfg] of Object.entries(T)) {
     }
     console.log(`${t}: cloud ${total} → chèn ${ins}`);
   } catch (e) {
-    failed++;
-    console.log(`${t}: LỖI — ${e.message}`);
+    if (/Could not find the table|schema cache|does not exist/i.test(e.message)) {
+      console.log(`${t}: BỎ QUA (không có trên cloud, VPS đã có bảng rỗng)`);
+    } else {
+      failed++;
+      console.log(`${t}: LỖI — ${e.message}`);
+    }
   } finally {
     client.release();
   }
