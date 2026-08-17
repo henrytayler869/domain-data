@@ -169,6 +169,7 @@ export default function DomainPickerPage() {
   const [buying, setBuying] = useState(false);
   const [buyNote, setBuyNote] = useState<{ ok: boolean; msg: string } | null>(null);
   const [filterBuyRating, setFilterBuyRating] = useState<"all" | "tot" | "tb">("all");
+  const [filterBuyDk, setFilterBuyDk] = useState<"all" | "dk1" | "dk2">("all");
   // Watchlist — domain "xem xét mua sau"
   const [watchlist, setWatchlist] = useState<WLEntry[]>([]);
   const [watchlistOpen, setWatchlistOpen] = useState(false);
@@ -317,12 +318,18 @@ export default function DomainPickerPage() {
   }, [cleanDomains, ratings, dkTier, owned, excluded]);
   // Bảng Bước 6 lọc theo Rating (buyList chỉ có TỐT/TB).
   const displayBuyList = useMemo(() => {
-    if (filterBuyRating === "all") return buyList;
     return buyList.filter((d) => {
-      const r = ratings[d] ?? "";
-      return filterBuyRating === "tot" ? r.includes("TỐT") : r.includes("TRUNG BÌNH");
+      if (filterBuyRating !== "all") {
+        const r = ratings[d] ?? "";
+        if (filterBuyRating === "tot" ? !r.includes("TỐT") : !r.includes("TRUNG BÌNH")) return false;
+      }
+      if (filterBuyDk !== "all") {
+        const t = dkTier(d);
+        if (filterBuyDk === "dk1" ? t !== "DK1" : t !== "DK2") return false;
+      }
+      return true;
     });
-  }, [buyList, filterBuyRating, ratings]);
+  }, [buyList, filterBuyRating, filterBuyDk, ratings, dkTier]);
   // Bảng trạng thái (step ≥ 3): ẩn domain Gname trả "registered" (đã đăng ký /
   // reserved — không mua được) khỏi view. Vẫn giữ available/backorder/premium,
   // domain đang check (status chưa có) và domain lỗi để còn theo dõi.
@@ -1024,6 +1031,16 @@ export default function DomainPickerPage() {
                   <option value="all">Mọi rating</option>
                   <option value="tot">✅ TỐT</option>
                   <option value="tb">⚠️ TRUNG BÌNH</option>
+                </select>
+                <select
+                  value={filterBuyDk}
+                  onChange={(e) => setFilterBuyDk(e.target.value as "all" | "dk1" | "dk2")}
+                  className="h-8 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
+                  title="Lọc theo ĐK1 (ref sạch DR≥90) / ĐK2 (DR 70–89)"
+                >
+                  <option value="all">Mọi ĐK</option>
+                  <option value="dk1">ĐK1 · DR≥90</option>
+                  <option value="dk2">ĐK2 · 70–89</option>
                 </select>
                 {(() => {
                   const sel = Array.from(selectedBuy);
