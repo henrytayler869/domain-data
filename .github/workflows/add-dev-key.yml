@@ -1,0 +1,26 @@
+name: Authorize dev SSH key on VPS
+
+on:
+  workflow_dispatch:
+    inputs:
+      pubkey:
+        description: "Public key (ssh-ed25519 ...) to append to VPS authorized_keys"
+        required: true
+
+jobs:
+  addkey:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH (deploy key)
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Append pubkey (dedup)
+        env:
+          PUBKEY: ${{ inputs.pubkey }}
+        run: |
+          printf '%s\n' "$PUBKEY" | ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=no \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && k=$(cat) && grep -qxF "$k" ~/.ssh/authorized_keys && echo "ĐÃ CÓ SẴN" || { echo "$k" >> ~/.ssh/authorized_keys && echo "ĐÃ THÊM KEY"; }'
