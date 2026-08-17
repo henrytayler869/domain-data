@@ -374,6 +374,8 @@ export default function InventoryPage() {
     let holdingCount = 0;
     let holdingExpectedTotal = 0;
     let holdingExpectedCount = 0;
+    let goodCount = 0;
+    let tbCount = 0;
 
     const inScope = (e: InventoryEntry) =>
       datePreset === "all" || inRange(e.purchasedAt) || inRange(e.soldAt);
@@ -395,13 +397,16 @@ export default function InventoryPage() {
           holdingExpectedTotal += e.expectedSellPrice;
           holdingExpectedCount++;
         }
+        const rt = assessByDomain.get(e.domain)?.rating ?? e.rating ?? "";
+        if (rt.includes("TỐT")) goodCount++;
+        else if (rt.includes("TRUNG BÌNH")) tbCount++;
       }
     }
     return {
       totalSpend, totalRevenue, totalProfit, soldCount, holdingCount, soldCostBasis,
-      holdingExpectedTotal, holdingExpectedCount,
+      holdingExpectedTotal, holdingExpectedCount, goodCount, tbCount,
     };
-  }, [visibleEntries, datePreset, inRange]);
+  }, [visibleEntries, datePreset, inRange, assessByDomain]);
 
   // Quick lookup: domain → wayback row.
   const waybackByDomain = useMemo(() => {
@@ -1160,50 +1165,13 @@ export default function InventoryPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div className="rounded-lg border bg-card px-4 py-3">
-          <p className="text-xs text-muted-foreground uppercase">Tổng Domain</p>
-          <p className="text-2xl font-bold">{entries.length.toLocaleString()}</p>
-          <p className="text-[11px] text-muted-foreground mt-0.5">
-            {stats.holdingCount} holding · {stats.soldCount} sold
-          </p>
+          <p className="text-xs text-muted-foreground uppercase">Tổng Domain đang có</p>
+          <p className="text-2xl font-bold">{stats.holdingCount.toLocaleString()}</p>
         </div>
         <div className="rounded-lg border bg-card px-4 py-3">
-          <p className="text-xs text-muted-foreground uppercase">Chi phí</p>
-          <p className="text-2xl font-bold text-rose-600 dark:text-rose-400">
-            ${stats.totalSpend.toFixed(2)}
-          </p>
-        </div>
-        <div className="rounded-lg border bg-card px-4 py-3">
-          <p className="text-xs text-muted-foreground uppercase">Doanh thu</p>
-          <p className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
-            ${stats.totalRevenue.toFixed(2)}
-          </p>
-        </div>
-        <div className="rounded-lg border bg-card px-4 py-3">
-          <p className="text-xs text-muted-foreground uppercase">Lợi nhuận</p>
-          <p className={cn(
-            "text-2xl font-bold",
-            stats.totalProfit > 0 ? "text-emerald-600 dark:text-emerald-400"
-              : stats.totalProfit < 0 ? "text-rose-600 dark:text-rose-400"
-              : "text-muted-foreground"
-          )}>
-            {stats.totalProfit >= 0 ? "+" : ""}${stats.totalProfit.toFixed(2)}
-          </p>
-        </div>
-        <div className="rounded-lg border bg-card px-4 py-3">
-          <p className="text-xs text-muted-foreground uppercase">ROI</p>
-          <p className={cn(
-            "text-2xl font-bold",
-            stats.soldCostBasis > 0 && stats.totalProfit > 0 ? "text-emerald-600 dark:text-emerald-400"
-              : stats.totalProfit < 0 ? "text-rose-600 dark:text-rose-400"
-              : "text-muted-foreground"
-          )}>
-            {stats.soldCostBasis > 0 ? `${((stats.totalProfit / stats.soldCostBasis) * 100).toFixed(1)}%` : "—"}
-          </p>
-        </div>
-        <div className="rounded-lg border bg-card px-4 py-3">
-          <p className="text-xs text-muted-foreground uppercase">Tiềm năng</p>
+          <p className="text-xs text-muted-foreground uppercase">Doanh thu tiềm năng</p>
           <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">
             ${stats.holdingExpectedTotal.toFixed(2)}
           </p>
@@ -1212,40 +1180,16 @@ export default function InventoryPage() {
           </p>
         </div>
         <div className="rounded-lg border bg-card px-4 py-3">
-          <p className="text-xs text-muted-foreground uppercase">Đã rút</p>
-          <p className="text-2xl font-bold text-purple-600 dark:text-purple-400">
-            ${withdrawalStats.totalUsdPaid.toFixed(2)}
+          <p className="text-xs text-muted-foreground uppercase">Domain Tốt</p>
+          <p className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
+            {stats.goodCount.toLocaleString()}
           </p>
-          {withdrawalStats.totalUsdPending > 0 && (
-            <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">
-              + ${withdrawalStats.totalUsdPending.toFixed(2)} đang chờ
-            </p>
-          )}
-          {(() => {
-            const rows: { label: string; paid: number; pending: number }[] = [
-              { label: "Ví điện tử", ...withdrawalStats.byWallet.evault },
-              { label: "Gname",      ...withdrawalStats.byWallet.gname },
-              { label: "Trống",      ...withdrawalStats.byWallet.none },
-            ].filter((r) => r.paid > 0 || r.pending > 0);
-            if (rows.length === 0) return null;
-            return (
-              <div className="mt-2 pt-2 border-t border-border/50 space-y-0.5">
-                {rows.map((r) => (
-                  <div key={r.label} className="flex items-center justify-between text-[11px]">
-                    <span className="text-muted-foreground">{r.label}</span>
-                    <span className="font-medium tabular-nums">
-                      ${r.paid.toFixed(2)}
-                      {r.pending > 0 && (
-                        <span className="text-amber-600 dark:text-amber-400 ml-1">
-                          +${r.pending.toFixed(2)}
-                        </span>
-                      )}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            );
-          })()}
+        </div>
+        <div className="rounded-lg border bg-card px-4 py-3">
+          <p className="text-xs text-muted-foreground uppercase">Domain TB</p>
+          <p className="text-2xl font-bold text-amber-600 dark:text-amber-400">
+            {stats.tbCount.toLocaleString()}
+          </p>
         </div>
       </div>
 
