@@ -1,0 +1,34 @@
+name: DB expose proxy on VPS localhost (for SSH tunnel)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  expose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Re-up proxy with localhost port
+        run: |
+          rsync -az -e "ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=no" \
+            ./migration/ "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/domaindata/db/"
+          ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=no \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'bash -s' <<'REMOTE'
+          set -e +x
+          cd /opt/domaindata/db
+          docker compose --env-file .env -f docker-compose.yml up -d proxy
+          echo "===== port binding (mong đợi 127.0.0.1:8088) ====="
+          docker ps --filter name=domaindata-proxy --format '{{.Names}}  {{.Ports}}'
+          echo "===== self-test qua localhost:8088 (dùng JWT trên VPS, không echo) ====="
+          . ./.env
+          docker run --rm --network host curlimages/curl:latest -s -o /dev/null -w 'HTTP %{http_code}\n' \
+            -H "Authorization: Bearer $DD_SERVICE_ROLE_JWT" \
+            "http://127.0.0.1:8088/rest/v1/domain_inventory?select=domain&limit=1" || echo "curl fail"
+          echo "DONE."
+          REMOTE
