@@ -38,7 +38,7 @@ if [ "$HAVE_CURL" = 1 ] && [ "$(probe)" != "000" ]; then
 else
   echo "🔌 Mở tunnel  localhost:$LPORT → $TARGET → (VPS) 127.0.0.1:$RPORT ..."
   ssh -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes \
-    -L "$LPORT:localhost:$RPORT" "$TARGET" &
+    -L "127.0.0.1:$LPORT:localhost:$RPORT" "$TARGET" &
   TUNNEL_PID=$!
   ok=0
   for i in $(seq 1 10); do

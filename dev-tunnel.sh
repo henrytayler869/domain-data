@@ -37,7 +37,7 @@ if command -v curl >/dev/null 2>&1 && [ "$(probe)" != "000" ]; then
 fi
 
 echo "🔌 Mở tunnel  localhost:$LPORT → $TARGET → (VPS) 127.0.0.1:$RPORT"
-SSH_OPTS=(-N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -L "$LPORT:localhost:$RPORT")
+SSH_OPTS=(-N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -L "127.0.0.1:$LPORT:localhost:$RPORT")
 
 # 3) autossh (tự reconnect) nếu có, else ssh thường
 if command -v autossh >/dev/null 2>&1; then
