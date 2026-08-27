@@ -109,3 +109,50 @@ export async function writeSettings(settings: Partial<Settings>): Promise<void> 
   };
   await writeToSupabase(merged);
 }
+
+// ─── Apify (app_settings key="apify") ───────────────────────────────────────────
+// Cho phép đổi tài khoản Apify khi hết credit mà KHÔNG cần sửa .env.local + redeploy.
+// Đọc DB trước → fallback env (APIFY_TOKEN / APIFY_WAYBACK_ACTOR_ID).
+
+const APIFY_KEY = "apify";
+const DEFAULT_ACTOR = "henry_tayler_869~wayback-machine-actor";
+
+export interface ApifySettings {
+  apifyToken: string;      // stored server-side only
+  apifyActorId: string;
+}
+
+const apifyEnvDefaults = (): ApifySettings => ({
+  apifyToken: process.env.APIFY_TOKEN ?? "",
+  apifyActorId: process.env.APIFY_WAYBACK_ACTOR_ID ?? DEFAULT_ACTOR,
+});
+
+export async function readApifySettings(): Promise<ApifySettings> {
+  const env = apifyEnvDefaults();
+  try {
+    const sb = supabase();
+    const { data, error } = await sb.from(TABLE).select("value").eq("key", APIFY_KEY).maybeSingle();
+    if (error) throw new Error(error.message);
+    const v = (data?.value ?? null) as Partial<ApifySettings> | null;
+    if (v && (v.apifyToken || v.apifyActorId)) {
+      return {
+        apifyToken: v.apifyToken || env.apifyToken,
+        apifyActorId: v.apifyActorId || env.apifyActorId || DEFAULT_ACTOR,
+      };
+    }
+  } catch { /* bảng chưa có / lỗi tạm — rơi xuống env */ }
+  return env;
+}
+
+export async function writeApifySettings(s: Partial<ApifySettings>): Promise<void> {
+  const cur = await readApifySettings();
+  const merged: ApifySettings = {
+    apifyToken: s.apifyToken?.trim() ? s.apifyToken.trim() : cur.apifyToken,
+    apifyActorId: s.apifyActorId?.trim() ? s.apifyActorId.trim() : cur.apifyActorId,
+  };
+  const sb = supabase();
+  const { error } = await sb
+    .from(TABLE)
+    .upsert({ key: APIFY_KEY, value: merged, updated_at: new Date().toISOString() }, { onConflict: "key" });
+  if (error) throw new Error(error.message);
+}

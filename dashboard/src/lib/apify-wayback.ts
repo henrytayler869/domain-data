@@ -13,20 +13,18 @@
  * Only import from API routes (server-only) — uses APIFY_TOKEN.
  */
 
+import { readApifySettings } from "./settings";
+
 const APIFY_BASE = "https://api.apify.com/v2";
 
-function token(): string {
-  const t = process.env.APIFY_TOKEN;
-  if (!t) {
-    throw new Error(
-      "Apify chưa được cấu hình. Set APIFY_TOKEN trong dashboard/.env.local"
-    );
+// Token + actor đọc từ app_settings (Cài đặt → Apify) → fallback env. Cho phép đổi
+// tài khoản Apify khi hết credit mà không cần sửa .env.local + redeploy.
+async function apifyCfg(): Promise<{ token: string; actorId: string }> {
+  const s = await readApifySettings();
+  if (!s.apifyToken) {
+    throw new Error("Apify chưa cấu hình. Vào Cài đặt → Apify để nhập token (hoặc set APIFY_TOKEN).");
   }
-  return t;
-}
-
-function actorId(): string {
-  return process.env.APIFY_WAYBACK_ACTOR_ID ?? "henry_tayler_869~wayback-machine-actor";
+  return { token: s.apifyToken, actorId: s.apifyActorId };
 }
 
 export type ApifyRunStatus =
@@ -94,7 +92,8 @@ export async function startWaybackRun(domains: string[], opts: StartRunOpts = {}
   if (!domains.length) throw new Error("domains rỗng");
   const maxSnapshots = opts.maxSnapshots ?? WAYBACK_MAX_SNAPSHOTS;
   const timeoutSecs = opts.timeoutSecs ?? WAYBACK_RUN_TIMEOUT_SECS;
-  const url = `${APIFY_BASE}/acts/${encodeURIComponent(actorId())}/runs?token=${token()}&timeout=${timeoutSecs}`;
+  const { token, actorId } = await apifyCfg();
+  const url = `${APIFY_BASE}/acts/${encodeURIComponent(actorId)}/runs?token=${token}&timeout=${timeoutSecs}`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -118,7 +117,8 @@ export async function startWaybackRun(domains: string[], opts: StartRunOpts = {}
 
 /** Poll a run for current status. Cheap — single GET, no dataset fetch. */
 export async function getWaybackRunStatus(runId: string): Promise<ApifyRunMeta> {
-  const url = `${APIFY_BASE}/actor-runs/${encodeURIComponent(runId)}?token=${token()}`;
+  const { token } = await apifyCfg();
+  const url = `${APIFY_BASE}/actor-runs/${encodeURIComponent(runId)}?token=${token}`;
   const res = await fetch(url);
   const body = await res.json();
   if (!res.ok) {
@@ -139,10 +139,11 @@ export async function getWaybackRunStatus(runId: string): Promise<ApifyRunMeta> 
 /** Pull all items from a dataset. Paginates if >1000 items. */
 export async function fetchWaybackResults(datasetId: string): Promise<WaybackResultItem[]> {
   const out: WaybackResultItem[] = [];
+  const { token } = await apifyCfg();
   const PAGE = 1000;
   let offset = 0;
   while (true) {
-    const url = `${APIFY_BASE}/datasets/${encodeURIComponent(datasetId)}/items?clean=true&format=json&limit=${PAGE}&offset=${offset}&token=${token()}`;
+    const url = `${APIFY_BASE}/datasets/${encodeURIComponent(datasetId)}/items?clean=true&format=json&limit=${PAGE}&offset=${offset}&token=${token}`;
     const res = await fetch(url);
     if (!res.ok) {
       const body = await res.text();
@@ -162,9 +163,10 @@ export async function fetchWaybackResults(datasetId: string): Promise<WaybackRes
  * mới khi vượt giới hạn concurrent (tài khoản này = 32) → dùng để throttle dispatch.
  */
 export async function countActiveRuns(): Promise<number> {
+  const { token } = await apifyCfg();
   let total = 0;
   for (const status of ["RUNNING", "READY"] as const) {
-    const res = await fetch(`${APIFY_BASE}/actor-runs?token=${token()}&status=${status}&limit=1`);
+    const res = await fetch(`${APIFY_BASE}/actor-runs?token=${token}&status=${status}&limit=1`);
     if (!res.ok) continue;
     const body = await res.json();
     total += body?.data?.total ?? 0;

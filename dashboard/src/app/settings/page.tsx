@@ -12,6 +12,7 @@ import {
   KeyRound,
   Wifi,
   Webhook,
+  Cloud,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,6 +33,23 @@ interface TestResult {
   login?: string;
   money_balance?: number | null;
   api_calls_today?: number | null;
+}
+
+interface ApifyData {
+  hasApifyToken: boolean;
+  apifyTokenHint: string;
+  apifyActorId: string;
+}
+
+interface ApifyTestResult {
+  ok: boolean;
+  error?: string;
+  username?: string | null;
+  monthlyUsageUsd?: number | null;
+  maxMonthlyUsageUsd?: number | null;
+  maxConcurrentRuns?: number | null;
+  actorId?: string;
+  actorOk?: boolean;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -55,6 +73,45 @@ export default function SettingsPage() {
   const [savingN8n, setSavingN8n] = useState(false);
   const [n8nStatus, setN8nStatus] = useState<"idle" | "ok" | "error">("idle");
 
+  // Apify
+  const [apify, setApify] = useState<ApifyData | null>(null);
+  const [apifyToken, setApifyToken] = useState("");
+  const [apifyActor, setApifyActor] = useState("");
+  const [showApifyToken, setShowApifyToken] = useState(false);
+  const [savingApify, setSavingApify] = useState(false);
+  const [apifyStatus, setApifyStatus] = useState<"idle" | "ok" | "error">("idle");
+  const [testingApify, setTestingApify] = useState(false);
+  const [apifyTest, setApifyTest] = useState<ApifyTestResult | null>(null);
+
+  const loadApify = useCallback(async () => {
+    try {
+      const res = await fetch("/api/settings/apify", { cache: "no-store" });
+      const data = await res.json();
+      if (res.ok) { setApify(data as ApifyData); setApifyActor(data.apifyActorId ?? ""); }
+    } catch { /* ignore */ }
+  }, []);
+
+  const saveApify = async () => {
+    setSavingApify(true); setApifyStatus("idle"); setApifyTest(null);
+    try {
+      const res = await fetch("/api/settings/apify", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...(apifyToken.trim() ? { apifyToken: apifyToken.trim() } : {}), apifyActorId: apifyActor.trim() }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
+      setApifyStatus("ok"); setApifyToken(""); await loadApify(); setTimeout(() => setApifyStatus("idle"), 3000);
+    } catch { setApifyStatus("error"); } finally { setSavingApify(false); }
+  };
+
+  const testApify = async () => {
+    setTestingApify(true); setApifyTest(null);
+    try {
+      const res = await fetch("/api/settings/apify/test", { cache: "no-store" });
+      setApifyTest(await res.json() as ApifyTestResult);
+    } catch (e) { setApifyTest({ ok: false, error: e instanceof Error ? e.message : "Lỗi kết nối" }); }
+    finally { setTestingApify(false); }
+  };
+
   // ─── Load ─────────────────────────────────────────────────────────────────────
 
   const loadSettings = useCallback(async () => {
@@ -72,6 +129,7 @@ export default function SettingsPage() {
   }, []);
 
   useEffect(() => { loadSettings(); }, [loadSettings]);
+  useEffect(() => { loadApify(); }, [loadApify]);
 
   // ─── Save ─────────────────────────────────────────────────────────────────────
 
@@ -339,6 +397,95 @@ export default function SettingsPage() {
             {savingN8n ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Lưu
           </Button>
         </div>
+      </div>
+
+      {/* Apify card */}
+      <div className="rounded-xl border bg-card shadow-sm">
+        <div className="flex items-center gap-3 px-6 py-4 border-b">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10">
+            <Cloud className="h-5 w-5 text-primary" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold">Apify API</h2>
+            <p className="text-xs text-muted-foreground">Wayback Machine actor — đổi token khi tài khoản Apify hết credit (không cần redeploy).</p>
+          </div>
+          {apify && (
+            <span className={cn("ml-auto inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border",
+              apify.hasApifyToken ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800" : "text-amber-600 bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800")}>
+              <span className={cn("w-1.5 h-1.5 rounded-full inline-block", apify.hasApifyToken ? "bg-emerald-500" : "bg-amber-500")} />
+              {apify.hasApifyToken ? "Đã cấu hình" : "Chưa cấu hình"}
+            </span>
+          )}
+        </div>
+        <div className="px-6 py-5 space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1.5">
+              API Token
+              {apify?.hasApifyToken && (
+                <span className="ml-2 text-xs font-normal text-muted-foreground">
+                  (Hiện tại: <code className="font-mono bg-muted px-1 rounded">{apify.apifyTokenHint}</code> — để trống nếu không đổi)
+                </span>
+              )}
+            </label>
+            <div className="relative">
+              <Input
+                type={showApifyToken ? "text" : "password"}
+                value={apifyToken}
+                onChange={(e) => setApifyToken(e.target.value)}
+                placeholder={apify?.hasApifyToken ? "Để trống = giữ nguyên" : "apify_api_..."}
+                autoComplete="off"
+                className="pr-10 font-mono"
+              />
+              <button type="button" onClick={() => setShowApifyToken((v) => !v)} tabIndex={-1}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors">
+                {showApifyToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1.5">Actor ID <span className="text-xs font-normal text-muted-foreground">(để trống = mặc định wayback actor)</span></label>
+            <Input value={apifyActor} onChange={(e) => setApifyActor(e.target.value)} placeholder="henry_tayler_869~wayback-machine-actor" className="font-mono" />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Lấy token tại <a href="https://console.apify.com/settings/integrations" target="_blank" rel="noopener noreferrer" className="text-primary underline underline-offset-2 hover:opacity-80">console.apify.com/settings/integrations</a>
+          </p>
+
+          {apifyStatus === "ok" && <div className="flex items-center gap-2 text-sm text-emerald-600 dark:text-emerald-400"><CheckCircle2 className="h-4 w-4" />Đã lưu — pipeline dùng token mới ngay</div>}
+          {apifyStatus === "error" && <div className="flex items-center gap-2 text-sm text-destructive"><XCircle className="h-4 w-4" />Lưu lỗi</div>}
+
+          <div className="flex items-center gap-3 pt-1">
+            <Button onClick={saveApify} disabled={savingApify || (!apifyToken.trim() && apifyActor.trim() === (apify?.apifyActorId ?? ""))} className="gap-2">
+              {savingApify ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}{savingApify ? "Đang lưu..." : "Lưu"}
+            </Button>
+            <Button variant="outline" onClick={testApify} disabled={testingApify || !apify?.hasApifyToken} className="gap-2">
+              {testingApify ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wifi className="h-4 w-4" />}{testingApify ? "Đang kiểm tra..." : "Test + xem credit"}
+            </Button>
+          </div>
+        </div>
+
+        {apifyTest && (
+          <div className={cn("mx-6 mb-5 rounded-lg border px-4 py-3 text-sm",
+            apifyTest.ok
+              ? "border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300"
+              : "border-destructive/40 bg-destructive/10 text-destructive")}>
+            {apifyTest.ok ? (
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center gap-2 font-medium">
+                  <CheckCircle2 className="h-4 w-4" />Token OK — {apifyTest.username}
+                </div>
+                <div className="text-xs opacity-80 pl-6 flex flex-wrap gap-x-3 gap-y-0.5">
+                  {(apifyTest.monthlyUsageUsd != null) && (
+                    <span>Đã dùng: ${apifyTest.monthlyUsageUsd.toFixed(2)}{apifyTest.maxMonthlyUsageUsd != null ? ` / $${apifyTest.maxMonthlyUsageUsd}` : ""}</span>
+                  )}
+                  {apifyTest.maxConcurrentRuns != null && <span>· Concurrent tối đa: {apifyTest.maxConcurrentRuns}</span>}
+                  <span>· Actor: {apifyTest.actorOk ? "✓ truy cập được" : "✗ không thấy/không quyền"}</span>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2"><XCircle className="h-4 w-4" />{apifyTest.error}</div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
