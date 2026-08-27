@@ -139,8 +139,9 @@ const apifyEnvDefaults = (): ApifySettings => ({
   apifyActorId: process.env.APIFY_WAYBACK_ACTOR_ID ?? DEFAULT_ACTOR,
 });
 
-/** Config đầy đủ (raw token — server only). Tự migrate shape cũ single-token. */
+/** Config đầy đủ (raw token — server only). Tự migrate shape cũ + seed token ENV. */
 export async function readApifyConfig(): Promise<ApifyConfig> {
+  const env = apifyEnvDefaults();
   try {
     const sb = supabase();
     const { data, error } = await sb.from(TABLE).select("value").eq("key", APIFY_KEY).maybeSingle();
@@ -154,6 +155,14 @@ export async function readApifyConfig(): Promise<ApifyConfig> {
     if (v && v.apifyToken) {
       const acc: ApifyAccount = { id: "acc1", label: "Tài khoản 1", token: v.apifyToken, actorId: v.apifyActorId || DEFAULT_ACTOR };
       return { accounts: [acc], activeId: acc.id };
+    }
+    // Chưa có row (data null) + có token ENV → seed 1 lần thành "Tài khoản (ENV)" active,
+    // để UI hiện đúng tài khoản pipeline đang chạy. Sau khi có row (kể cả rỗng) thì KHÔNG re-seed.
+    if (data === null && env.apifyToken) {
+      const acc: ApifyAccount = { id: crypto.randomUUID(), label: "Tài khoản (ENV)", token: env.apifyToken, actorId: env.apifyActorId };
+      const cfg: ApifyConfig = { accounts: [acc], activeId: acc.id };
+      try { await writeApifyConfig(cfg); } catch { /* bảng chưa có — bỏ qua */ }
+      return cfg;
     }
   } catch { /* bảng chưa có / lỗi tạm — trả rỗng, resolver dùng env */ }
   return { accounts: [], activeId: null };
