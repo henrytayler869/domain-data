@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { registerDomain, placeBackorder } from "@/lib/gname";
 import { upsertEntries } from "@/lib/inventory-db";
 import { markExcluded } from "@/lib/ahrefs-db";
+import { autoValuateDomains } from "@/lib/auto-valuate";
 
 // Kết quả hợp nhất cho cả đăng ký (register) lẫn đặt backorder.
 interface BuyResult { domain: string; ok: boolean; price: number | null; backorder: boolean; premium: boolean; code: number; msg: string }
@@ -67,6 +68,8 @@ export async function POST(request: NextRequest) {
         notes: null,   // để trống cho user tự ghi chú; không nhét msg Gname vào Kho
       })));
       await markExcluded(succeeded.map((r) => r.domain));
+      // Tự định giá ngay sau khi mua (mọi nút Mua đều qua endpoint này → áp dụng khắp nơi).
+      try { await autoValuateDomains(succeeded.map((r) => r.domain)); } catch { /* lỗi định giá không chặn việc mua */ }
     }
 
     return NextResponse.json({
