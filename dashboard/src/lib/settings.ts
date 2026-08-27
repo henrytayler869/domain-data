@@ -118,8 +118,20 @@ const APIFY_KEY = "apify";
 const DEFAULT_ACTOR = "henry_tayler_869~wayback-machine-actor";
 
 export interface ApifySettings {
-  apifyToken: string;      // stored server-side only
+  apifyToken: string;      // token tài khoản ĐANG active (server-side only)
   apifyActorId: string;
+}
+
+export interface ApifyAccount {
+  id: string;
+  label: string;
+  token: string;           // server-side only
+  actorId: string;
+}
+
+export interface ApifyConfig {
+  accounts: ApifyAccount[];
+  activeId: string | null;
 }
 
 const apifyEnvDefaults = (): ApifySettings => ({
@@ -127,32 +139,80 @@ const apifyEnvDefaults = (): ApifySettings => ({
   apifyActorId: process.env.APIFY_WAYBACK_ACTOR_ID ?? DEFAULT_ACTOR,
 });
 
-export async function readApifySettings(): Promise<ApifySettings> {
-  const env = apifyEnvDefaults();
+/** Config đầy đủ (raw token — server only). Tự migrate shape cũ single-token. */
+export async function readApifyConfig(): Promise<ApifyConfig> {
   try {
     const sb = supabase();
     const { data, error } = await sb.from(TABLE).select("value").eq("key", APIFY_KEY).maybeSingle();
     if (error) throw new Error(error.message);
-    const v = (data?.value ?? null) as Partial<ApifySettings> | null;
-    if (v && (v.apifyToken || v.apifyActorId)) {
-      return {
-        apifyToken: v.apifyToken || env.apifyToken,
-        apifyActorId: v.apifyActorId || env.apifyActorId || DEFAULT_ACTOR,
-      };
+    const v = (data?.value ?? null) as (Partial<ApifyConfig> & Partial<ApifySettings>) | null;
+    if (v && Array.isArray(v.accounts)) {
+      const accounts = v.accounts.filter((a): a is ApifyAccount => !!a && !!a.id);
+      return { accounts, activeId: v.activeId ?? accounts[0]?.id ?? null };
     }
-  } catch { /* bảng chưa có / lỗi tạm — rơi xuống env */ }
-  return env;
+    // Migrate shape cũ { apifyToken, apifyActorId } → 1 tài khoản
+    if (v && v.apifyToken) {
+      const acc: ApifyAccount = { id: "acc1", label: "Tài khoản 1", token: v.apifyToken, actorId: v.apifyActorId || DEFAULT_ACTOR };
+      return { accounts: [acc], activeId: acc.id };
+    }
+  } catch { /* bảng chưa có / lỗi tạm — trả rỗng, resolver dùng env */ }
+  return { accounts: [], activeId: null };
 }
 
-export async function writeApifySettings(s: Partial<ApifySettings>): Promise<void> {
-  const cur = await readApifySettings();
-  const merged: ApifySettings = {
-    apifyToken: s.apifyToken?.trim() ? s.apifyToken.trim() : cur.apifyToken,
-    apifyActorId: s.apifyActorId?.trim() ? s.apifyActorId.trim() : cur.apifyActorId,
-  };
+export async function writeApifyConfig(cfg: ApifyConfig): Promise<void> {
   const sb = supabase();
   const { error } = await sb
     .from(TABLE)
-    .upsert({ key: APIFY_KEY, value: merged, updated_at: new Date().toISOString() }, { onConflict: "key" });
+    .upsert({ key: APIFY_KEY, value: cfg, updated_at: new Date().toISOString() }, { onConflict: "key" });
   if (error) throw new Error(error.message);
+}
+
+/** Token/actor của tài khoản ĐANG ACTIVE → fallback env. apify-wayback dùng hàm này. */
+export async function readApifySettings(): Promise<ApifySettings> {
+  const cfg = await readApifyConfig();
+  const active = cfg.accounts.find((a) => a.id === cfg.activeId) ?? cfg.accounts[0] ?? null;
+  const env = apifyEnvDefaults();
+  return {
+    apifyToken: active?.token || env.apifyToken,
+    apifyActorId: active?.actorId || env.apifyActorId || DEFAULT_ACTOR,
+  };
+}
+
+// ─── Mutators (dùng bởi /api/settings/apify) ────────────────────────────────────
+export async function apifyAddAccount(label: string, token: string, actorId: string): Promise<void> {
+  const cfg = await readApifyConfig();
+  const id = crypto.randomUUID();
+  cfg.accounts.push({
+    id,
+    label: label.trim() || `Tài khoản ${cfg.accounts.length + 1}`,
+    token: token.trim(),
+    actorId: actorId.trim() || DEFAULT_ACTOR,
+  });
+  if (!cfg.activeId) cfg.activeId = id;   // tài khoản đầu tiên → active luôn
+  await writeApifyConfig(cfg);
+}
+
+export async function apifyUpdateAccount(id: string, patch: { label?: string; token?: string; actorId?: string }): Promise<void> {
+  const cfg = await readApifyConfig();
+  const a = cfg.accounts.find((x) => x.id === id);
+  if (!a) return;
+  if (patch.label?.trim()) a.label = patch.label.trim();
+  if (patch.token?.trim()) a.token = patch.token.trim();
+  if (patch.actorId?.trim()) a.actorId = patch.actorId.trim();
+  await writeApifyConfig(cfg);
+}
+
+export async function apifySetActive(id: string): Promise<void> {
+  const cfg = await readApifyConfig();
+  if (cfg.accounts.some((a) => a.id === id)) {
+    cfg.activeId = id;
+    await writeApifyConfig(cfg);
+  }
+}
+
+export async function apifyDeleteAccount(id: string): Promise<void> {
+  const cfg = await readApifyConfig();
+  cfg.accounts = cfg.accounts.filter((a) => a.id !== id);
+  if (cfg.activeId === id) cfg.activeId = cfg.accounts[0]?.id ?? null;
+  await writeApifyConfig(cfg);
 }
