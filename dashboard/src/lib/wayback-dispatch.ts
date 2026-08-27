@@ -25,7 +25,7 @@ import { listPendingRuns, createRun } from "./wayback-db";
 import { pollAndIngestRun } from "./wayback-poll";
 import { startWaybackRun, countActiveRuns } from "./apify-wayback";
 import { upsertAssessments } from "./ahrefs-db";
-import { readSettings } from "./settings";
+import { readSettings, ensureUsableApifyAccount } from "./settings";
 import { startGateJob } from "./gname-gate";
 import { readReconcileState, writeReconcileState, type CreditFlag, type ReconcileState } from "./pipeline-status";
 
@@ -90,6 +90,8 @@ export interface DispatchSummary {
   waybackRetried: number;    // domain gửi lại (đã từng fail)
   waybackGivenUp: number;    // fail ≥ WB_MAX_ATTEMPTS → tạm bỏ (soi tay)
   activeAfter: number;
+  apifySwitched: boolean;    // tick này có tự đổi account Apify (hết credit) không
+  apifyNote: string | null;  // mô tả nếu đổi / tất cả hết credit
 }
 
 export async function dispatchTick(): Promise<DispatchSummary> {
@@ -178,6 +180,8 @@ export async function dispatchTick(): Promise<DispatchSummary> {
   for (let i = 0; i < fresh.length; i += BATCH) freshGroups.push(fresh.slice(i, i + BATCH));
   const groups = [...retryGroups, ...freshGroups]; // retry trước để không kẹt mãi
 
+  // Tự đổi account Apify nếu account active hết credit / token lỗi (trước khi dispatch)
+  const apifySwitch = await ensureUsableApifyAccount();
   const active = await countActiveRuns();
   const maxRuns = Math.max(0, CAP - active);        // mỗi run = 1 slot concurrency
   let dispatched = 0, dispatchedDomains = 0, waybackRetried = 0;
@@ -217,6 +221,8 @@ export async function dispatchTick(): Promise<DispatchSummary> {
     dispatched, dispatchedDomains, remainingToWayback,
     waybackRetried, waybackGivenUp: givenUp.length,
     activeAfter: active + dispatched,
+    apifySwitched: apifySwitch.switched,
+    apifyNote: apifySwitch.switched ? `Tự đổi Apify: ${apifySwitch.from} → ${apifySwitch.to} (${apifySwitch.reason})` : (apifySwitch.reason ?? null),
   };
 }
 

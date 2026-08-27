@@ -225,3 +225,46 @@ export async function apifyDeleteAccount(id: string): Promise<void> {
   if (cfg.activeId === id) cfg.activeId = cfg.accounts[0]?.id ?? null;
   await writeApifyConfig(cfg);
 }
+
+// ─── Auto-failover: tự đổi account khi active hết credit ─────────────────────────
+const APIFY_API = "https://api.apify.com/v2";
+
+/** true = còn dùng được · false = hết credit / token lỗi · null = không xác định (mạng). */
+async function apifyAccountUsable(token: string): Promise<boolean | null> {
+  if (!token) return false;
+  try {
+    const r = await fetch(`${APIFY_API}/users/me/limits?token=${token}`, { cache: "no-store", signal: AbortSignal.timeout(8000) });
+    if (r.status === 401 || r.status === 403) return false;      // token sai
+    if (!r.ok) return null;
+    const L = (await r.json())?.data ?? {};
+    const usage = L.current?.monthlyUsageUsd ?? L.currentUsageCycle?.usageUsd ?? null;
+    const max = L.limits?.maxMonthlyUsageUsd ?? null;
+    if (usage == null || max == null) return true;               // không có trần → coi như dùng được
+    return usage < max;                                          // dưới trần = còn credit
+  } catch {
+    return null;                                                 // lỗi mạng → không kết luận
+  }
+}
+
+/**
+ * Nếu account ĐANG ACTIVE hết credit / token lỗi → tự đổi sang account khác CÒN credit.
+ * Bảo thủ: chỉ đổi khi active CHẮC CHẮN hỏng (false) VÀ có account khác CHẮC CHẮN tốt (true)
+ * → tránh flapping vì lỗi mạng. Trả về thông tin đã đổi để reconciler log.
+ */
+export async function ensureUsableApifyAccount(): Promise<{ switched: boolean; from?: string; to?: string; reason?: string }> {
+  const cfg = await readApifyConfig();
+  if (cfg.accounts.length <= 1) return { switched: false };      // không có account khác để đổi
+  const active = cfg.accounts.find((a) => a.id === cfg.activeId) ?? cfg.accounts[0] ?? null;
+  if (!active) return { switched: false };
+  const activeUsable = await apifyAccountUsable(active.token);
+  if (activeUsable !== false) return { switched: false };        // còn dùng được / chưa rõ → giữ nguyên
+  for (const acc of cfg.accounts) {
+    if (acc.id === active.id) continue;
+    if ((await apifyAccountUsable(acc.token)) === true) {
+      cfg.activeId = acc.id;
+      await writeApifyConfig(cfg);
+      return { switched: true, from: active.label, to: acc.label, reason: "hết credit / token lỗi" };
+    }
+  }
+  return { switched: false, reason: "tất cả account Apify đều hết credit / lỗi" };
+}
