@@ -29,6 +29,10 @@ interface SettingsData {
   n8nWebhookUrl: string;
   hasAnthropicKey: boolean;
   anthropicKeyHint: string;
+  hasAhrefs1: boolean;
+  ahrefs1Hint: string;
+  hasAhrefs2: boolean;
+  ahrefs2Hint: string;
 }
 
 interface TestResult {
@@ -88,6 +92,12 @@ export default function SettingsPage() {
   const [showAnthropicKey, setShowAnthropicKey] = useState(false);
   const [savingAnthropic, setSavingAnthropic] = useState(false);
   const [anthropicStatus, setAnthropicStatus] = useState<"idle" | "ok" | "error">("idle");
+
+  const [ahrefs1, setAhrefs1] = useState("");
+  const [ahrefs2, setAhrefs2] = useState("");
+  const [showAhrefs, setShowAhrefs] = useState(false);
+  const [savingAhrefs, setSavingAhrefs] = useState(false);
+  const [ahrefsStatus, setAhrefsStatus] = useState<"idle" | "ok" | "error">("idle");
 
   // Apify — nhiều tài khoản, 1 active
   const [apifyCfg, setApifyCfg] = useState<ApifyCfgView | null>(null);
@@ -219,6 +229,20 @@ export default function SettingsPage() {
       if (!res.ok) throw new Error((await res.json()).error);
       setAnthropicStatus("ok"); setAnthropicKey(""); await loadSettings(); setTimeout(() => setAnthropicStatus("idle"), 3000);
     } catch { setAnthropicStatus("error"); } finally { setSavingAnthropic(false); }
+  };
+
+  const saveAhrefs = async () => {
+    if (!ahrefs1.trim() && !ahrefs2.trim()) return;
+    setSavingAhrefs(true); setAhrefsStatus("idle");
+    try {
+      // Chỉ gửi field có nhập (server giữ nguyên field để trống) → không xoá token cũ.
+      const body: Record<string, string> = {};
+      if (ahrefs1.trim()) body.ahrefsToken1 = ahrefs1.trim();
+      if (ahrefs2.trim()) body.ahrefsToken2 = ahrefs2.trim();
+      const res = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (!res.ok) throw new Error((await res.json()).error);
+      setAhrefsStatus("ok"); setAhrefs1(""); setAhrefs2(""); await loadSettings(); setTimeout(() => setAhrefsStatus("idle"), 3000);
+    } catch { setAhrefsStatus("error"); } finally { setSavingAhrefs(false); }
   };
 
   const isDirty =
@@ -476,6 +500,49 @@ export default function SettingsPage() {
           {anthropicStatus === "error" && <div className="flex items-center gap-2 text-sm text-destructive"><XCircle className="h-4 w-4" />Lưu lỗi</div>}
           <Button onClick={saveAnthropic} disabled={savingAnthropic || !anthropicKey.trim()} className="gap-2">
             {savingAnthropic ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Lưu
+          </Button>
+        </div>
+      </div>
+
+      {/* Ahrefs MCP (nguồn ref ưu tiên cho rating) card */}
+      <div className="rounded-xl border bg-card shadow-sm">
+        <div className="flex items-center gap-3 px-6 py-4 border-b">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10">
+            <KeyRound className="h-5 w-5 text-primary" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold">Ahrefs MCP — Rating (ưu tiên)</h2>
+            <p className="text-xs text-muted-foreground">Rating dùng Ahrefs (có DR sẵn) trước; Token 1 hết credit → Token 2 → hết cả 2 mới fallback DataForSEO.</p>
+          </div>
+          {saved && (
+            <span className={cn("ml-auto inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border",
+              (saved.hasAhrefs1 || saved.hasAhrefs2) ? "text-emerald-600 bg-emerald-50 border-emerald-200" : "text-amber-600 bg-amber-50 border-amber-200")}>
+              <span className={cn("w-1.5 h-1.5 rounded-full inline-block", (saved.hasAhrefs1 || saved.hasAhrefs2) ? "bg-emerald-500" : "bg-amber-500")} />
+              {saved.hasAhrefs1 && saved.hasAhrefs2 ? "2 token" : saved.hasAhrefs1 || saved.hasAhrefs2 ? "1 token" : "Chưa cấu hình"}
+            </span>
+          )}
+        </div>
+        <div className="px-6 py-5 space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1.5">MCP Token 1 (ưu tiên)</label>
+            <Input type={showAhrefs ? "text" : "password"} value={ahrefs1} onChange={(e) => setAhrefs1(e.target.value)}
+              placeholder={saved?.hasAhrefs1 ? "Để trống = giữ nguyên" : "Ahrefs MCP token #1"} autoComplete="off" />
+            {saved?.hasAhrefs1 && <p className="text-xs text-muted-foreground mt-1">Hiện lưu: <code className="font-mono bg-muted px-1 rounded">{saved.ahrefs1Hint}</code></p>}
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1.5">MCP Token 2 (dự phòng)</label>
+            <Input type={showAhrefs ? "text" : "password"} value={ahrefs2} onChange={(e) => setAhrefs2(e.target.value)}
+              placeholder={saved?.hasAhrefs2 ? "Để trống = giữ nguyên" : "Ahrefs MCP token #2"} autoComplete="off" />
+            {saved?.hasAhrefs2 && <p className="text-xs text-muted-foreground mt-1">Hiện lưu: <code className="font-mono bg-muted px-1 rounded">{saved.ahrefs2Hint}</code></p>}
+          </div>
+          <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+            <input type="checkbox" checked={showAhrefs} onChange={(e) => setShowAhrefs(e.target.checked)} /> Hiện token
+          </label>
+          <p className="text-xs text-muted-foreground">Endpoint <code className="bg-muted px-1 rounded">api.ahrefs.com/mcp/mcp</code>, gửi <code className="bg-muted px-1 rounded">Authorization: Bearer &lt;token&gt;</code>. Chỉ lưu server-side.</p>
+          {ahrefsStatus === "ok" && <div className="flex items-center gap-2 text-sm text-emerald-600"><CheckCircle2 className="h-4 w-4" />Đã lưu</div>}
+          {ahrefsStatus === "error" && <div className="flex items-center gap-2 text-sm text-destructive"><XCircle className="h-4 w-4" />Lưu lỗi</div>}
+          <Button onClick={saveAhrefs} disabled={savingAhrefs || (!ahrefs1.trim() && !ahrefs2.trim())} className="gap-2">
+            {savingAhrefs ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Lưu
           </Button>
         </div>
       </div>

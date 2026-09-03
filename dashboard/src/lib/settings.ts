@@ -18,6 +18,8 @@ export interface Settings {
   dataforseoPassword: string; // stored server-side only
   n8nWebhookUrl: string;      // webhook N8N nhận domain Clean → DataForSEO (legacy; rating giờ chạy trong webapp)
   anthropicApiKey: string;    // stored server-side only — dùng cho rating (Claude Haiku) chạy thẳng trong webapp
+  ahrefsToken1: string;       // MCP token Ahrefs #1 (ưu tiên) — server-side only
+  ahrefsToken2: string;       // MCP token Ahrefs #2 (dự phòng) — server-side only
 }
 
 const envDefaults = (): Settings => ({
@@ -25,6 +27,8 @@ const envDefaults = (): Settings => ({
   dataforseoPassword: process.env.DATAFORSEO_PASSWORD ?? "",
   n8nWebhookUrl: process.env.N8N_WEBHOOK_URL ?? "",
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
+  ahrefsToken1: process.env.AHREFS_MCP_TOKEN_1 ?? "",
+  ahrefsToken2: process.env.AHREFS_MCP_TOKEN_2 ?? "",
 });
 
 async function readFromSupabase(): Promise<Settings | null> {
@@ -32,12 +36,14 @@ async function readFromSupabase(): Promise<Settings | null> {
   const { data, error } = await sb.from(TABLE).select("value").eq("key", KEY).maybeSingle();
   if (error) throw new Error(error.message);
   const v = (data?.value ?? null) as Partial<Settings> | null;
-  if (!v || (!v.dataforseoLogin && !v.dataforseoPassword && !v.n8nWebhookUrl && !v.anthropicApiKey)) return null;
+  if (!v || (!v.dataforseoLogin && !v.dataforseoPassword && !v.n8nWebhookUrl && !v.anthropicApiKey && !v.ahrefsToken1 && !v.ahrefsToken2)) return null;
   return {
     dataforseoLogin: v.dataforseoLogin ?? "",
     dataforseoPassword: v.dataforseoPassword ?? "",
     n8nWebhookUrl: v.n8nWebhookUrl ?? "",
     anthropicApiKey: v.anthropicApiKey ?? "",
+    ahrefsToken1: v.ahrefsToken1 ?? "",
+    ahrefsToken2: v.ahrefsToken2 ?? "",
   };
 }
 
@@ -76,6 +82,8 @@ async function readLegacyApify(): Promise<Settings | null> {
       dataforseoPassword: v.dataforseoPassword ?? "",
       n8nWebhookUrl: "",
       anthropicApiKey: "",
+      ahrefsToken1: "",
+      ahrefsToken2: "",
     };
   } catch {
     return null;
@@ -115,6 +123,10 @@ export async function writeSettings(settings: Partial<Settings>): Promise<void> 
       settings.anthropicApiKey?.trim()
         ? settings.anthropicApiKey
         : current.anthropicApiKey,
+    ahrefsToken1:
+      settings.ahrefsToken1?.trim() ? settings.ahrefsToken1 : current.ahrefsToken1,
+    ahrefsToken2:
+      settings.ahrefsToken2?.trim() ? settings.ahrefsToken2 : current.ahrefsToken2,
   };
   await writeToSupabase(merged);
 }

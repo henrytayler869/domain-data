@@ -23,9 +23,10 @@ export async function POST(request: NextRequest) {
     if (!domains.length) return NextResponse.json({ error: "Không có domain để chấm" }, { status: 400 });
 
     const s = await readSettings();
-    if (!s.anthropicApiKey || !s.dataforseoLogin || !s.dataforseoPassword) {
+    const hasRefSource = !!(s.ahrefsToken1 || s.ahrefsToken2 || (s.dataforseoLogin && s.dataforseoPassword));
+    if (!s.anthropicApiKey || !hasRefSource) {
       return NextResponse.json(
-        { error: "Chưa cấu hình Anthropic API key + DataForSEO trong Cài đặt" },
+        { error: "Chưa cấu hình Anthropic API key + (Ahrefs token hoặc DataForSEO) trong Cài đặt" },
         { status: 400 },
       );
     }
@@ -34,6 +35,7 @@ export async function POST(request: NextRequest) {
     const overflow = domains.slice(SYNC_CAP);
 
     const r = await rateDomains(toRateNow, {
+      ahrefsTokens: [s.ahrefsToken1, s.ahrefsToken2].filter(Boolean),
       dfsLogin: s.dataforseoLogin,
       dfsPassword: s.dataforseoPassword,
       anthropicApiKey: s.anthropicApiKey,

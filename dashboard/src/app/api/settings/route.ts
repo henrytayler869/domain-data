@@ -20,6 +20,10 @@ export async function GET() {
       n8nWebhookUrl: s.n8nWebhookUrl,
       hasAnthropicKey: s.anthropicApiKey.length > 0,
       anthropicKeyHint: maskSecret(s.anthropicApiKey),
+      hasAhrefs1: s.ahrefsToken1.length > 0,
+      ahrefs1Hint: maskSecret(s.ahrefsToken1),
+      hasAhrefs2: s.ahrefsToken2.length > 0,
+      ahrefs2Hint: maskSecret(s.ahrefsToken2),
     });
   } catch (err) {
     return NextResponse.json(
@@ -39,6 +43,8 @@ export async function POST(request: NextRequest) {
       dataforseoPassword: body.dataforseoPassword,
       n8nWebhookUrl: body.n8nWebhookUrl,
       anthropicApiKey: body.anthropicApiKey,
+      ahrefsToken1: body.ahrefsToken1,
+      ahrefsToken2: body.ahrefsToken2,
     });
     return NextResponse.json({ ok: true });
   } catch (err) {
