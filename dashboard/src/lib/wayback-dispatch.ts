@@ -290,7 +290,7 @@ async function ratingBackfill(
   if (!backlog) return { backlog: 0, reArmed: 0, sent: 0, probe: false, creditFlag: "idle" };
   // Rating chạy trong webapp qua Claude Haiku → cần Anthropic key + ÍT NHẤT 1 nguồn ref
   // (Ahrefs MCP token ưu tiên, hoặc DataForSEO creds fallback).
-  const hasRefSource = !!(settings.ahrefsToken1 || settings.ahrefsToken2 || (settings.dataforseoLogin && settings.dataforseoPassword));
+  const hasRefSource = !!(settings.ahrefsToken1 || settings.ahrefsToken2 || settings.ahrefsToken3 || (settings.dataforseoLogin && settings.dataforseoPassword));
   if (!settings.anthropicApiKey || !hasRefSource) {
     return { backlog, reArmed: 0, sent: 0, probe: false, creditFlag: "unknown" };
   }
@@ -333,7 +333,7 @@ async function ratingBackfill(
   let sent = 0;
   try {
     const r = await rateDomains(toSend, {
-      ahrefsTokens: [settings.ahrefsToken1, settings.ahrefsToken2].filter(Boolean),
+      ahrefsTokens: [settings.ahrefsToken1, settings.ahrefsToken2, settings.ahrefsToken3].filter(Boolean),
       dfsLogin: settings.dataforseoLogin,
       dfsPassword: settings.dataforseoPassword,
       anthropicApiKey: settings.anthropicApiKey,

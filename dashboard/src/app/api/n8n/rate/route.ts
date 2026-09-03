@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
 
     const s = await readSettings();
     const r = await rateDomains(domains, {
-      ahrefsTokens: [s.ahrefsToken1, s.ahrefsToken2].filter(Boolean),
+      ahrefsTokens: [s.ahrefsToken1, s.ahrefsToken2, s.ahrefsToken3].filter(Boolean),
       dfsLogin: s.dataforseoLogin,
       dfsPassword: s.dataforseoPassword,
       anthropicApiKey: s.anthropicApiKey,

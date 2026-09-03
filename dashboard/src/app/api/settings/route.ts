@@ -24,6 +24,8 @@ export async function GET() {
       ahrefs1Hint: maskSecret(s.ahrefsToken1),
       hasAhrefs2: s.ahrefsToken2.length > 0,
       ahrefs2Hint: maskSecret(s.ahrefsToken2),
+      hasAhrefs3: s.ahrefsToken3.length > 0,
+      ahrefs3Hint: maskSecret(s.ahrefsToken3),
     });
   } catch (err) {
     return NextResponse.json(
@@ -45,6 +47,7 @@ export async function POST(request: NextRequest) {
       anthropicApiKey: body.anthropicApiKey,
       ahrefsToken1: body.ahrefsToken1,
       ahrefsToken2: body.ahrefsToken2,
+      ahrefsToken3: body.ahrefsToken3,
     });
     return NextResponse.json({ ok: true });
   } catch (err) {

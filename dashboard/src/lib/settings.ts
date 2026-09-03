@@ -20,6 +20,7 @@ export interface Settings {
   anthropicApiKey: string;    // stored server-side only — dùng cho rating (Claude Haiku) chạy thẳng trong webapp
   ahrefsToken1: string;       // MCP token Ahrefs #1 (ưu tiên) — server-side only
   ahrefsToken2: string;       // MCP token Ahrefs #2 (dự phòng) — server-side only
+  ahrefsToken3: string;       // MCP token Ahrefs #3 (dự phòng) — server-side only
 }
 
 const envDefaults = (): Settings => ({
@@ -29,6 +30,7 @@ const envDefaults = (): Settings => ({
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
   ahrefsToken1: process.env.AHREFS_MCP_TOKEN_1 ?? "",
   ahrefsToken2: process.env.AHREFS_MCP_TOKEN_2 ?? "",
+  ahrefsToken3: process.env.AHREFS_MCP_TOKEN_3 ?? "",
 });
 
 async function readFromSupabase(): Promise<Settings | null> {
@@ -36,7 +38,7 @@ async function readFromSupabase(): Promise<Settings | null> {
   const { data, error } = await sb.from(TABLE).select("value").eq("key", KEY).maybeSingle();
   if (error) throw new Error(error.message);
   const v = (data?.value ?? null) as Partial<Settings> | null;
-  if (!v || (!v.dataforseoLogin && !v.dataforseoPassword && !v.n8nWebhookUrl && !v.anthropicApiKey && !v.ahrefsToken1 && !v.ahrefsToken2)) return null;
+  if (!v || (!v.dataforseoLogin && !v.dataforseoPassword && !v.n8nWebhookUrl && !v.anthropicApiKey && !v.ahrefsToken1 && !v.ahrefsToken2 && !v.ahrefsToken3)) return null;
   return {
     dataforseoLogin: v.dataforseoLogin ?? "",
     dataforseoPassword: v.dataforseoPassword ?? "",
@@ -44,6 +46,7 @@ async function readFromSupabase(): Promise<Settings | null> {
     anthropicApiKey: v.anthropicApiKey ?? "",
     ahrefsToken1: v.ahrefsToken1 ?? "",
     ahrefsToken2: v.ahrefsToken2 ?? "",
+    ahrefsToken3: v.ahrefsToken3 ?? "",
   };
 }
 
@@ -84,6 +87,7 @@ async function readLegacyApify(): Promise<Settings | null> {
       anthropicApiKey: "",
       ahrefsToken1: "",
       ahrefsToken2: "",
+      ahrefsToken3: "",
     };
   } catch {
     return null;
@@ -127,6 +131,8 @@ export async function writeSettings(settings: Partial<Settings>): Promise<void> 
       settings.ahrefsToken1?.trim() ? settings.ahrefsToken1 : current.ahrefsToken1,
     ahrefsToken2:
       settings.ahrefsToken2?.trim() ? settings.ahrefsToken2 : current.ahrefsToken2,
+    ahrefsToken3:
+      settings.ahrefsToken3?.trim() ? settings.ahrefsToken3 : current.ahrefsToken3,
   };
   await writeToSupabase(merged);
 }
