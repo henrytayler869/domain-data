@@ -16,13 +16,15 @@ const KEY = "dataforseo";
 export interface Settings {
   dataforseoLogin: string;
   dataforseoPassword: string; // stored server-side only
-  n8nWebhookUrl: string;      // webhook N8N nhận domain Clean → DataForSEO
+  n8nWebhookUrl: string;      // webhook N8N nhận domain Clean → DataForSEO (legacy; rating giờ chạy trong webapp)
+  anthropicApiKey: string;    // stored server-side only — dùng cho rating (Claude Haiku) chạy thẳng trong webapp
 }
 
 const envDefaults = (): Settings => ({
   dataforseoLogin: process.env.DATAFORSEO_LOGIN ?? "",
   dataforseoPassword: process.env.DATAFORSEO_PASSWORD ?? "",
   n8nWebhookUrl: process.env.N8N_WEBHOOK_URL ?? "",
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
 });
 
 async function readFromSupabase(): Promise<Settings | null> {
@@ -30,11 +32,12 @@ async function readFromSupabase(): Promise<Settings | null> {
   const { data, error } = await sb.from(TABLE).select("value").eq("key", KEY).maybeSingle();
   if (error) throw new Error(error.message);
   const v = (data?.value ?? null) as Partial<Settings> | null;
-  if (!v || (!v.dataforseoLogin && !v.dataforseoPassword && !v.n8nWebhookUrl)) return null;
+  if (!v || (!v.dataforseoLogin && !v.dataforseoPassword && !v.n8nWebhookUrl && !v.anthropicApiKey)) return null;
   return {
     dataforseoLogin: v.dataforseoLogin ?? "",
     dataforseoPassword: v.dataforseoPassword ?? "",
     n8nWebhookUrl: v.n8nWebhookUrl ?? "",
+    anthropicApiKey: v.anthropicApiKey ?? "",
   };
 }
 
@@ -72,6 +75,7 @@ async function readLegacyApify(): Promise<Settings | null> {
       dataforseoLogin: v.dataforseoLogin ?? "",
       dataforseoPassword: v.dataforseoPassword ?? "",
       n8nWebhookUrl: "",
+      anthropicApiKey: "",
     };
   } catch {
     return null;
@@ -106,6 +110,11 @@ export async function writeSettings(settings: Partial<Settings>): Promise<void> 
         ? settings.dataforseoPassword
         : current.dataforseoPassword,
     n8nWebhookUrl: settings.n8nWebhookUrl ?? current.n8nWebhookUrl,
+    // Chỉ ghi đè khi có giá trị mới (giống password) — lưu field khác không xoá key.
+    anthropicApiKey:
+      settings.anthropicApiKey?.trim()
+        ? settings.anthropicApiKey
+        : current.anthropicApiKey,
   };
   await writeToSupabase(merged);
 }

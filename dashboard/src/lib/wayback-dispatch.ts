@@ -24,8 +24,8 @@ import { readGnamePricing } from "./gname-pricing";
 import { listPendingRuns, createRun } from "./wayback-db";
 import { pollAndIngestRun } from "./wayback-poll";
 import { startWaybackRun, countActiveRuns } from "./apify-wayback";
-import { upsertAssessments } from "./ahrefs-db";
-import { readSettings, ensureUsableApifyAccount } from "./settings";
+import { readSettings, ensureUsableApifyAccount, type Settings } from "./settings";
+import { rateDomains } from "./rating-engine";
 import { startGateJob } from "./gname-gate";
 import { readReconcileState, writeReconcileState, type CreditFlag, type ReconcileState } from "./pipeline-status";
 
@@ -41,9 +41,10 @@ const MAX_PRICE = 26;
 const AVAIL_WINDOW_H = 24;      // available cache còn hạn
 
 // ── Rating (RE-ARM + credit-aware) ────────────────────────────────────────────
-const RATING_BATCH = 140;       // domain / lần gửi N8N khi credit OK
-const RATING_REARM_MIN = 45;    // placeholder cũ hơn ngần này → gửi lại (chống mất)
-const RATING_PROBE = 15;        // khi nghi hết credit: chỉ gửi bấy nhiêu để dò
+const RATING_BATCH = 30;        // domain / tick — rating giờ chạy ĐỒNG BỘ trong webapp
+// (DataForSEO + Haiku mỗi domain) nên batch nhỏ để tick không quá lâu (trước = 140 cho N8N async)
+const RATING_REARM_MIN = 45;    // placeholder cũ hơn ngần này → chấm lại (chống mất)
+const RATING_PROBE = 15;        // khi nghi hết credit: chỉ chấm bấy nhiêu để dò
 const CREDIT_SENT_COOLDOWN_MIN = 90; // "đã gửi gần đây" để suy đoán credit
 
 // ── Gname backfill ────────────────────────────────────────────────────────────
@@ -98,7 +99,7 @@ export async function dispatchTick(): Promise<DispatchSummary> {
   const startedAt = Date.now();
   const sb = supabase();
   const prev = await readReconcileState();
-  const { n8nWebhookUrl } = await readSettings();
+  const settings = await readSettings();
 
   // ── 1. SWEEP ────────────────────────────────────────────────────────────────
   const pending = await listPendingRuns();
@@ -139,7 +140,7 @@ export async function dispatchTick(): Promise<DispatchSummary> {
   }
 
   // ── 2. RATING (re-arm + credit-aware) ─────────────────────────────────────────
-  const rating = await ratingBackfill(clean, acquirable, n8nWebhookUrl, prev);
+  const rating = await ratingBackfill(clean, acquirable, settings, prev);
 
   // ── 3. GNAME backfill (rated-good chưa check + domain chờ Wayback → re-check) ──
   const gname = await gnameBackfill(checked);
@@ -232,7 +233,7 @@ interface RatingResult { backlog: number; reArmed: number; sent: number; probe: 
 async function ratingBackfill(
   clean: Set<string>,
   acquirable: Map<string, { status: string; dropEta: string | null }>,
-  n8nWebhookUrl: string,
+  settings: Settings,
   prev: ReconcileState,
 ): Promise<RatingResult> {
   const sb = supabase();
@@ -287,7 +288,10 @@ async function ratingBackfill(
 
   const backlog = need.size;
   if (!backlog) return { backlog: 0, reArmed: 0, sent: 0, probe: false, creditFlag: "idle" };
-  if (!n8nWebhookUrl) return { backlog, reArmed: 0, sent: 0, probe: false, creditFlag: "unknown" };
+  // Rating giờ chạy trong webapp qua Claude Haiku → cần Anthropic key + DataForSEO creds.
+  if (!settings.anthropicApiKey || !settings.dataforseoLogin || !settings.dataforseoPassword) {
+    return { backlog, reArmed: 0, sent: 0, probe: false, creditFlag: "unknown" };
+  }
 
   // Eligible = chưa từng gửi (null) HOẶC placeholder cũ hơn RE-ARM. Sắp xếp cũ→mới
   // để probe xoay vòng qua backlog theo thời gian.
@@ -321,25 +325,18 @@ async function ratingBackfill(
   const toSend = eligible.slice(0, batchSize).map(([d]) => d);
   const reArmed = eligible.slice(0, batchSize).filter(([, ts]) => ts !== null).length;
 
-  // Gửi N8N + đánh dấu placeholder (updated_at=now → rời "eligible" 45', probe xoay
-  // vòng; ingest-rating ghi đè khi N8N trả rating thật).
+  // Chấm ĐỒNG BỘ trong webapp: DataForSEO (ref + anchors) → Claude Haiku → ghi
+  // target_assessment/ahrefs_results ngay. Không còn placeholder "DFS pending" vì
+  // rating thật ghi luôn trong lượt này. Lỗi/hết credit → rated=0, tick sau dò lại.
   let sent = 0;
-  const nowIso = new Date().toISOString();
-  for (let i = 0; i < toSend.length; i += RATING_BATCH) {
-    const batch = toSend.slice(i, i + RATING_BATCH);
-    try {
-      const res = await fetch(n8nWebhookUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ domains: batch, source: "reconcile", ts: nowIso }),
-        signal: AbortSignal.timeout(20_000),
-      });
-      if (res.ok) {
-        await upsertAssessments(batch.map((d) => ({ targetDomain: d, rating: null, category: null, detail: "DFS pending", excludedAt: null })));
-        sent += batch.length;
-      }
-    } catch { /* ignore batch */ }
-  }
+  try {
+    const r = await rateDomains(toSend, {
+      dfsLogin: settings.dataforseoLogin,
+      dfsPassword: settings.dataforseoPassword,
+      anthropicApiKey: settings.anthropicApiKey,
+    });
+    sent = r.rated;
+  } catch { /* lỗi cả batch → sent=0, probe tick sau */ }
 
   return { backlog, reArmed, sent, probe, creditFlag };
 }

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readSettings, writeSettings } from "@/lib/settings";
 
+export const dynamic = "force-dynamic";
+
 function maskSecret(s: string): string {
   if (s.length === 0) return "";
   if (s.length <= 4) return "••••••";
@@ -16,6 +18,8 @@ export async function GET() {
       hasPassword: s.dataforseoPassword.length > 0,
       passwordHint: maskSecret(s.dataforseoPassword),
       n8nWebhookUrl: s.n8nWebhookUrl,
+      hasAnthropicKey: s.anthropicApiKey.length > 0,
+      anthropicKeyHint: maskSecret(s.anthropicApiKey),
     });
   } catch (err) {
     return NextResponse.json(
@@ -34,6 +38,7 @@ export async function POST(request: NextRequest) {
       dataforseoLogin: body.dataforseoLogin,
       dataforseoPassword: body.dataforseoPassword,
       n8nWebhookUrl: body.n8nWebhookUrl,
+      anthropicApiKey: body.anthropicApiKey,
     });
     return NextResponse.json({ ok: true });
   } catch (err) {

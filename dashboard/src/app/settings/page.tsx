@@ -27,6 +27,8 @@ interface SettingsData {
   hasPassword: boolean;
   passwordHint: string;
   n8nWebhookUrl: string;
+  hasAnthropicKey: boolean;
+  anthropicKeyHint: string;
 }
 
 interface TestResult {
@@ -81,6 +83,11 @@ export default function SettingsPage() {
   const [n8nUrl, setN8nUrl] = useState("");
   const [savingN8n, setSavingN8n] = useState(false);
   const [n8nStatus, setN8nStatus] = useState<"idle" | "ok" | "error">("idle");
+
+  const [anthropicKey, setAnthropicKey] = useState("");
+  const [showAnthropicKey, setShowAnthropicKey] = useState(false);
+  const [savingAnthropic, setSavingAnthropic] = useState(false);
+  const [anthropicStatus, setAnthropicStatus] = useState<"idle" | "ok" | "error">("idle");
 
   // Apify — nhiều tài khoản, 1 active
   const [apifyCfg, setApifyCfg] = useState<ApifyCfgView | null>(null);
@@ -202,6 +209,16 @@ export default function SettingsPage() {
       if (!res.ok) throw new Error((await res.json()).error);
       setN8nStatus("ok"); await loadSettings(); setTimeout(() => setN8nStatus("idle"), 3000);
     } catch { setN8nStatus("error"); } finally { setSavingN8n(false); }
+  };
+
+  const saveAnthropic = async () => {
+    if (!anthropicKey.trim()) return;
+    setSavingAnthropic(true); setAnthropicStatus("idle");
+    try {
+      const res = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ anthropicApiKey: anthropicKey.trim() }) });
+      if (!res.ok) throw new Error((await res.json()).error);
+      setAnthropicStatus("ok"); setAnthropicKey(""); await loadSettings(); setTimeout(() => setAnthropicStatus("idle"), 3000);
+    } catch { setAnthropicStatus("error"); } finally { setSavingAnthropic(false); }
   };
 
   const isDirty =
@@ -413,6 +430,52 @@ export default function SettingsPage() {
           {n8nStatus === "error" && <div className="flex items-center gap-2 text-sm text-destructive"><XCircle className="h-4 w-4" />Lưu lỗi</div>}
           <Button onClick={saveN8n} disabled={savingN8n || n8nUrl.trim() === (saved?.n8nWebhookUrl ?? "")} className="gap-2">
             {savingN8n ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Lưu
+          </Button>
+        </div>
+      </div>
+
+      {/* Anthropic (rating engine — Claude Haiku) card */}
+      <div className="rounded-xl border bg-card shadow-sm">
+        <div className="flex items-center gap-3 px-6 py-4 border-b">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10">
+            <KeyRound className="h-5 w-5 text-primary" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold">Anthropic API — Rating (Claude Haiku)</h2>
+            <p className="text-xs text-muted-foreground">Pipeline chấm rating chạy thẳng trong webapp bằng Claude Haiku (thay N8N). Dán API key vào đây.</p>
+          </div>
+          {saved && (
+            <span className={cn("ml-auto inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border",
+              saved.hasAnthropicKey ? "text-emerald-600 bg-emerald-50 border-emerald-200" : "text-amber-600 bg-amber-50 border-amber-200")}>
+              <span className={cn("w-1.5 h-1.5 rounded-full inline-block", saved.hasAnthropicKey ? "bg-emerald-500" : "bg-amber-500")} />
+              {saved.hasAnthropicKey ? "Đã cấu hình" : "Chưa cấu hình"}
+            </span>
+          )}
+        </div>
+        <div className="px-6 py-5 space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1.5">API Key</label>
+            <div className="relative">
+              <Input
+                type={showAnthropicKey ? "text" : "password"}
+                value={anthropicKey}
+                onChange={(e) => setAnthropicKey(e.target.value)}
+                placeholder={saved?.hasAnthropicKey ? "Để trống = giữ nguyên" : "sk-ant-..."}
+                autoComplete="off"
+              />
+              <button type="button" onClick={() => setShowAnthropicKey((v) => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground text-xs">
+                {showAnthropicKey ? "Ẩn" : "Hiện"}
+              </button>
+            </div>
+            {saved?.hasAnthropicKey && (
+              <p className="text-xs text-muted-foreground mt-1.5">Hiện lưu: <code className="font-mono bg-muted px-1 rounded">{saved.anthropicKeyHint}</code></p>
+            )}
+            <p className="text-xs text-muted-foreground mt-1.5">Lấy tại <a className="text-primary underline" href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">console.anthropic.com</a>. Chỉ lưu server-side, không trả lại client.</p>
+          </div>
+          {anthropicStatus === "ok" && <div className="flex items-center gap-2 text-sm text-emerald-600"><CheckCircle2 className="h-4 w-4" />Đã lưu</div>}
+          {anthropicStatus === "error" && <div className="flex items-center gap-2 text-sm text-destructive"><XCircle className="h-4 w-4" />Lưu lỗi</div>}
+          <Button onClick={saveAnthropic} disabled={savingAnthropic || !anthropicKey.trim()} className="gap-2">
+            {savingAnthropic ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Lưu
           </Button>
         </div>
       </div>
