@@ -934,6 +934,21 @@ export default function InventoryPage() {
     return [headers.join(","), ...rows].join("\r\n");
   }, [filtered, refsByDomain]);
 
+  // Build phần thân TSV (Tab-separated) cho nút Copy → dán vào Google Sheets/Excel là
+  // TỰ VÀO CỘT (không cần "Tách văn bản thành cột"). Cùng 3 cột, cùng dữ liệu như
+  // Export CSV; TSV không dùng quote — chỉ thay tab/xuống-dòng trong ô bằng space để
+  // không vỡ hàng/cột.
+  const buildTsvBody = useCallback(() => {
+    const headers = ["domain", "ref_domains", "expected_sell_price"];
+    const cell = (v: unknown) => String(v ?? "").replace(/[\t\r\n]+/g, " ").trim();
+    const rows = filtered.map((e) => {
+      const refs = refsByDomain.get(e.domain) ?? [];
+      const refsCell = refs.map((r) => `${r.domain} (DR ${r.dr})`).join(" | ");
+      return [cell(e.domain), cell(refsCell), cell(e.expectedSellPrice ?? "")].join("\t");
+    });
+    return [headers.join("\t"), ...rows].join("\r\n");
+  }, [filtered, refsByDomain]);
+
   const exportCsv = useCallback(() => {
     if (!filtered.length) return;
     const csv = buildCsvBody();
@@ -950,19 +965,19 @@ export default function InventoryPage() {
     URL.revokeObjectURL(url);
   }, [filtered, buildCsvBody]);
 
-  // Copy cùng dữ liệu Export CSV vào clipboard (không kèm BOM/"sep=," — 2 dòng đó chỉ
-  // là gợi ý cho file Excel/GSheet, dán ra text sẽ thừa). Dán vào Sheets: comma-separated.
+  // Copy cùng dữ liệu Export CSV nhưng dạng TSV (Tab) → dán vào Google Sheets/Excel là
+  // tự vào cột, không cần "Tách văn bản thành cột".
   const copyCsv = useCallback(async () => {
     if (!filtered.length) return;
     try {
-      await navigator.clipboard.writeText(buildCsvBody());
+      await navigator.clipboard.writeText(buildTsvBody());
       setCopiedCsv(true);
       setTimeout(() => setCopiedCsv(false), 2000);
-      showToast(`📋 Đã copy ${filtered.length} dòng CSV`);
+      showToast(`📋 Đã copy ${filtered.length} dòng — dán thẳng vào Google Sheets`);
     } catch {
       showToast("❌ Không copy được (clipboard bị chặn)", true);
     }
-  }, [filtered, buildCsvBody, showToast]);
+  }, [filtered, buildTsvBody, showToast]);
 
   return (
     <div className="flex flex-col gap-6 p-6">
@@ -1292,7 +1307,7 @@ export default function InventoryPage() {
           size="sm" variant="outline" className="gap-1.5 ml-auto"
           onClick={copyCsv}
           disabled={!filtered.length}
-          title={filtered.length ? `Copy ${filtered.length} dòng CSV vào clipboard` : "Không có dòng để copy"}
+          title={filtered.length ? `Copy ${filtered.length} dòng (Tab-separated) → dán thẳng vào Google Sheets/Excel là tự vào cột` : "Không có dòng để copy"}
         >
           {copiedCsv ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
           {copiedCsv ? "Đã copy!" : "Copy"}
