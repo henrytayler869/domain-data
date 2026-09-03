@@ -34,12 +34,9 @@ export async function POST(request: NextRequest) {
     if (!domains.length) {
       return NextResponse.json({ error: "Cần ít nhất 1 domain" }, { status: 400 });
     }
-    if (domains.length > 50) {
-      return NextResponse.json(
-        { error: "Tối đa 50 domain mỗi lần để tránh mua nhầm số lượng lớn" },
-        { status: 400 }
-      );
-    }
+    // Không giới hạn số lượng — dialog "MUA THẬT N domain" ở client là chốt xác nhận
+    // chống mua nhầm. (Lưu ý: batch RẤT lớn chạy tuần tự qua Gname có thể chạm timeout
+    // ~100s của Cloudflare; ~vài trăm domain trở xuống thì an toàn.)
 
     const meta = body.meta ?? {};
     const results: BuyResult[] = [];
