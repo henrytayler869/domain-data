@@ -18,7 +18,6 @@ import {
   Loader2,
   Calendar,
   Tag,
-  Wallet,
   ChevronDown,
   RefreshCw,
   AlertTriangle,
@@ -30,7 +29,6 @@ import { cn } from "@/lib/utils";
 import type { InventoryEntry } from "@/lib/inventory-db";
 import type { TargetSummary } from "@/lib/ahrefs-db";
 import type { RefBlacklistEntry } from "@/lib/ref-blacklist-db";
-import type { Withdrawal, WithdrawalStatus, WithdrawalWallet } from "@/lib/withdrawal-db";
 import { WEAK_VALUATION_MIN, VALUATION_MAX, valuateByRefs } from "@/lib/valuation";
 
 type SortKey = "domain" | "purchasePrice" | "sellPrice" | "expectedSellPrice" | "profit" | "rating" | "refs" | "category" | "purchasedAt" | "soldAt" | "status";
@@ -158,19 +156,6 @@ export default function InventoryPage() {
   const [copiedListing, setCopiedListing] = useState(false);
   const [copiedCsv, setCopiedCsv] = useState(false);
 
-  // Withdrawals
-  const [withdrawals, setWithdrawals] = useState<Withdrawal[]>([]);
-  const [withdrawalFormOpen, setWithdrawalFormOpen] = useState(false);
-  const [withdrawalListOpen, setWithdrawalListOpen] = useState(false);
-  const [savingWithdrawal, setSavingWithdrawal] = useState(false);
-  const [editingWithdrawalId, setEditingWithdrawalId] = useState<string | null>(null);
-  const [wDate, setWDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [wAmount, setWAmount] = useState("");
-  const [wCurrency, setWCurrency] = useState("USD");
-  const [wStatus, setWStatus] = useState<WithdrawalStatus>("paid");
-  const [wWallet, setWWallet] = useState<WithdrawalWallet>(null);
-  const [wNotes, setWNotes] = useState("");
-
   const [tab, setTab] = useState<"kho" | "luutru" | "checkloi">("kho"); // Kho Domain / Lưu trữ / Check Lỗi
 
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -210,13 +195,11 @@ export default function InventoryPage() {
       // Meta còn lại + Wayback (scoped) song song.
       // Kho KHÔNG theo dõi pipeline runs (đó là việc của Domain Picker). Chỉ lấy wayback
       // results SCOPED + NHẸ cho domain đang giữ (badge flagged/clean từng domain).
-      const [blData, wData, wbResData] = await Promise.all([
+      const [blData, wbResData] = await Promise.all([
         fetch("/api/ref-blacklist").then((r) => r.json()),
-        fetch("/api/withdrawals").then((r) => r.json()),
         fetch("/api/wayback/results", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ targets: domains }) }).then((r) => r.json()),
       ]);
       setUserBlacklist(Array.isArray(blData) ? blData : []);
-      setWithdrawals(Array.isArray(wData) ? wData : []);
       setWaybackResults(wbResData.rows ?? []);
     } catch { /* ignore */ }
     setLoading(false);
@@ -918,138 +901,6 @@ export default function InventoryPage() {
     }
   }, [editPrice, editNotes, patchLocal, showToast]);
 
-  // ─── Withdrawals ────────────────────────────────────────────────────────────
-
-  const openWithdrawalForm = useCallback(() => {
-    setEditingWithdrawalId(null);
-    setWDate(new Date().toISOString().slice(0, 10));
-    setWAmount("");
-    setWCurrency("USD");
-    setWStatus("paid");
-    setWWallet(null);
-    setWNotes("");
-    setWithdrawalFormOpen(true);
-  }, []);
-
-  const openEditWithdrawal = useCallback((w: Withdrawal) => {
-    setEditingWithdrawalId(w.id);
-    setWDate(new Date(w.withdrawnAt).toISOString().slice(0, 10));
-    setWAmount(String(w.amount));
-    setWCurrency(w.currency);
-    setWStatus(w.status);
-    setWWallet(w.wallet ?? null);
-    setWNotes(w.notes ?? "");
-    setWithdrawalFormOpen(true);
-  }, []);
-
-  const saveWithdrawal = useCallback(async () => {
-    const amount = parseFloat(wAmount);
-    if (!wDate || isNaN(amount) || amount <= 0) {
-      showToast("❌ Vui lòng nhập ngày và số tiền hợp lệ", true);
-      return;
-    }
-    setSavingWithdrawal(true);
-    try {
-      const payload = {
-        withdrawnAt: new Date(wDate + "T00:00:00").toISOString(),
-        amount,
-        currency: wCurrency.trim() || "USD",
-        status: wStatus,
-        wallet: wWallet,
-        notes: wNotes.trim() || null,
-      };
-      if (editingWithdrawalId) {
-        // EDIT mode
-        const res = await fetch(`/api/withdrawals/${editingWithdrawalId}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error ?? "Lỗi");
-        const id = editingWithdrawalId;
-        setWithdrawals((prev) => prev.map((w) => (w.id === id ? {
-          ...w,
-          withdrawnAt: payload.withdrawnAt,
-          amount: payload.amount,
-          currency: payload.currency,
-          status: payload.status,
-          wallet: payload.wallet,
-          notes: payload.notes,
-        } : w)));
-        setWithdrawalFormOpen(false);
-        setEditingWithdrawalId(null);
-        showToast(`✅ Đã cập nhật`);
-      } else {
-        // CREATE mode
-        const res = await fetch("/api/withdrawals", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error ?? "Lỗi");
-        setWithdrawals((prev) => [data.entry, ...prev]);
-        setWithdrawalFormOpen(false);
-        showToast(`✅ Đã rút $${amount.toFixed(2)} ${wCurrency}`);
-      }
-    } catch (err) {
-      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
-    } finally {
-      setSavingWithdrawal(false);
-    }
-  }, [wDate, wAmount, wCurrency, wStatus, wWallet, wNotes, editingWithdrawalId, showToast]);
-
-  const deleteWithdrawal = useCallback(async (id: string) => {
-    if (!confirm("Xóa lần rút này?")) return;
-    try {
-      await fetch(`/api/withdrawals/${id}`, { method: "DELETE" });
-      setWithdrawals((prev) => prev.filter((w) => w.id !== id));
-      showToast("🗑️ Đã xóa");
-    } catch (err) {
-      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
-    }
-  }, [showToast]);
-
-  const updateWithdrawalStatus = useCallback(async (id: string, status: WithdrawalStatus) => {
-    try {
-      const res = await fetch(`/api/withdrawals/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Lỗi");
-      setWithdrawals((prev) => prev.map((w) => (w.id === id ? { ...w, status } : w)));
-    } catch (err) {
-      showToast(`❌ ${err instanceof Error ? err.message : "Lỗi"}`, true);
-    }
-  }, [showToast]);
-
-  // Stats: total withdrawn (in USD only — ignore other currencies for the card)
-  const withdrawalStats = useMemo(() => {
-    let totalUsdPaid = 0;
-    let totalUsdPending = 0; // progressing + under_review
-    const byWallet: Record<"evault" | "gname" | "none", { paid: number; pending: number }> = {
-      evault: { paid: 0, pending: 0 },
-      gname:  { paid: 0, pending: 0 },
-      none:   { paid: 0, pending: 0 },
-    };
-    for (const w of withdrawals) {
-      if (w.currency !== "USD") continue;
-      if (datePreset !== "all" && !inRange(w.withdrawnAt)) continue;
-      const key = w.wallet ?? "none";
-      if (w.status === "paid") {
-        totalUsdPaid += w.amount;
-        byWallet[key].paid += w.amount;
-      } else {
-        totalUsdPending += w.amount;
-        byWallet[key].pending += w.amount;
-      }
-    }
-    return { totalUsdPaid, totalUsdPending, byWallet };
-  }, [withdrawals, datePreset, inRange]);
-
   const removeEntry = useCallback(async (domain: string) => {
     if (!confirm(`Xóa ${domain} khỏi kho?`)) return;
     await fetch(`/api/inventory/${encodeURIComponent(domain)}`, { method: "DELETE" });
@@ -1438,15 +1289,7 @@ export default function InventoryPage() {
           );
         })()}
         <Button
-          size="sm"
-          className="gap-1.5 ml-auto bg-purple-600 hover:bg-purple-700 text-white"
-          onClick={openWithdrawalForm}
-        >
-          <Wallet className="h-3.5 w-3.5" />
-          Rút tiền
-        </Button>
-        <Button
-          size="sm" variant="outline" className="gap-1.5"
+          size="sm" variant="outline" className="gap-1.5 ml-auto"
           onClick={copyCsv}
           disabled={!filtered.length}
           title={filtered.length ? `Copy ${filtered.length} dòng CSV vào clipboard` : "Không có dòng để copy"}
@@ -1463,114 +1306,6 @@ export default function InventoryPage() {
           Export CSV
         </Button>
       </div>
-
-      {/* Withdrawal form */}
-      {withdrawalFormOpen && (
-        <div className="rounded-lg border border-purple-300 dark:border-purple-700 bg-purple-50/50 dark:bg-purple-950/30 p-4">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <Wallet className="h-4 w-4 text-purple-600" />
-              <h3 className="text-sm font-semibold">
-                {editingWithdrawalId ? "Sửa lần rút tiền" : "Ghi nhận lần rút tiền"}
-              </h3>
-            </div>
-            <button
-              onClick={() => { setWithdrawalFormOpen(false); setEditingWithdrawalId(null); }}
-              className="text-muted-foreground hover:text-foreground"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-3">
-            <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1">Ngày</label>
-              <Input
-                type="date"
-                value={wDate}
-                onChange={(e) => setWDate(e.target.value)}
-                className="h-8 text-sm"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1">Số tiền</label>
-              <Input
-                type="number"
-                step="0.01"
-                placeholder="0.00"
-                value={wAmount}
-                onChange={(e) => setWAmount(e.target.value)}
-                className="h-8 text-sm"
-                autoFocus
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1">Đơn vị</label>
-              <Input
-                type="text"
-                value={wCurrency}
-                onChange={(e) => setWCurrency(e.target.value.toUpperCase())}
-                placeholder="USD"
-                maxLength={6}
-                className="h-8 text-sm font-mono"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1">Trạng thái</label>
-              <select
-                value={wStatus}
-                onChange={(e) => setWStatus(e.target.value as WithdrawalStatus)}
-                className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm cursor-pointer"
-              >
-                <option value="paid">Đã nhận</option>
-                <option value="progressing">Progressing</option>
-                <option value="under_review">Under Review</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1">Ví nhận tiền</label>
-              <select
-                value={wWallet ?? ""}
-                onChange={(e) => setWWallet(e.target.value === "" ? null : (e.target.value as WithdrawalWallet))}
-                className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm cursor-pointer"
-              >
-                <option value="">Trống</option>
-                <option value="evault">Ví điện tử</option>
-                <option value="gname">Gname</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="mb-3">
-            <label className="block text-xs font-medium text-muted-foreground mb-1">Ghi chú (optional)</label>
-            <Input
-              type="text"
-              value={wNotes}
-              onChange={(e) => setWNotes(e.target.value)}
-              placeholder="vd: Wise transfer to Vietcombank"
-              className="h-8 text-sm"
-            />
-          </div>
-
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              onClick={saveWithdrawal}
-              disabled={savingWithdrawal}
-              className="gap-1.5 bg-purple-600 hover:bg-purple-700 text-white"
-            >
-              {savingWithdrawal ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <SaveIcon className="h-3.5 w-3.5" />}
-              {savingWithdrawal ? "Đang lưu..." : (editingWithdrawalId ? "Cập nhật" : "Lưu")}
-            </Button>
-            <Button
-              size="sm" variant="ghost"
-              onClick={() => { setWithdrawalFormOpen(false); setEditingWithdrawalId(null); }}
-            >
-              Hủy
-            </Button>
-          </div>
-        </div>
-      )}
 
       {/* Sell form */}
       {sellFormOpen && (
@@ -2024,115 +1759,6 @@ export default function InventoryPage() {
         )}
       </div>
 
-      {/* Withdrawals panel */}
-      <div className="rounded-xl border bg-card shadow-sm">
-        <button
-          onClick={() => setWithdrawalListOpen((o) => !o)}
-          className="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-muted/30 transition rounded-xl"
-        >
-          <div className="flex items-center gap-2">
-            <Wallet className="h-4 w-4 text-purple-600" />
-            <h2 className="text-sm font-semibold uppercase tracking-wide">Lịch sử rút tiền</h2>
-            <span className="bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300 text-xs font-bold px-2 py-0.5 rounded-full">
-              {withdrawals.length} lần
-            </span>
-            {withdrawals.length > 0 && (
-              <span className="bg-muted text-muted-foreground text-xs px-2 py-0.5 rounded-full">
-                ${withdrawalStats.totalUsdPaid.toFixed(2)} đã nhận
-                {withdrawalStats.totalUsdPending > 0 &&
-                  ` · $${withdrawalStats.totalUsdPending.toFixed(2)} chờ`}
-              </span>
-            )}
-          </div>
-          <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", withdrawalListOpen && "rotate-180")} />
-        </button>
-
-        {withdrawalListOpen && (
-          <div className="border-t px-6 pb-6">
-            {withdrawals.length === 0 ? (
-              <p className="text-center py-8 text-sm text-muted-foreground">
-                Chưa có lần rút nào. Click <strong>Rút tiền</strong> ở trên để ghi nhận.
-              </p>
-            ) : (
-              <div className="rounded-lg border overflow-hidden mt-4">
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/50 border-b">
-                    <tr>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Ngày</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Số tiền</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Trạng thái</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Ví nhận tiền</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Ghi chú</th>
-                      <th className="w-12" />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {withdrawals.map((w) => (
-                      <tr key={w.id} className="border-b border-border/30 hover:bg-muted/30 group">
-                        <td className="px-3 py-2 text-xs whitespace-nowrap">
-                          {new Date(w.withdrawnAt).toLocaleDateString()}
-                        </td>
-                        <td className="px-3 py-2 text-sm font-semibold">
-                          {w.currency === "USD" ? "$" : ""}{w.amount.toFixed(2)}
-                          {w.currency !== "USD" && <span className="ml-1 text-[10px] text-muted-foreground">{w.currency}</span>}
-                        </td>
-                        <td className="px-3 py-2">
-                          <select
-                            value={w.status}
-                            onChange={(e) => updateWithdrawalStatus(w.id, e.target.value as WithdrawalStatus)}
-                            className={cn(
-                              "h-6 rounded border bg-background px-1.5 text-[11px] cursor-pointer font-medium",
-                              w.status === "paid"
-                                ? "border-emerald-300 bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300"
-                                : w.status === "progressing"
-                                  ? "border-blue-300 bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300"
-                                  : "border-amber-300 bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300"
-                            )}
-                          >
-                            <option value="paid">Đã nhận</option>
-                            <option value="progressing">Progressing</option>
-                            <option value="under_review">Under Review</option>
-                          </select>
-                        </td>
-                        <td className="px-3 py-2 text-xs whitespace-nowrap">
-                          {w.wallet === "evault" ? (
-                            <span className="text-foreground">Ví điện tử</span>
-                          ) : w.wallet === "gname" ? (
-                            <span className="text-foreground">Gname</span>
-                          ) : (
-                            <span className="text-muted-foreground opacity-40">—</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-xs text-muted-foreground italic max-w-[300px] truncate" title={w.notes ?? ""}>
-                          {w.notes || <span className="opacity-40">—</span>}
-                        </td>
-                        <td className="px-3 py-2 text-right">
-                          <div className="flex items-center justify-end gap-1.5 opacity-0 group-hover:opacity-100 transition">
-                            <button
-                              onClick={() => openEditWithdrawal(w)}
-                              className="text-muted-foreground hover:text-primary"
-                              title="Sửa"
-                            >
-                              <Edit2 className="h-3 w-3" />
-                            </button>
-                            <button
-                              onClick={() => deleteWithdrawal(w.id)}
-                              className="text-destructive hover:opacity-80"
-                              title="Xóa"
-                            >
-                              <Trash2 className="h-3 w-3" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
       </>
       )}
 
