@@ -910,7 +910,9 @@ export default function InventoryPage() {
 
   // Build phần thân CSV (headers + rows) — dùng chung cho Export CSV (tải file) và
   // Copy (clipboard). Cùng 3 cột, cùng cách escape → dữ liệu Copy giống hệt Export.
-  const buildCsvBody = useCallback(() => {
+  type RefsMap = Map<string, { domain: string; dr: number }[]>;
+
+  const buildCsvBody = useCallback((refsMap: RefsMap = refsByDomain) => {
     const headers = ["domain", "ref_domains", "expected_sell_price"];
     // RFC 4180 — wrap in quotes if needed (chứa quote, comma, newline, hoặc semicolon
     // vì một số GSheet locale dùng ";" làm field separator).
@@ -921,7 +923,7 @@ export default function InventoryPage() {
     // Force-quote: luôn bọc trong quote để tránh parser nhầm bất kỳ ký tự nào.
     const forceQuote = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const rows = filtered.map((e) => {
-      const refs = refsByDomain.get(e.domain) ?? [];
+      const refs = refsMap.get(e.domain) ?? [];
       // Dùng " | " (pipe) thay cho "; " — pipe an toàn hơn vì không phải field
       // separator của bất kỳ locale nào trong GSheet/Excel.
       const refsCell = refs.map((r) => `${r.domain} (DR ${r.dr})`).join(" | ");
@@ -938,20 +940,46 @@ export default function InventoryPage() {
   // TỰ VÀO CỘT (không cần "Tách văn bản thành cột"). Cùng 3 cột, cùng dữ liệu như
   // Export CSV; TSV không dùng quote — chỉ thay tab/xuống-dòng trong ô bằng space để
   // không vỡ hàng/cột.
-  const buildTsvBody = useCallback(() => {
+  const buildTsvBody = useCallback((refsMap: RefsMap = refsByDomain) => {
     const headers = ["domain", "ref_domains", "expected_sell_price"];
     const cell = (v: unknown) => String(v ?? "").replace(/[\t\r\n]+/g, " ").trim();
     const rows = filtered.map((e) => {
-      const refs = refsByDomain.get(e.domain) ?? [];
+      const refs = refsMap.get(e.domain) ?? [];
       const refsCell = refs.map((r) => `${r.domain} (DR ${r.dr})`).join(" | ");
       return [cell(e.domain), cell(refsCell), cell(e.expectedSellPrice ?? "")].join("\t");
     });
     return [headers.join("\t"), ...rows].join("\r\n");
   }, [filtered, refsByDomain]);
 
-  const exportCsv = useCallback(() => {
+  // Lấy map refs để export. Nếu refs đã tải nền xong → dùng luôn refsByDomain. Nếu CHƯA
+  // (user bấm Copy/Export ngay khi vừa mở Kho, refs còn đang tải) → fetch TƯƠI cho đúng
+  // danh sách đang hiển thị, để KHÔNG BAO GIỜ xuất thiếu cột Ref.
+  const fetchRefsMap = useCallback(async (): Promise<RefsMap> => {
+    if (ahrefsSummary.length) return refsByDomain;
+    const targets = filtered.map((e) => e.domain);
+    if (!targets.length) return refsByDomain;
+    try {
+      const res = await fetch("/api/ahrefs-results/db/by-targets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targets }),
+      });
+      const data = await res.json();
+      const summaries = (Array.isArray(data) ? data : []) as TargetSummary[];
+      const m: RefsMap = new Map();
+      for (const t of summaries) {
+        const base = t.refs.length ? t.refs : parseDetailRefs(t.detail);
+        m.set(t.targetDomain, base.filter((r) => !blacklistSet.has(r.domain)));
+      }
+      return m;
+    } catch {
+      return refsByDomain;
+    }
+  }, [ahrefsSummary, refsByDomain, filtered, blacklistSet]);
+
+  const exportCsv = useCallback(async () => {
     if (!filtered.length) return;
-    const csv = buildCsvBody();
+    const csv = buildCsvBody(await fetchRefsMap());
     // BOM (﻿) → Excel/GSheet biết là UTF-8.
     // Dòng đầu "sep=," → ép GSheet/Excel dùng comma làm field separator,
     // bất kể locale của user (rất quan trọng với GSheet ở VN/EU).
@@ -963,21 +991,22 @@ export default function InventoryPage() {
     a.download = `domain-inventory-${ts}.csv`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  }, [filtered, buildCsvBody]);
+  }, [filtered, buildCsvBody, fetchRefsMap]);
 
   // Copy cùng dữ liệu Export CSV nhưng dạng TSV (Tab) → dán vào Google Sheets/Excel là
   // tự vào cột, không cần "Tách văn bản thành cột".
   const copyCsv = useCallback(async () => {
     if (!filtered.length) return;
     try {
-      await navigator.clipboard.writeText(buildTsvBody());
+      const tsv = buildTsvBody(await fetchRefsMap());
+      await navigator.clipboard.writeText(tsv);
       setCopiedCsv(true);
       setTimeout(() => setCopiedCsv(false), 2000);
       showToast(`📋 Đã copy ${filtered.length} dòng — dán thẳng vào Google Sheets`);
     } catch {
       showToast("❌ Không copy được (clipboard bị chặn)", true);
     }
-  }, [filtered, buildTsvBody, showToast]);
+  }, [filtered, buildTsvBody, fetchRefsMap, showToast]);
 
   return (
     <div className="flex flex-col gap-6 p-6">
