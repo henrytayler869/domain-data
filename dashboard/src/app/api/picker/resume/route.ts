@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readResumeCandidates } from "@/lib/picker-resume";
 
+// Kết quả phụ thuộc dữ liệu live (gname_checks/wayback/rating) → KHÔNG cache tĩnh.
+export const dynamic = "force-dynamic";
+
 /**
  * GET /api/picker/resume?hours=12
  *   Trả các domain "mua được + clean" gần đây (kèm rating nếu có) để khôi phục

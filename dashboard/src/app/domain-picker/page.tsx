@@ -698,7 +698,7 @@ export default function DomainPickerPage() {
   const resumeFromDb = useCallback(async () => {
     setResuming(true);
     try {
-      const r = await fetch("/api/picker/resume?hours=72");
+      const r = await fetch("/api/picker/resume?hours=72", { cache: "no-store" });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error);
       const cands: { domain: string; gnameStatus: "available" | "backorder"; dropEta: string | null; rating: string | null; category: string | null; detail: string | null }[] = d.candidates ?? [];

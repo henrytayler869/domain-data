@@ -10,6 +10,7 @@
  */
 
 import { supabase } from "./supabase";
+import { readTargetSummaryFor } from "./ahrefs-db";
 
 export interface ResumeCandidate {
   domain: string;
@@ -83,8 +84,12 @@ export async function readResumeCandidates(hours = 12): Promise<ResumeCandidate[
   if (!acquirable.size) return [];
   const cand = [...acquirable.keys()];
 
-  // 3) rating/category/detail + loại trừ, và 4) đã mua.
-  const assess = new Map<string, { rating: string | null; category: string | null; detail: string | null; excluded: boolean }>();
+  // 3) rating/category/detail + REFS (ahrefs_results) + loại trừ, và 4) đã mua.
+  // Dùng readTargetSummaryFor → refs THẬT từ bảng ahrefs_results (giống trang Kho),
+  // KHÔNG chỉ parse chuỗi `detail`. Cần thiết vì rating gần đây ghi `detail` dạng văn
+  // xuôi mô tả (không còn "domain (DR NN)") → nếu chỉ parse detail sẽ ra 0 ref và loại
+  // sạch mọi domain tốt. detail chỉ còn là fallback cho domain pipeline cũ.
+  const assess = new Map<string, { rating: string | null; category: string | null; detail: string | null; excluded: boolean; refs: { domain: string; dr: number }[] }>();
   const owned = new Set<string>();
   const blacklist = new Set<string>();
   await Promise.all([
@@ -94,15 +99,12 @@ export async function readResumeCandidates(hours = 12): Promise<ResumeCandidate[
       for (const r of (data ?? []) as { domain: string }[]) blacklist.add(String(r.domain).toLowerCase());
     })(),
     (async () => {
-      for (const slice of chunk(cand, 300)) {
-        const { data, error } = await sb
-          .from("target_assessment")
-          .select("target_domain,rating,category,detail,excluded_at")
-          .in("target_domain", slice);
-        if (error) throw new Error(error.message);
-        for (const r of (data ?? []) as { target_domain: string; rating: string | null; category: string | null; detail: string | null; excluded_at: string | null }[]) {
-          assess.set(String(r.target_domain).toLowerCase(), { rating: r.rating, category: r.category, detail: r.detail, excluded: !!r.excluded_at });
-        }
+      const summaries = await readTargetSummaryFor(cand);
+      for (const s of summaries) {
+        assess.set(s.targetDomain.toLowerCase(), {
+          rating: s.rating, category: s.category, detail: s.detail,
+          excluded: s.excluded, refs: s.refs,
+        });
       }
     })(),
     (async () => {
@@ -127,7 +129,9 @@ export async function readResumeCandidates(hours = 12): Promise<ResumeCandidate[
     // Đồng bộ cổng buyList: phải có ≥1 ref SẠCH (đã lọc blacklist) DR≥70 = ĐK1 (DR≥90)
     // hoặc ĐK2 (DR 70–89). Loại domain rating-tốt-ẢO (rating dựa ref spam/blacklist,
     // 0 ref sạch mạnh) — chính là case vrtulex/reflectz. Client tự phân ĐK1/ĐK2 để gắn nhãn.
-    const cleanRefs = parseRefs(a?.detail ?? null).filter((r) => !blacklist.has(r.domain));
+    // Ref lấy từ ahrefs_results (a.refs); fallback parse `detail` cho domain pipeline cũ.
+    const baseRefs = a && a.refs.length ? a.refs : parseRefs(a?.detail ?? null);
+    const cleanRefs = baseRefs.filter((r) => !blacklist.has(r.domain));
     if (!cleanRefs.some((r) => r.dr >= 70)) continue;
     out.push({ domain, gnameStatus: aq.status, dropEta: aq.dropEta, rating: a!.rating, category: a?.category ?? null, detail: a?.detail ?? null });
   }
