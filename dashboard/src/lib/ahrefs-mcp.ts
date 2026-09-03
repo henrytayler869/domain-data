@@ -61,10 +61,13 @@ export async function ahrefsCreditOk(token: string): Promise<boolean> {
     const err = payload.__error as string | undefined;
     if (err && /unit|limit|quota|credit|subscription|forbidden|payment|401|402|403|429/i.test(String(err))) return false;
     const lu = (payload.limits_and_usage as Record<string, unknown>) ?? payload;
-    const wl = Number(lu.units_limit_workspace), wu = Number(lu.units_usage_workspace);
-    if (Number.isFinite(wl) && Number.isFinite(wu) && wu >= wl) return false;
-    const kl = Number(lu.units_limit_api_key), ku = Number(lu.units_usage_api_key);
-    if (Number.isFinite(kl) && Number.isFinite(ku) && ku >= kl) return false;
+    // CHỈ so khi CẢ usage lẫn limit non-null. Ahrefs để units_limit_api_key = null
+    // (không giới hạn riêng theo api key) → Number(null)=0 sẽ khiến usage>=0 luôn đúng
+    // = báo hết credit nhầm. Phải guard null trước (giống Eval Credit của N8N).
+    const overLimit = (usage: unknown, limit: unknown) =>
+      usage != null && limit != null && Number(usage) >= Number(limit);
+    if (overLimit(lu.units_usage_workspace, lu.units_limit_workspace)) return false;
+    if (overLimit(lu.units_usage_api_key, lu.units_limit_api_key)) return false;
     return true;
   } catch { return false; }   // lỗi mạng/token → coi như không dùng được → thử token kế / DFS
 }
