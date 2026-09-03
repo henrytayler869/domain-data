@@ -12,6 +12,7 @@ import {
   Edit2,
   Save as SaveIcon,
   Download,
+  Copy,
   DollarSign,
   TrendingUp,
   Loader2,
@@ -155,6 +156,7 @@ export default function InventoryPage() {
   const [sellBulkPrice, setSellBulkPrice] = useState("");
   const [savingSell, setSavingSell] = useState(false);
   const [copiedListing, setCopiedListing] = useState(false);
+  const [copiedCsv, setCopiedCsv] = useState(false);
 
   // Withdrawals
   const [withdrawals, setWithdrawals] = useState<Withdrawal[]>([]);
@@ -1055,8 +1057,9 @@ export default function InventoryPage() {
     showToast(`🗑️ Đã xóa ${domain}`);
   }, [showToast]);
 
-  const exportCsv = useCallback(() => {
-    if (!filtered.length) return;
+  // Build phần thân CSV (headers + rows) — dùng chung cho Export CSV (tải file) và
+  // Copy (clipboard). Cùng 3 cột, cùng cách escape → dữ liệu Copy giống hệt Export.
+  const buildCsvBody = useCallback(() => {
     const headers = ["domain", "ref_domains", "expected_sell_price"];
     // RFC 4180 — wrap in quotes if needed (chứa quote, comma, newline, hoặc semicolon
     // vì một số GSheet locale dùng ";" làm field separator).
@@ -1077,7 +1080,12 @@ export default function InventoryPage() {
         escape(e.expectedSellPrice ?? ""),
       ].join(",");
     });
-    const csv = [headers.join(","), ...rows].join("\r\n");
+    return [headers.join(","), ...rows].join("\r\n");
+  }, [filtered, refsByDomain]);
+
+  const exportCsv = useCallback(() => {
+    if (!filtered.length) return;
+    const csv = buildCsvBody();
     // BOM (﻿) → Excel/GSheet biết là UTF-8.
     // Dòng đầu "sep=," → ép GSheet/Excel dùng comma làm field separator,
     // bất kể locale của user (rất quan trọng với GSheet ở VN/EU).
@@ -1089,7 +1097,21 @@ export default function InventoryPage() {
     a.download = `domain-inventory-${ts}.csv`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  }, [filtered, refsByDomain]);
+  }, [filtered, buildCsvBody]);
+
+  // Copy cùng dữ liệu Export CSV vào clipboard (không kèm BOM/"sep=," — 2 dòng đó chỉ
+  // là gợi ý cho file Excel/GSheet, dán ra text sẽ thừa). Dán vào Sheets: comma-separated.
+  const copyCsv = useCallback(async () => {
+    if (!filtered.length) return;
+    try {
+      await navigator.clipboard.writeText(buildCsvBody());
+      setCopiedCsv(true);
+      setTimeout(() => setCopiedCsv(false), 2000);
+      showToast(`📋 Đã copy ${filtered.length} dòng CSV`);
+    } catch {
+      showToast("❌ Không copy được (clipboard bị chặn)", true);
+    }
+  }, [filtered, buildCsvBody, showToast]);
 
   return (
     <div className="flex flex-col gap-6 p-6">
@@ -1422,6 +1444,15 @@ export default function InventoryPage() {
         >
           <Wallet className="h-3.5 w-3.5" />
           Rút tiền
+        </Button>
+        <Button
+          size="sm" variant="outline" className="gap-1.5"
+          onClick={copyCsv}
+          disabled={!filtered.length}
+          title={filtered.length ? `Copy ${filtered.length} dòng CSV vào clipboard` : "Không có dòng để copy"}
+        >
+          {copiedCsv ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+          {copiedCsv ? "Đã copy!" : "Copy"}
         </Button>
         <Button
           size="sm" variant="outline" className="gap-1.5"
