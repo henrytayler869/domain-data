@@ -2,6 +2,7 @@
 
 import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { Upload, Loader2, Copy, RotateCcw, Rocket, Send, ShoppingCart, RefreshCw, Ban, Eye, Trash2 } from "lucide-react";
+import { GnameAccountSelect, useGnameAccount } from "@/components/gname-account-select";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { parseCsv, parseUnifiedCsv } from "@/lib/picker-csv";
@@ -170,6 +171,7 @@ export default function DomainPickerPage() {
   const [loadingRatings, setLoadingRatings] = useState(false);
   const [selectedBuy, setSelectedBuy] = useState<Set<string>>(new Set());
   const [buying, setBuying] = useState(false);
+  const gnameAcc = useGnameAccount();
   const [buyNote, setBuyNote] = useState<{ ok: boolean; msg: string } | null>(null);
   const [filterBuyRating, setFilterBuyRating] = useState<"all" | "tot" | "tb">("all");
   const [filterBuyDk, setFilterBuyDk] = useState<"all" | "dk1" | "dk2">("all");
@@ -446,12 +448,12 @@ export default function DomainPickerPage() {
     if (!domains.length) return;
     const modeOf = (d: string) => priceOf(rdap[d]?.status, tldOf(d), pricing, boChannel).mode === "backorder" ? "backorder" as const : "register" as const;
     const nBo = domains.filter((d) => modeOf(d) === "backorder").length;
-    if (!confirm(`⚡ MUA THẬT ${domains.length} domain qua Gname (${domains.length - nBo} đăng ký + ${nBo} backorder)? Tiền/deposit sẽ bị trừ từ số dư Gname.`)) return;
+    if (!confirm(`⚡ MUA THẬT ${domains.length} domain qua Gname${gnameAcc.label ? ` [${gnameAcc.label}]` : ""} (${domains.length - nBo} đăng ký + ${nBo} backorder)? Tiền/deposit sẽ bị trừ từ số dư tài khoản Gname này.`)) return;
     setBuying(true); setBuyNote(null);
     try {
       const meta: Record<string, { rating: string | null; mode: "register" | "backorder" }> = {};
       for (const d of domains) meta[d] = { rating: ratings[d] ?? null, mode: modeOf(d) };
-      const res = await fetch("/api/gname/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains, meta }) });
+      const res = await fetch("/api/gname/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains, meta, accountId: gnameAcc.accountId }) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       const results: { domain: string; ok: boolean; msg: string }[] = data.results ?? [];
@@ -467,7 +469,7 @@ export default function DomainPickerPage() {
     } catch (e) {
       setBuyNote({ ok: false, msg: e instanceof Error ? e.message : "Lỗi mua" });
     } finally { setBuying(false); }
-  }, [ratings, rdap, pricing, boChannel, toast]);
+  }, [ratings, rdap, pricing, boChannel, toast, gnameAcc.accountId, gnameAcc.label]);
 
   // Loại trừ thủ công domain đã chọn ở Bước 6 → đánh dấu excluded (target_assessment)
   // để biến mất khỏi danh sách + không quay lại ở lần chạy pipeline sau.
@@ -774,11 +776,11 @@ export default function DomainPickerPage() {
       const skipped = doms.length - buyable.length;
       if (!buyable.length) { toast("❌ Không domain nào mua được (registered/premium/lỗi)", true); return; }
       const nBo = buyable.filter((d) => stat.get(d) === "backorder").length;
-      if (!confirm(`⚡ MUA THẬT ${buyable.length} domain qua Gname: ${buyable.length - nBo} đăng ký + ${nBo} backorder${skipped ? ` · bỏ qua ${skipped}` : ""}.\nTrừ tiền/deposit từ số dư Gname. Xác nhận?`)) return;
+      if (!confirm(`⚡ MUA THẬT ${buyable.length} domain qua Gname${gnameAcc.label ? ` [${gnameAcc.label}]` : ""}: ${buyable.length - nBo} đăng ký + ${nBo} backorder${skipped ? ` · bỏ qua ${skipped}` : ""}.\nTrừ tiền/deposit từ số dư tài khoản Gname này. Xác nhận?`)) return;
       const byDom = new Map(items.map((i) => [i.domain, i]));
       const meta: Record<string, { rating: string | null; category: string | null; mode: "register" | "backorder" }> = {};
       for (const d of buyable) meta[d] = { rating: byDom.get(d)?.rating ?? null, category: byDom.get(d)?.category ?? null, mode: stat.get(d) === "backorder" ? "backorder" : "register" };
-      const res = await fetch("/api/gname/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains: buyable, meta }) });
+      const res = await fetch("/api/gname/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains: buyable, meta, accountId: gnameAcc.accountId }) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       const okList: string[] = (data.results ?? []).filter((r: { ok: boolean }) => r.ok).map((r: { domain: string }) => r.domain);
@@ -786,7 +788,7 @@ export default function DomainPickerPage() {
       else toast("⚠️ 0 domain mua được", true);
     } catch (e) { toast(`❌ ${e instanceof Error ? e.message : "lỗi"}`, true); }
     finally { setWlBusy(false); }
-  }, [removeFromWatchlist, toast]);
+  }, [removeFromWatchlist, toast, gnameAcc.accountId, gnameAcc.label]);
 
   const priceStr = (d: string): string => {
     const info = priceOf(rdap[d]?.status, tldOf(d), pricing, boChannel);
@@ -867,6 +869,7 @@ export default function DomainPickerPage() {
             </div>
             <div className="flex items-center gap-2">
               <Button size="sm" variant="outline" onClick={loadWatchlist} className="gap-1.5 text-xs"><RefreshCw className="h-3.5 w-3.5" />Tải lại</Button>
+              <GnameAccountSelect accounts={gnameAcc.accounts} value={gnameAcc.accountId} onChange={gnameAcc.setAccountId} disabled={wlBusy} />
               <Button size="sm" disabled={wlBusy || watchlist.length === 0} onClick={() => buyFromWatchlist(watchlist)} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white">
                 {wlBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShoppingCart className="h-4 w-4" />}Mua tất cả ({watchlist.length})
               </Button>
@@ -1054,6 +1057,7 @@ export default function DomainPickerPage() {
                   const boSel = sel.filter((d) => modeOf(d) === "backorder");
                   return (
                     <div className="ml-auto flex items-center gap-2">
+                      <GnameAccountSelect accounts={gnameAcc.accounts} value={gnameAcc.accountId} onChange={gnameAcc.setAccountId} disabled={buying} />
                       <Button size="sm" disabled={buying || availSel.length === 0} onClick={() => buyDomains(availSel)} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white">
                         {buying ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShoppingCart className="h-4 w-4" />}🟢 Mua Ngay ({availSel.length})
                       </Button>
