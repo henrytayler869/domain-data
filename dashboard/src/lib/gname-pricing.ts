@@ -1,6 +1,6 @@
 /**
  * Giá mua Gname theo TLD (bảng gname_pricing). Pipeline `gname price` ghi vào đây;
- * webapp chỉ ĐỌC (không gọi Gname trực tiếp — Gname cần IP whitelist, Vercel không có).
+ * webapp chỉ ĐỌC (không gọi Gname trực tiếp — Gname cần IP whitelist).
  */
 import { supabase } from "./supabase";
 

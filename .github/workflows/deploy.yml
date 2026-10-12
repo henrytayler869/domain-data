@@ -29,7 +29,7 @@ jobs:
         run: |
           rsync -az --delete \
             --exclude='.git' \
-            --exclude='node_modules' --exclude='.next' --exclude='.vercel' \
+            --exclude='node_modules' --exclude='.next' \
             --exclude='.env.local' \
             --exclude='*.log' --exclude='*.bak*' \
             -e "ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=20" \
