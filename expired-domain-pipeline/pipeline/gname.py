@@ -1,7 +1,7 @@
 """Phase 10 — gname: giá mua domain qua Gname API (register + backorder).
 
 CHẠY TỪ MÁY/VPS CÓ IP ĐÃ WHITELIST trên Gname (API Settings → whitelist IP).
-Vercel KHÔNG whitelist được (IP động) → Gname chạy ở pipeline, đẩy giá vào Supabase
+Gname chạy ở pipeline, đẩy giá vào Supabase
 (bảng gname_pricing) để webapp đọc hiển thị.
 
   python -m pipeline gname ip      -> in IP công khai máy này (để whitelist).
