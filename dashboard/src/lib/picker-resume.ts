@@ -19,6 +19,8 @@ export interface ResumeCandidate {
   rating: string | null;
   category: string | null;
   detail: string | null;
+  /** Ref SẠCH (đã lọc blacklist) — client dùng để phân ĐK1/ĐK2 thay vì parse `detail`. */
+  refs: { domain: string; dr: number }[];
 }
 
 const chunk = <T>(a: T[], n: number): T[][] => {
@@ -54,6 +56,9 @@ export async function readResumeCandidates(hours = 12): Promise<ResumeCandidate[
       const { data, error } = await sb
         .from("wayback_results")
         .select("target_domain,snapshot_count,has_betting,has_adult")
+        // ORDER BY bắt buộc khi phân trang bằng range(): không có thứ tự thì Postgres
+        // trả mỗi trang một kiểu → trùng/sót dòng giữa các trang (sót domain clean).
+        .order("target_domain", { ascending: true })
         .range(offset, offset + PAGE - 1);
       if (error) throw new Error(error.message);
       if (!data || !data.length) break;
@@ -133,7 +138,7 @@ export async function readResumeCandidates(hours = 12): Promise<ResumeCandidate[
     const baseRefs = a && a.refs.length ? a.refs : parseRefs(a?.detail ?? null);
     const cleanRefs = baseRefs.filter((r) => !blacklist.has(r.domain));
     if (!cleanRefs.some((r) => r.dr >= 70)) continue;
-    out.push({ domain, gnameStatus: aq.status, dropEta: aq.dropEta, rating: a!.rating, category: a?.category ?? null, detail: a?.detail ?? null });
+    out.push({ domain, gnameStatus: aq.status, dropEta: aq.dropEta, rating: a!.rating, category: a?.category ?? null, detail: a?.detail ?? null, refs: cleanRefs });
   }
   return out;
 }
