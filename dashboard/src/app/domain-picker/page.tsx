@@ -163,6 +163,9 @@ export default function DomainPickerPage() {
   // Bước 6 — Đáng mua
   const [ratings, setRatings] = useState<Record<string, string | null>>({});
   const [details, setDetails] = useState<Record<string, string | null>>({}); // ref-summary (DK1/DK2) từ N8N
+  // Ref thật (bảng ahrefs_results) trả về từ "Khôi phục từ DB". Rating mới ghi `detail` dạng
+  // văn xuôi (không còn "domain (DR NN)") → parse detail ra 0 ref → ưu tiên map này.
+  const [dbRefs, setDbRefs] = useState<Record<string, { domain: string; dr: number }[]>>({});
   const [categories, setCategories] = useState<Record<string, string | null>>({}); // phân loại (giống Kho Domain)
   const [loadingRatings, setLoadingRatings] = useState(false);
   const [selectedBuy, setSelectedBuy] = useState<Set<string>>(new Set());
@@ -291,11 +294,12 @@ export default function DomainPickerPage() {
   // Ref SẠCH (đã lọc blacklist) cho mỗi domain — nguồn duy nhất cho ĐK1 + cột Ref.
   const cleanRefsByDomain = useMemo(() => {
     const m = new Map<string, { domain: string; dr: number }[]>();
-    for (const [d, detail] of Object.entries(details)) {
-      m.set(d, parseDetailRefs(detail).filter((r) => !blacklistSet.has(r.domain)).sort((a, b) => b.dr - a.dr));
+    for (const d of new Set([...Object.keys(details), ...Object.keys(dbRefs)])) {
+      const base = dbRefs[d]?.length ? dbRefs[d] : parseDetailRefs(details[d]);
+      m.set(d, base.filter((r) => !blacklistSet.has(r.domain)).sort((a, b) => b.dr - a.dr));
     }
     return m;
-  }, [details, blacklistSet]);
+  }, [details, dbRefs, blacklistSet]);
   // Phân hạng ref SẠCH: ĐK1 = có ref DR≥90 (mua được ngay); ĐK2 = ref mạnh nhất DR 70–89
   // (cần kiểm traffic ≥1M trước khi mua); null = 0 ref sạch DR≥70 (rating dựa ref spam → loại).
   const dkTier = useCallback((d: string): "DK1" | "DK2" | null => {
@@ -690,7 +694,7 @@ export default function DomainPickerPage() {
     } finally { setRunning(false); }
   }, [gateErrors, running, runGateJob, pricing, boChannel, toast]);
 
-  const reset = () => { setStep(1); setDone(new Set()); setRaw([]); setAfterExclude([]); setGated([]); setGateSplit({ avail: 0, boTotal: 0, boUsed: 0 }); setGatingDone(false); setGateProgress(null); setGateErrors([]); setB2({ bought: [], flagged: [], nosnap: [], checked: [] }); setRdap({}); setWbStarted(false); setWebhookStatus("idle"); sentWbRef.current = new Set(); setRatings({}); setDetails({}); setCategories({}); setSelectedBuy(new Set()); setExcluded(new Set()); setBuyNote(null); };
+  const reset = () => { setStep(1); setDone(new Set()); setRaw([]); setAfterExclude([]); setGated([]); setGateSplit({ avail: 0, boTotal: 0, boUsed: 0 }); setGatingDone(false); setGateProgress(null); setGateErrors([]); setB2({ bought: [], flagged: [], nosnap: [], checked: [] }); setRdap({}); setWbStarted(false); setWebhookStatus("idle"); sentWbRef.current = new Set(); setRatings({}); setDetails({}); setDbRefs({}); setCategories({}); setSelectedBuy(new Set()); setExcluded(new Set()); setBuyNote(null); };
 
   // Khôi phục Bước 6 từ DB: dựng lại state (gated + wbResults-clean + rdap + rating)
   // cho các domain "mua được + clean" gần đây → dùng khi tab bị đóng/reload giữa chừng.
@@ -701,7 +705,7 @@ export default function DomainPickerPage() {
       const r = await fetch("/api/picker/resume?hours=72", { cache: "no-store" });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error);
-      const cands: { domain: string; gnameStatus: "available" | "backorder"; dropEta: string | null; rating: string | null; category: string | null; detail: string | null }[] = d.candidates ?? [];
+      const cands: { domain: string; gnameStatus: "available" | "backorder"; dropEta: string | null; rating: string | null; category: string | null; detail: string | null; refs?: { domain: string; dr: number }[] }[] = d.candidates ?? [];
       if (!cands.length) { toast("Chưa có domain mua được nào để khôi phục (72h qua) — chờ rating N8N rồi bấm lại", true); return; }
       const doms = cands.map((c) => c.domain);
       setGated(doms);
@@ -709,6 +713,7 @@ export default function DomainPickerPage() {
       setRdap(Object.fromEntries(cands.map((c) => [c.domain, { domain: c.domain, status: c.gnameStatus, dropEta: c.dropEta }])));
       setRatings(Object.fromEntries(cands.map((c) => [c.domain, c.rating])));
       setDetails(Object.fromEntries(cands.map((c) => [c.domain, c.detail])));
+      setDbRefs(Object.fromEntries(cands.map((c) => [c.domain, c.refs ?? []])));
       setCategories(Object.fromEntries(cands.map((c) => [c.domain, c.category])));
       sentWbRef.current = new Set(doms);   // đã gửi DFS rồi → effect cuốn chiếu không gửi lại
       setWbStarted(true); setGatingDone(true); setWebhookStatus("ok");
