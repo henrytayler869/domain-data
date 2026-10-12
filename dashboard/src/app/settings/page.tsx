@@ -19,6 +19,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { GnameAccountsCard } from "@/components/gname-accounts-card";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -559,6 +560,9 @@ export default function SettingsPage() {
           </Button>
         </div>
       </div>
+
+      {/* Gname card — nhiều tài khoản, 1 mặc định */}
+      <GnameAccountsCard />
 
       {/* Apify card — nhiều tài khoản, 1 active */}
       <div className="rounded-xl border bg-card shadow-sm">

@@ -17,6 +17,7 @@ import {
   Ban,
   ShoppingCart,
 } from "lucide-react";
+import { GnameAccountSelect, useGnameAccount } from "@/components/gname-account-select";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -118,6 +119,7 @@ export default function AgedDomainPage() {
   // Multi-select + mua thật qua Gname trong bảng tra cứu.
   const [selectedLookup, setSelectedLookup] = useState<Set<string>>(new Set());
   const [buying, setBuying] = useState(false);
+  const gnameAcc = useGnameAccount();
   // "Đã mua" (ghi nhận thủ công): nhập giá tay → lưu Kho Domain (KHÔNG gọi Gname).
   const [purchaseOpen, setPurchaseOpen] = useState(false);
   const [purchaseRows, setPurchaseRows] = useState<Record<string, string>>({});
@@ -463,7 +465,7 @@ export default function AgedDomainPage() {
       const nReg = buyable.filter((b) => b.mode === "register").length;
       const nBo = buyable.length - nReg;
       const skipMsg = skipped ? ` · bỏ qua ${skipped} (registered/premium/lỗi)` : "";
-      if (!confirm(`⚡ MUA THẬT ${buyable.length} domain qua Gname: ${nReg} đăng ký + ${nBo} backorder${skipMsg}.\nTiền/deposit sẽ bị TRỪ từ số dư Gname. Xác nhận?`)) return;
+      if (!confirm(`⚡ MUA THẬT ${buyable.length} domain qua Gname${gnameAcc.label ? ` [${gnameAcc.label}]` : ""}: ${nReg} đăng ký + ${nBo} backorder${skipMsg}.\nTiền/deposit sẽ bị TRỪ từ số dư tài khoản Gname này. Xác nhận?`)) return;
 
       // 2) Register thật — snapshot rating/category vào Kho qua meta.
       const rowByDomain = new Map((lookupRows ?? []).map((r) => [r.domain, r]));
@@ -475,7 +477,7 @@ export default function AgedDomainPage() {
       const res = await fetch("/api/gname/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ domains: buyable.map((b) => b.domain), meta }),
+        body: JSON.stringify({ domains: buyable.map((b) => b.domain), meta, accountId: gnameAcc.accountId }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Mua thất bại");
@@ -634,6 +636,7 @@ export default function AgedDomainPage() {
             </select>
             {selectedLookup.size > 0 && (
               <>
+                <GnameAccountSelect accounts={gnameAcc.accounts} value={gnameAcc.accountId} onChange={gnameAcc.setAccountId} disabled={buying} />
                 <Button
                   size="sm"
                   className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"

@@ -295,3 +295,115 @@ export async function ensureUsableApifyAccount(): Promise<{ switched: boolean; f
   }
   return { switched: false, reason: "tất cả account Apify đều hết credit / lỗi" };
 }
+
+// ─── Gname (app_settings key="gname") ───────────────────────────────────────────
+// Nhiều tài khoản Gname (appid + appkey), 1 tài khoản MẶC ĐỊNH:
+//   - check / dropcatch / kênh backorder (đọc) luôn dùng tài khoản mặc định;
+//   - mua (register / backorder) dùng tài khoản user chọn, không chọn → mặc định.
+// Lần đầu (chưa có row) mà ENV có GNAME_APPID/GNAME_APPKEY → seed thành 1 tài khoản.
+
+const GNAME_KEY = "gname";
+
+export interface GnameAccount {
+  id: string;
+  label: string;
+  appid: string;
+  appkey: string;          // server-side only
+}
+
+export interface GnameConfig {
+  accounts: GnameAccount[];
+  defaultId: string | null;
+}
+
+/** Config đầy đủ (raw appkey — server only). */
+export async function readGnameConfig(): Promise<GnameConfig> {
+  const envAppid = process.env.GNAME_APPID ?? "";
+  const envAppkey = process.env.GNAME_APPKEY ?? "";
+  try {
+    const sb = supabase();
+    const { data, error } = await sb.from(TABLE).select("value").eq("key", GNAME_KEY).maybeSingle();
+    if (error) throw new Error(error.message);
+    const v = (data?.value ?? null) as Partial<GnameConfig> | null;
+    if (v && Array.isArray(v.accounts)) {
+      const accounts = v.accounts.filter((a): a is GnameAccount => !!a && !!a.id);
+      const defaultId = accounts.some((a) => a.id === v.defaultId) ? v.defaultId! : accounts[0]?.id ?? null;
+      return { accounts, defaultId };
+    }
+    if (data === null && envAppid && envAppkey) {
+      const acc: GnameAccount = { id: crypto.randomUUID(), label: "Tài khoản (ENV)", appid: envAppid, appkey: envAppkey };
+      const cfg: GnameConfig = { accounts: [acc], defaultId: acc.id };
+      try { await writeGnameConfig(cfg); } catch { /* bảng chưa có — bỏ qua */ }
+      return cfg;
+    }
+  } catch {
+    // bảng chưa có / lỗi tạm → vẫn chạy được bằng ENV (không ghi DB)
+    if (envAppid && envAppkey) {
+      return { accounts: [{ id: "env", label: "Tài khoản (ENV)", appid: envAppid, appkey: envAppkey }], defaultId: "env" };
+    }
+  }
+  return { accounts: [], defaultId: null };
+}
+
+export async function writeGnameConfig(cfg: GnameConfig): Promise<void> {
+  const sb = supabase();
+  const { error } = await sb
+    .from(TABLE)
+    .upsert({ key: GNAME_KEY, value: cfg, updated_at: new Date().toISOString() }, { onConflict: "key" });
+  if (error) throw new Error(error.message);
+}
+
+/**
+ * Tài khoản dùng cho 1 call Gname: `id` có → đúng tài khoản đó (không có → lỗi, KHÔNG
+ * lặng lẽ rơi về mặc định vì đây có thể là lệnh tiêu tiền); `id` trống → mặc định.
+ */
+export async function resolveGnameAccount(id?: string | null): Promise<GnameAccount> {
+  const cfg = await readGnameConfig();
+  if (id) {
+    const a = cfg.accounts.find((x) => x.id === id);
+    if (!a) throw new Error("Không tìm thấy tài khoản Gname đã chọn — tải lại trang rồi chọn lại");
+    return a;
+  }
+  const a = cfg.accounts.find((x) => x.id === cfg.defaultId) ?? cfg.accounts[0];
+  if (!a) throw new Error("Gname chưa được cấu hình. Thêm tài khoản Gname trong Settings");
+  return a;
+}
+
+// ─── Mutators (dùng bởi /api/settings/gname) ────────────────────────────────────
+export async function gnameAddAccount(label: string, appid: string, appkey: string): Promise<void> {
+  const cfg = await readGnameConfig();
+  const id = crypto.randomUUID();
+  cfg.accounts.push({
+    id,
+    label: label.trim() || `Gname ${cfg.accounts.length + 1}`,
+    appid: appid.trim(),
+    appkey: appkey.trim(),
+  });
+  if (!cfg.defaultId) cfg.defaultId = id;   // tài khoản đầu tiên → mặc định luôn
+  await writeGnameConfig(cfg);
+}
+
+export async function gnameUpdateAccount(id: string, patch: { label?: string; appid?: string; appkey?: string }): Promise<void> {
+  const cfg = await readGnameConfig();
+  const a = cfg.accounts.find((x) => x.id === id);
+  if (!a) return;
+  if (patch.label?.trim()) a.label = patch.label.trim();
+  if (patch.appid?.trim()) a.appid = patch.appid.trim();
+  if (patch.appkey?.trim()) a.appkey = patch.appkey.trim();   // trống = giữ appkey cũ
+  await writeGnameConfig(cfg);
+}
+
+export async function gnameSetDefault(id: string): Promise<void> {
+  const cfg = await readGnameConfig();
+  if (cfg.accounts.some((a) => a.id === id)) {
+    cfg.defaultId = id;
+    await writeGnameConfig(cfg);
+  }
+}
+
+export async function gnameDeleteAccount(id: string): Promise<void> {
+  const cfg = await readGnameConfig();
+  cfg.accounts = cfg.accounts.filter((a) => a.id !== id);
+  if (cfg.defaultId === id) cfg.defaultId = cfg.accounts[0]?.id ?? null;
+  await writeGnameConfig(cfg);
+}

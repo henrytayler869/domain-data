@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { registerDomain, placeBackorder } from "@/lib/gname";
+import { registerDomain, placeBackorder, resolveAccount } from "@/lib/gname";
 import { upsertEntries } from "@/lib/inventory-db";
 import { markExcluded } from "@/lib/ahrefs-db";
 import { autoValuateDomains } from "@/lib/auto-valuate";
@@ -11,7 +11,8 @@ interface BuyResult { domain: string; ok: boolean; price: number | null; backord
  * POST /api/gname/register
  * Body: {
  *   domains: string[],
- *   meta?: Record<string, { source?: string|null, rating?: string|null, category?: string|null }>
+ *   meta?: Record<string, { source?: string|null, rating?: string|null, category?: string|null }>,
+ *   accountId?: string   // tài khoản Gname trả tiền; trống = tài khoản mặc định (Settings)
  * }
  *
  * Submits a real registration order to Gname for each domain (SPENDS MONEY —
@@ -27,6 +28,7 @@ export async function POST(request: NextRequest) {
     const body = (await request.json()) as {
       domains?: string[];
       meta?: Record<string, { source?: string | null; rating?: string | null; category?: string | null; mode?: "register" | "backorder" }>;
+      accountId?: string | null;
     };
     const domains = Array.from(new Set(
       (body.domains ?? []).map((d) => d.trim().toLowerCase()).filter(Boolean)
@@ -38,15 +40,24 @@ export async function POST(request: NextRequest) {
     // chống mua nhầm. (Lưu ý: batch RẤT lớn chạy tuần tự qua Gname có thể chạm timeout
     // ~100s của Cloudflare; ~vài trăm domain trở xuống thì an toàn.)
 
+    // Resolve tài khoản 1 lần TRƯỚC khi mua: id không tồn tại → dừng luôn, không
+    // lặng lẽ trừ tiền tài khoản khác.
+    let account;
+    try {
+      account = await resolveAccount(body.accountId || null);
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : "Tài khoản Gname không hợp lệ" }, { status: 400 });
+    }
+
     const meta = body.meta ?? {};
     const results: BuyResult[] = [];
     for (const d of domains) {
       if (meta[d]?.mode === "backorder") {
         // registered → đặt backorder qua Gname Channel 2 (price = deposit đóng băng)
-        const r = await placeBackorder(d);
+        const r = await placeBackorder(d, undefined, account);
         results.push({ domain: r.domain, ok: r.ok, price: r.amount, backorder: true, premium: false, code: r.code, msg: r.msg });
       } else {
-        const r = await registerDomain(d);
+        const r = await registerDomain(d, account);
         results.push({ domain: r.domain, ok: r.ok, price: r.price, backorder: false, premium: r.premium, code: r.code, msg: r.msg });
       }
     }
@@ -71,6 +82,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       ok: true,
+      account: { id: account.id, label: account.label },
       results,
       succeeded: succeeded.length,
       failed: results.length - succeeded.length,
