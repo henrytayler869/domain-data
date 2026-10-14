@@ -273,6 +273,12 @@ async function apifyAccountUsable(token: string): Promise<boolean | null> {
   }
 }
 
+/** Account Apify ĐANG ACTIVE còn dùng được không (false = chắc chắn hết credit / token lỗi, null = chưa rõ). */
+export async function activeApifyUsable(): Promise<boolean | null> {
+  const { apifyToken } = await readApifySettings();
+  return apifyAccountUsable(apifyToken);
+}
+
 /**
  * Nếu account ĐANG ACTIVE hết credit / token lỗi → tự đổi sang account khác CÒN credit.
  * Bảo thủ: chỉ đổi khi active CHẮC CHẮN hỏng (false) VÀ có account khác CHẮC CHẮN tốt (true)

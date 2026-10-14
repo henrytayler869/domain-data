@@ -3,6 +3,7 @@
 import { usePathname } from "next/navigation";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
+import { PipelineAlert } from "@/components/pipeline-alert";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -23,6 +24,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             Namecheap Market Tools
           </span>
         </header>
+        <PipelineAlert />
         <main className="flex-1 overflow-auto">{children}</main>
       </div>
     </SidebarProvider>

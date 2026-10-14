@@ -37,6 +37,10 @@ export interface ReconcileState {
   creditFlag: CreditFlag;
   lastRatingSendAt: string | null;// lần cuối gửi domain qua N8N để rating
   lastGnameJobId: string | null;  // gate job Gname gần nhất reconciler kick off
+  // Wayback tạm dừng vì hết credit (null = chạy bình thường). Khi dừng, mỗi tick chỉ gửi
+  // 1 run dò (1 domain) — nạp credit xong là tick sau chạy lại, không phải chờ.
+  waybackPaused: "claude_credit" | "apify_credit" | null;
+  alerts: string[];               // cảnh báo hiện thanh đỏ trên webapp (rỗng = ổn)
   // Tóm tắt hành động tick gần nhất (để hiển thị / debug).
   last: {
     ratingReArmed: number;        // placeholder cũ được gửi lại
@@ -55,6 +59,8 @@ const EMPTY: ReconcileState = {
   creditFlag: "unknown",
   lastRatingSendAt: null,
   lastGnameJobId: null,
+  waybackPaused: null,
+  alerts: [],
   last: { ratingReArmed: 0, ratingSent: 0, ratingProbe: false, gnameKicked: 0, waybackDispatched: 0, ingestedResults: 0 },
 };
 

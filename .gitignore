@@ -31,3 +31,4 @@ spamzilla/domains_*.txt
 # Python bytecode
 __pycache__/
 *.pyc
+backups/

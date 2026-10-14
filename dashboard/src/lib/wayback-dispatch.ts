@@ -23,8 +23,8 @@ import { supabase } from "./supabase";
 import { readGnamePricing } from "./gname-pricing";
 import { listPendingRuns, createRun } from "./wayback-db";
 import { pollAndIngestRun } from "./wayback-poll";
-import { startWaybackRun, countActiveRuns } from "./apify-wayback";
-import { readSettings, ensureUsableApifyAccount, type Settings } from "./settings";
+import { startWaybackRun, countActiveRuns, CLAUDE_UNAVAILABLE_RE } from "./apify-wayback";
+import { readSettings, ensureUsableApifyAccount, activeApifyUsable, type Settings } from "./settings";
 import { rateDomains } from "./rating-engine";
 import { startGateJob } from "./gname-gate";
 import { readReconcileState, writeReconcileState, type CreditFlag, type ReconcileState } from "./pipeline-status";
@@ -156,12 +156,17 @@ export async function dispatchTick(): Promise<DispatchSummary> {
   const failCounts = new Map<string, number>();
   {
     const since = new Date(Date.now() - WB_FAIL_WINDOW_H * 3600 * 1000).toISOString();
-    const failed = await pageAll<{ targets: string[]; status: string }>(
-      () => sb.from("wayback_runs").select("targets,status").in("status", ["TIMED-OUT", "FAILED", "ABORTED"]).gte("started_at", since),
+    const failed = await pageAll<{ targets: string[]; status: string; error: string | null }>(
+      () => sb.from("wayback_runs").select("targets,status,error").in("status", ["TIMED-OUT", "FAILED", "ABORTED"]).gte("started_at", since),
     );
-    for (const r of failed) for (const t of (r.targets ?? [])) {
-      const d = String(t).toLowerCase();
-      failCounts.set(d, (failCounts.get(d) ?? 0) + 1);
+    for (const r of failed) {
+      // Run fail vì Claude hết credit KHÔNG phải lỗi của domain → không tính vào số lần thử
+      // (nếu tính, hết credit 2h là domain bị "tạm bỏ" 48h dù đã nạp tiền).
+      if (CLAUDE_UNAVAILABLE_RE.test(r.error ?? "")) continue;
+      for (const t of (r.targets ?? [])) {
+        const d = String(t).toLowerCase();
+        failCounts.set(d, (failCounts.get(d) ?? 0) + 1);
+      }
     }
   }
 
@@ -183,16 +188,39 @@ export async function dispatchTick(): Promise<DispatchSummary> {
 
   // Tự đổi account Apify nếu account active hết credit / token lỗi (trước khi dispatch)
   const apifySwitch = await ensureUsableApifyAccount();
+  const alerts: string[] = [];
+
+  // ── Hết credit → TẠM DỪNG Wayback (không đốt số lần thử của domain) ──────────
+  // Apify: account active chắc chắn hết credit (sau khi đã thử đổi account) → không gửi gì.
+  // Claude: run XONG gần nhất fail vì "Claude unavailable" → chỉ gửi 1 run dò (1 domain)
+  //   mỗi tick; run dò thành công (đã nạp credit) → tick sau chạy lại bình thường.
+  let waybackPaused: ReconcileState["waybackPaused"] = null;
+  if ((await activeApifyUsable()) === false) {
+    waybackPaused = "apify_credit";
+    alerts.push(apifySwitch.reason ?? "Apify hết credit / token lỗi — Wayback tạm dừng. Nạp credit hoặc thêm account Apify khác.");
+  } else {
+    const { data: lastDone } = await sb.from("wayback_runs").select("status,error")
+      .not("finished_at", "is", null).order("finished_at", { ascending: false }).limit(1).maybeSingle();
+    if (lastDone && CLAUDE_UNAVAILABLE_RE.test(lastDone.error ?? "")) {
+      waybackPaused = "claude_credit";
+      alerts.push("Claude (Anthropic) hết credit / key lỗi — Wayback tạm dừng, mỗi tick chỉ gửi 1 run dò. Nạp credit Anthropic để chạy lại.");
+    }
+  }
+
   const active = await countActiveRuns();
-  const maxRuns = Math.max(0, CAP - active);        // mỗi run = 1 slot concurrency
+  const maxRuns = waybackPaused === "apify_credit" ? 0 : Math.max(0, CAP - active); // mỗi run = 1 slot concurrency
+  const toSend = waybackPaused === "claude_credit" ? groups.slice(0, 1).map((g) => g.slice(0, 1)) : groups;
   let dispatched = 0, dispatchedDomains = 0, waybackRetried = 0;
-  for (const g of groups.slice(0, maxRuns)) {
+  for (const g of toSend.slice(0, maxRuns)) {
     try {
       const run = await startWaybackRun(g);          // DEEP mặc định (maxSnapshots cao)
       await createRun(run.runId, g, run.status, run.datasetId);
       dispatched++; dispatchedDomains += g.length;
       if (g.length === 1 && failCounts.get(g[0])) waybackRetried++;
-    } catch { break; }   // đụng limit / lỗi → dừng, để tick sau
+    } catch (e) {        // đụng limit / lỗi → dừng, để tick sau — nhưng BÁO lên webapp
+      alerts.push(`Apify từ chối tạo Wayback run: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
+      break;
+    }
   }
   const remainingToWayback = dispatchable.length - dispatchedDomains;
 
@@ -204,6 +232,8 @@ export async function dispatchTick(): Promise<DispatchSummary> {
     creditFlag: rating.creditFlag,
     lastRatingSendAt: rating.sent > 0 ? new Date().toISOString() : prev.lastRatingSendAt,
     lastGnameJobId: gname.jobId ?? prev.lastGnameJobId,
+    waybackPaused,
+    alerts,
     last: {
       ratingReArmed: rating.reArmed,
       ratingSent: rating.sent,
