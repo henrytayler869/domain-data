@@ -384,19 +384,24 @@ export default function DomainPickerPage() {
     try {
       const res = await fetch("/api/picker/ratings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains }) });
       const d = await res.json();
+      // Bỏ qua placeholder chưa chấm (rating null, vd "DFS pending" cho phần vượt SYNC_CAP
+      // 40 domain/lần) — nếu không, domain đang chờ reconciler bị tính là "đã có kết quả".
+      // Riêng marker "DataforSEO checked" (0 ref đáng giá) là kết quả cuối → vẫn nhận.
+      const assessments = ((d.assessments ?? []) as { domain: string; rating: string | null; detail: string | null; category: string | null }[])
+        .filter((a) => a.rating != null || (a.detail ?? "").trim() === "DataforSEO checked");
       setRatings((prev) => {
         const m = { ...prev };
-        for (const a of d.assessments ?? []) m[String(a.domain).toLowerCase()] = a.rating;
+        for (const a of assessments) m[String(a.domain).toLowerCase()] = a.rating;
         return m;
       });
       setDetails((prev) => {
         const m = { ...prev };
-        for (const a of d.assessments ?? []) m[String(a.domain).toLowerCase()] = a.detail ?? null;
+        for (const a of assessments) m[String(a.domain).toLowerCase()] = a.detail ?? null;
         return m;
       });
       setCategories((prev) => {
         const m = { ...prev };
-        for (const a of d.assessments ?? []) m[String(a.domain).toLowerCase()] = a.category ?? null;
+        for (const a of assessments) m[String(a.domain).toLowerCase()] = a.category ?? null;
         return m;
       });
     } catch { /* ignore */ } finally { setLoadingRatings(false); }
@@ -510,7 +515,8 @@ export default function DomainPickerPage() {
     if (!running && engaged) { setDone((p) => new Set(p).add(4).add(5)); setStep(6); setWebhookStatus("idle"); toast("Không có domain Clean để gửi", true); }
   }, [step, wbStarted, gatingDone, gated, wbByDomain, inFlightWb, toast]);
 
-  // ── Bước 6 AUTO-POLL: N8N chạy xong ghi rating → tự lấy (mỗi 15s, tối đa ~10 phút) ──
+  // ── Bước 6 AUTO-POLL: rating ghi vào target_assessment → tự lấy (mỗi 15s, tối đa ~60 phút).
+  // Phần vượt 40 domain/lần do reconciler (cron VPS ~20 phút/tick) chấm → phải chờ đủ lâu. ──
   useEffect(() => {
     if (step !== 6 || !cleanDomains.length) return;
     pollRef.current = 0;
@@ -518,7 +524,7 @@ export default function DomainPickerPage() {
     loadRatings(cleanDomains);
     const id = setInterval(() => {
       pollRef.current += 1;
-      if (pollRef.current >= 40) { clearInterval(id); setPollExhausted(true); return; }
+      if (pollRef.current >= 240) { clearInterval(id); setPollExhausted(true); return; }
       loadRatings(cleanDomains);
     }, 15000);
     return () => clearInterval(id);
@@ -1015,9 +1021,9 @@ export default function DomainPickerPage() {
                 <span className="text-muted-foreground">Chưa có domain — chạy pipeline hoặc upload file kết quả.</span>
               ) : cleanDomains.some((d) => !(d in ratings)) ? (
                 pollExhausted ? (
-                  <span className="text-rose-600">{`Hết thời gian chờ — còn ${cleanDomains.filter((d) => !(d in ratings)).length}/${cleanDomains.length} domain chưa có kết quả. Kiểm tra N8N (node Ingest Rating) rồi bấm "Lấy lại".`}</span>
+                  <span className="text-rose-600">{`Hết thời gian chờ — còn ${cleanDomains.filter((d) => !(d in ratings)).length}/${cleanDomains.length} domain chưa có kết quả. Phần còn lại do reconciler chấm dần — bấm "Lấy lại" hoặc "Khôi phục từ DB" sau.`}</span>
                 ) : (
-                  <><Loader2 className="h-4 w-4 animate-spin text-blue-600" /><span className="text-muted-foreground">{`Đang chờ kết quả DataForSEO từ N8N: còn ${cleanDomains.filter((d) => !(d in ratings)).length}/${cleanDomains.length} domain (tự cập nhật mỗi 15s)…`}</span></>
+                  <><Loader2 className="h-4 w-4 animate-spin text-blue-600" /><span className="text-muted-foreground">{`Đang chờ kết quả DataForSEO: còn ${cleanDomains.filter((d) => !(d in ratings)).length}/${cleanDomains.length} domain (tự cập nhật mỗi 15s)…`}</span></>
                 )
               ) : (
                 <span className="text-amber-600">Đã nhận kết quả tất cả {cleanDomains.length} domain — <b>0 domain đáng mua</b> (đều Rủi Ro / không đạt Tốt+Trung bình).</span>
