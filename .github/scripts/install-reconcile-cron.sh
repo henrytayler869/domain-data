@@ -14,13 +14,15 @@ cat > "$TICK" <<'OUTER_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
+# Tham số 1 = "wayback" → tick NHẸ (chỉ sweep + nạp slot Wayback); bỏ trống → tick đầy đủ.
+QS=""; [ "${1:-}" = "wayback" ] && QS="?only=wayback"
 CID="$(cd /opt/n8n && docker compose ps -q dashboard)"
 [ -n "$CID" ] || { echo "$(date -Is) ERROR: dashboard container not found"; exit 1; }
-docker exec -i "$CID" node <<'NODE'
+docker exec -i -e TICK_QS="$QS" "$CID" node <<'NODE'
 const port = process.env.PORT || 3000;
 const token = process.env.N8N_API_TOKEN;
 if (!token) { console.error("ERROR: no N8N_API_TOKEN in container"); process.exit(1); }
-fetch("http://127.0.0.1:" + port + "/api/n8n/wayback-dispatch", {
+fetch("http://127.0.0.1:" + port + "/api/n8n/wayback-dispatch" + (process.env.TICK_QS || ""), {
   method: "POST",
   headers: { Authorization: "Bearer " + token },
 })
@@ -30,12 +32,17 @@ NODE
 OUTER_EOF
 chmod +x "$TICK"
 
-# Crontab của user: mỗi 20' (khớp ngưỡng heartbeat 75'). Xoá dòng cũ rồi thêm lại.
+# Crontab của user: tick đầy đủ mỗi 20' (khớp ngưỡng heartbeat 75') + tick nhẹ Wayback
+# mỗi 5' ở các phút LỆCH tick đầy đủ (không chạy chồng → không gửi trùng / vượt cap slot).
+# Xoá dòng cũ rồi thêm lại.
 # Lưu ý: `crontab -l` trả exit 1 khi user CHƯA có crontab → phải bọc `|| true` để
 # không bị set -e/pipefail giết trước khi cài.
 EXISTING="$(crontab -l 2>/dev/null || true)"
 FILTERED="$(printf '%s\n' "$EXISTING" | grep -v 'reconcile-tick.sh' || true)"
-{ printf '%s\n' "$FILTERED"; echo "*/20 * * * * $TICK >> $HOME/reconcile-tick.log 2>&1"; } | crontab -
+{ printf '%s\n' "$FILTERED"
+  echo "*/20 * * * * $TICK >> $HOME/reconcile-tick.log 2>&1"
+  echo "5,10,15,25,30,35,45,50,55 * * * * $TICK wayback >> $HOME/reconcile-tick-wayback.log 2>&1"
+} | crontab -
 
 echo "=== crontab đã cài ==="
 crontab -l | grep 'reconcile-tick.sh' || { echo "ERROR: cron chưa vào"; exit 1; }

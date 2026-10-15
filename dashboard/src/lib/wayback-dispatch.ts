@@ -95,7 +95,10 @@ export interface DispatchSummary {
   apifyNote: string | null;  // mô tả nếu đổi / tất cả hết credit
 }
 
-export async function dispatchTick(): Promise<DispatchSummary> {
+// waybackOnly = tick NHẸ (cron mỗi 5'): chỉ sweep run xong + nạp lại slot Wayback trống.
+// Run Wayback trung bình ~8,5' mà tick đầy đủ 20' mới chạy 1 lần → slot bỏ trống phần lớn
+// thời gian. Tick nhẹ bỏ qua rating/Gname và không ghi đè heartbeat (lastTickAt) của tick đầy đủ.
+export async function dispatchTick(opts: { waybackOnly?: boolean } = {}): Promise<DispatchSummary> {
   const startedAt = Date.now();
   const sb = supabase();
   const prev = await readReconcileState();
@@ -140,10 +143,14 @@ export async function dispatchTick(): Promise<DispatchSummary> {
   }
 
   // ── 2. RATING (re-arm + credit-aware) ─────────────────────────────────────────
-  const rating = await ratingBackfill(clean, acquirable, settings, prev);
+  const rating: RatingResult = opts.waybackOnly
+    ? { backlog: prev.backlog.rating, reArmed: 0, sent: 0, probe: false, creditFlag: prev.creditFlag }
+    : await ratingBackfill(clean, acquirable, settings, prev);
 
   // ── 3. GNAME backfill (rated-good chưa check + domain chờ Wayback → re-check) ──
-  const gname = await gnameBackfill(checked);
+  const gname: GnameResult = opts.waybackOnly
+    ? { backlog: prev.backlog.gname, kicked: 0, jobId: null }
+    : await gnameBackfill(checked);
 
   // ── 4. DISPATCH Wayback (DEEP, batch nhỏ, AUTO-RETRY leo thang) ───────────────
   // "Mọi domain phải có kết quả quét sâu" → run TIMED-OUT/FAILED không làm mất domain:
@@ -225,7 +232,14 @@ export async function dispatchTick(): Promise<DispatchSummary> {
   const remainingToWayback = dispatchable.length - dispatchedDomains;
 
   // ── 5. HEARTBEAT ─────────────────────────────────────────────────────────────
-  const state: ReconcileState = {
+  // Tick nhẹ: chỉ cập nhật phần Wayback, giữ nguyên heartbeat + số liệu rating/Gname của tick đầy đủ.
+  const state: ReconcileState = opts.waybackOnly ? {
+    ...prev,
+    backlog: { ...prev.backlog, wayback: remainingToWayback },
+    waybackPaused,
+    alerts,
+    last: { ...prev.last, waybackActive: active + dispatched },
+  } : {
     lastTickAt: new Date().toISOString(),
     tookMs: Date.now() - startedAt,
     backlog: { rating: rating.backlog, gname: gname.backlog, wayback: remainingToWayback },

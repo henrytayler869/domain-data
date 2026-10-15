@@ -19,7 +19,9 @@ export async function POST(request: NextRequest) {
     const provided = bearer || request.headers.get("x-n8n-token") || "";
     if (provided !== expected) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const summary = await dispatchTick();
+    // ?only=wayback → tick nhẹ (cron 5'): chỉ sweep + nạp slot Wayback, bỏ rating/Gname.
+    const waybackOnly = request.nextUrl.searchParams.get("only") === "wayback";
+    const summary = await dispatchTick({ waybackOnly });
     return NextResponse.json({ ok: true, ...summary });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : "Unknown error" }, { status: 500 });
