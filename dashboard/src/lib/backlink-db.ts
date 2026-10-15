@@ -109,6 +109,29 @@ export async function upsertEntries(entries: DbEntry[]): Promise<{ added: number
   return { added: total - before, total };
 }
 
+/**
+ * Bổ sung ref (DR lấy từ Ahrefs) vào backlink_db: domain chưa có → thêm; đã có → chỉ
+ * NÂNG DR khi giá trị mới cao hơn (không bao giờ hạ). Không đụng traffic. Trả số dòng ghi.
+ */
+export async function mergeRefsKeepMax(entries: { domain: string; dr: number }[]): Promise<number> {
+  const best = new Map<string, number>();
+  for (const e of entries) {
+    const d = e.domain.toLowerCase().trim();
+    const dr = Math.round(Number(e.dr) || 0);
+    if (d && dr > (best.get(d) ?? -1)) best.set(d, dr);
+  }
+  if (!best.size) return 0;
+  const sb = supabase();
+  const { data, error } = await sb.from(TABLE).select("domain,dr").in("domain", [...best.keys()]);
+  if (error) throw new Error(error.message);
+  const existing = new Map(((data ?? []) as { domain: string; dr: number }[]).map((r) => [r.domain, r.dr]));
+  const rows = [...best].filter(([d, dr]) => dr > (existing.get(d) ?? -1)).map(([domain, dr]) => ({ domain, dr }));
+  if (!rows.length) return 0;
+  const { error: upErr } = await sb.from(TABLE).upsert(rows, { onConflict: "domain" });
+  if (upErr) throw new Error(upErr.message);
+  return rows.length;
+}
+
 export async function deleteEntry(domain: string): Promise<number> {
   const sb = supabase();
   const target = domain.toLowerCase().trim();

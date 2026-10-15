@@ -10,7 +10,7 @@
  * Creds đọc từ Settings: ahrefsMcpTokens[] (ưu tiên, theo thứ tự) + DataForSEO + OpenAI key.
  */
 
-import { readDb, readTrafficMap } from "./backlink-db";
+import { readDb, readTrafficMap, mergeRefsKeepMax } from "./backlink-db";
 import { rootDomain } from "./root-domain";
 import { REF_BLACKLIST_SET } from "./picker-csv";
 import { readAll as readRefBlacklist } from "./ref-blacklist-db";
@@ -23,7 +23,8 @@ const DFS_ANCHORS = "https://api.dataforseo.com/v3/backlinks/anchors/live";
 const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 const OPENAI_MODEL = "gpt-4o-mini";
 const CONCURRENCY = 5;
-const MIN_DR = 70;                              // ref DR≥70 = ĐK1 (>90) hoặc ĐK2 (70-89)
+const MIN_DR = 70;
+const BACKLINK_DB_ADD_DR = 90;                // ref Ahrefs DR > ngưỡng này → bổ sung vào backlink_db                              // ref DR≥70 = ĐK1 (>90) hoặc ĐK2 (70-89)
 
 // Prompt phân loại (giữ nguyên tiêu chí từ thời N8N).
 const SYSTEM_PROMPT = `Bạn phân loại chất lượng aged domain dựa trên hồ sơ Referring Domain (DR đã đối chiếu DB) + Anchor text. Trả về DUY NHẤT 1 JSON object (không markdown, không \`\`\`), format:
@@ -135,6 +136,14 @@ async function rateViaAhrefs(domains: string[], token: string, apiKey: string, b
       matched = refs.filter((r) => !r.isSpam && !blacklist.has(r.domain)).map((r) => ({ domain: r.domain, dr: r.dr }));
     } catch (e) { apiError = e instanceof Error ? e.message : "ahrefs refdomains error"; }
     if (apiError && AHREFS_QUOTA_RE.test(apiError)) { exhausted = true; leftover.push(domain); throw new SkipDomain(); }
+
+    // Ref DR>90 (sạch, Ahrefs có DR sẵn) → bổ sung backlink_db để nhánh DataForSEO (không có DR)
+    // cũng khớp được. Chỉ thêm mới / nâng DR, không hạ. Lỗi chỉ log, không ảnh hưởng chấm rating.
+    const highDr = matched.filter((m) => m.dr > BACKLINK_DB_ADD_DR);
+    if (highDr.length) {
+      await mergeRefsKeepMax(highDr).catch((e) =>
+        console.error(`[rating] mergeRefsKeepMax ${domain}: ${e instanceof Error ? e.message : e}`));
+    }
 
     let anchorsCompact = "";
     if (!apiError && matched.length) {
