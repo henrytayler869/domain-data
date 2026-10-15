@@ -19,6 +19,9 @@ export interface Settings {
   n8nWebhookUrl: string;      // webhook N8N nhận domain Clean → DataForSEO (legacy; rating giờ chạy trong webapp)
   anthropicApiKey: string;    // stored server-side only — dùng cho rating (Claude Haiku) chạy thẳng trong webapp
   openaiApiKey: string;       // stored server-side only — AI chính của Wayback actor; webapp chỉ dùng để xem credit
+  openaiAdminKey: string;     // stored server-side only — Admin key (sk-admin-…) đọc /v1/organization/costs để tính số dư
+  openaiBaselineUsd: string;  // số dư OpenAI user nhập (trang billing) — số dư hiện tại = số này − chi phí từ openaiBaselineAt
+  openaiBaselineAt: string;   // ISO — lúc nhập số dư trên (server tự đặt khi lưu)
   ahrefsToken1: string;       // MCP token Ahrefs #1 (ưu tiên) — server-side only
   ahrefsToken2: string;       // MCP token Ahrefs #2 (dự phòng) — server-side only
   ahrefsToken3: string;       // MCP token Ahrefs #3 (dự phòng) — server-side only
@@ -30,6 +33,9 @@ const envDefaults = (): Settings => ({
   n8nWebhookUrl: process.env.N8N_WEBHOOK_URL ?? "",
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
   openaiApiKey: process.env.OPENAI_API_KEY ?? "",
+  openaiAdminKey: process.env.OPENAI_ADMIN_KEY ?? "",
+  openaiBaselineUsd: "",
+  openaiBaselineAt: "",
   ahrefsToken1: process.env.AHREFS_MCP_TOKEN_1 ?? "",
   ahrefsToken2: process.env.AHREFS_MCP_TOKEN_2 ?? "",
   ahrefsToken3: process.env.AHREFS_MCP_TOKEN_3 ?? "",
@@ -40,13 +46,16 @@ async function readFromSupabase(): Promise<Settings | null> {
   const { data, error } = await sb.from(TABLE).select("value").eq("key", KEY).maybeSingle();
   if (error) throw new Error(error.message);
   const v = (data?.value ?? null) as Partial<Settings> | null;
-  if (!v || (!v.dataforseoLogin && !v.dataforseoPassword && !v.n8nWebhookUrl && !v.anthropicApiKey && !v.openaiApiKey && !v.ahrefsToken1 && !v.ahrefsToken2 && !v.ahrefsToken3)) return null;
+  if (!v || (!v.dataforseoLogin && !v.dataforseoPassword && !v.n8nWebhookUrl && !v.anthropicApiKey && !v.openaiApiKey && !v.openaiAdminKey && !v.ahrefsToken1 && !v.ahrefsToken2 && !v.ahrefsToken3)) return null;
   return {
     dataforseoLogin: v.dataforseoLogin ?? "",
     dataforseoPassword: v.dataforseoPassword ?? "",
     n8nWebhookUrl: v.n8nWebhookUrl ?? "",
     anthropicApiKey: v.anthropicApiKey ?? "",
     openaiApiKey: v.openaiApiKey ?? "",
+    openaiAdminKey: v.openaiAdminKey ?? "",
+    openaiBaselineUsd: v.openaiBaselineUsd ?? "",
+    openaiBaselineAt: v.openaiBaselineAt ?? "",
     ahrefsToken1: v.ahrefsToken1 ?? "",
     ahrefsToken2: v.ahrefsToken2 ?? "",
     ahrefsToken3: v.ahrefsToken3 ?? "",
@@ -89,6 +98,9 @@ async function readLegacyApify(): Promise<Settings | null> {
       n8nWebhookUrl: "",
       anthropicApiKey: "",
       openaiApiKey: "",
+      openaiAdminKey: "",
+      openaiBaselineUsd: "",
+      openaiBaselineAt: "",
       ahrefsToken1: "",
       ahrefsToken2: "",
       ahrefsToken3: "",
@@ -133,6 +145,11 @@ export async function writeSettings(settings: Partial<Settings>): Promise<void> 
         : current.anthropicApiKey,
     openaiApiKey:
       settings.openaiApiKey?.trim() ? settings.openaiApiKey : current.openaiApiKey,
+    openaiAdminKey:
+      settings.openaiAdminKey?.trim() ? settings.openaiAdminKey : current.openaiAdminKey,
+    // Nhập số dư mới → mốc thời gian = lúc lưu (chi phí trước mốc đã nằm trong số dư).
+    openaiBaselineUsd: settings.openaiBaselineUsd?.trim() ? settings.openaiBaselineUsd.trim() : current.openaiBaselineUsd,
+    openaiBaselineAt: settings.openaiBaselineUsd?.trim() ? new Date().toISOString() : current.openaiBaselineAt,
     ahrefsToken1:
       settings.ahrefsToken1?.trim() ? settings.ahrefsToken1 : current.ahrefsToken1,
     ahrefsToken2:

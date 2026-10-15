@@ -32,6 +32,10 @@ interface SettingsData {
   anthropicKeyHint: string;
   hasOpenaiKey: boolean;
   openaiKeyHint: string;
+  hasOpenaiAdminKey: boolean;
+  openaiAdminKeyHint: string;
+  openaiBaselineUsd: string;
+  openaiBaselineAt: string;
   hasAhrefs1: boolean;
   ahrefs1Hint: string;
   hasAhrefs2: boolean;
@@ -102,6 +106,8 @@ export default function SettingsPage() {
   const [showOpenaiKey, setShowOpenaiKey] = useState(false);
   const [savingOpenai, setSavingOpenai] = useState(false);
   const [openaiStatus, setOpenaiStatus] = useState<"idle" | "ok" | "error">("idle");
+  const [openaiAdminKey, setOpenaiAdminKey] = useState("");
+  const [openaiBaseline, setOpenaiBaseline] = useState("");
 
   const [ahrefs1, setAhrefs1] = useState("");
   const [ahrefs2, setAhrefs2] = useState("");
@@ -242,13 +248,20 @@ export default function SettingsPage() {
     } catch { setAnthropicStatus("error"); } finally { setSavingAnthropic(false); }
   };
 
+  const openaiDirty = !!(openaiKey.trim() || openaiAdminKey.trim() || openaiBaseline.trim());
   const saveOpenai = async () => {
-    if (!openaiKey.trim()) return;
+    if (!openaiDirty) return;
+    if (openaiBaseline.trim() && !Number.isFinite(Number(openaiBaseline.trim()))) { setOpenaiStatus("error"); return; }
     setSavingOpenai(true); setOpenaiStatus("idle");
     try {
-      const res = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ openaiApiKey: openaiKey.trim() }) });
+      // Chỉ gửi field có nhập — server giữ nguyên field để trống.
+      const body: Record<string, string> = {};
+      if (openaiKey.trim()) body.openaiApiKey = openaiKey.trim();
+      if (openaiAdminKey.trim()) body.openaiAdminKey = openaiAdminKey.trim();
+      if (openaiBaseline.trim()) body.openaiBaselineUsd = openaiBaseline.trim();
+      const res = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (!res.ok) throw new Error((await res.json()).error);
-      setOpenaiStatus("ok"); setOpenaiKey(""); await loadSettings(); setTimeout(() => setOpenaiStatus("idle"), 3000);
+      setOpenaiStatus("ok"); setOpenaiKey(""); setOpenaiAdminKey(""); setOpenaiBaseline(""); await loadSettings(); setTimeout(() => setOpenaiStatus("idle"), 3000);
     } catch { setOpenaiStatus("error"); } finally { setSavingOpenai(false); }
   };
 
@@ -564,9 +577,37 @@ export default function SettingsPage() {
             )}
             <p className="text-xs text-muted-foreground mt-1.5">Lấy tại <a className="text-primary underline" href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">platform.openai.com</a>. Chỉ lưu server-side, không trả lại client.</p>
           </div>
+          <div>
+            <label className="block text-sm font-medium mb-1.5">Admin key (để hiện số tiền)</label>
+            <Input
+              type="password"
+              value={openaiAdminKey}
+              onChange={(e) => setOpenaiAdminKey(e.target.value)}
+              placeholder={saved?.hasOpenaiAdminKey ? "Để trống = giữ nguyên" : "sk-admin-..."}
+              autoComplete="off"
+            />
+            {saved?.hasOpenaiAdminKey && (
+              <p className="text-xs text-muted-foreground mt-1.5">Hiện lưu: <code className="font-mono bg-muted px-1 rounded">{saved.openaiAdminKeyHint}</code></p>
+            )}
+            <p className="text-xs text-muted-foreground mt-1.5">OpenAI không có API xem số dư — Admin key đọc chi phí đã tiêu. Tạo tại <a className="text-primary underline" href="https://platform.openai.com/settings/organization/admin-keys" target="_blank" rel="noopener noreferrer">Admin keys</a> (quyền Usage: Read là đủ).</p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1.5">Số dư hiện tại ($)</label>
+            <Input
+              inputMode="decimal"
+              value={openaiBaseline}
+              onChange={(e) => setOpenaiBaseline(e.target.value)}
+              placeholder={saved?.openaiBaselineUsd ? `Đang dùng $${saved.openaiBaselineUsd} — nhập số mới khi nạp thêm` : "vd: 25.40"}
+              autoComplete="off"
+            />
+            {saved?.openaiBaselineUsd && saved.openaiBaselineAt && (
+              <p className="text-xs text-muted-foreground mt-1.5">Mốc: ${saved.openaiBaselineUsd} lúc {new Date(saved.openaiBaselineAt).toLocaleString("vi-VN")}</p>
+            )}
+            <p className="text-xs text-muted-foreground mt-1.5">Chép từ <a className="text-primary underline" href="https://platform.openai.com/settings/organization/billing/overview" target="_blank" rel="noopener noreferrer">trang Billing</a>. Card hiện ≈ số này − chi phí từ lúc lưu. Nạp thêm tiền thì nhập lại.</p>
+          </div>
           {openaiStatus === "ok" && <div className="flex items-center gap-2 text-sm text-emerald-600"><CheckCircle2 className="h-4 w-4" />Đã lưu</div>}
           {openaiStatus === "error" && <div className="flex items-center gap-2 text-sm text-destructive"><XCircle className="h-4 w-4" />Lưu lỗi</div>}
-          <Button onClick={saveOpenai} disabled={savingOpenai || !openaiKey.trim()} className="gap-2">
+          <Button onClick={saveOpenai} disabled={savingOpenai || !openaiDirty} className="gap-2">
             {savingOpenai ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Lưu
           </Button>
         </div>

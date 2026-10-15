@@ -28,11 +28,19 @@ export interface ApifyCredit {
 export type AiProvider = "claude" | "openai";
 export interface AiStatus { ok: boolean; status: "ok" | "no_credit" | "invalid_key" | "not_configured" | "error"; error: string | null }
 
+/** Số dư OpenAI ước tính = số dư user nhập − chi phí từ lúc nhập (Admin API /organization/costs). */
+export interface OpenaiBalance {
+  balanceUsd: number | null;   // null = chưa nhập số dư (vẫn có spentUsd nếu có admin key)
+  spentUsd: number | null;     // chi phí từ mốc (hoặc từ đầu tháng nếu chưa có mốc)
+  since: string | null;        // ISO — mốc tính chi phí
+  error: string | null;
+}
+
 export interface PartnerCredits {
   fetchedAt: string;
   credsHash?: string;   // dấu vân tay các key lúc lấy số — đổi key trong Settings → cache hết hạn ngay
   apify: { ok: boolean; accounts: ApifyCredit[]; error: string | null };
-  ai: { active: AiProvider | null; claude: AiStatus; openai: AiStatus };
+  ai: { active: AiProvider | null; claude: AiStatus; openai: AiStatus; openaiBalance: OpenaiBalance | null };
   dataforseo: { ok: boolean; balanceUsd: number | null; error: string | null };
 }
 
@@ -107,6 +115,43 @@ async function fetchOpenai(apiKey: string): Promise<AiStatus> {
   }
 }
 
+/** Tổng chi phí OpenAI (USD) từ startSec đến nay. Bucket theo ngày UTC → tính cả ngày của mốc (ước tính dư, an toàn). */
+async function openaiSpentSince(adminKey: string, startSec: number): Promise<number> {
+  let total = 0;
+  let page: string | null = null;
+  for (let i = 0; i < 20; i++) {
+    const q = new URLSearchParams({ start_time: String(startSec), bucket_width: "1d", limit: "180" });
+    if (page) q.set("page", page);
+    const r = await fetch(`https://api.openai.com/v1/organization/costs?${q}`, {
+      headers: { Authorization: `Bearer ${adminKey}` },
+      cache: "no-store",
+      signal: AbortSignal.timeout(15_000),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body?.error?.message ?? `HTTP ${r.status}`);
+    for (const b of body.data ?? []) for (const x of b.results ?? []) total += Number(x?.amount?.value) || 0;
+    if (!body.has_more || !body.next_page) break;
+    page = body.next_page;
+  }
+  return total;
+}
+
+async function fetchOpenaiBalance(adminKey: string, baselineUsd: string, baselineAt: string): Promise<OpenaiBalance | null> {
+  if (!adminKey) return null;
+  const baseline = Number(baselineUsd);
+  const hasBaseline = baselineUsd.trim() !== "" && Number.isFinite(baseline) && !!baselineAt;
+  const now = new Date();
+  // Có mốc → đầu ngày UTC của mốc; chưa có → đầu tháng UTC (hiện "đã tiêu tháng này").
+  const from = hasBaseline ? new Date(baselineAt) : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const startSec = Math.floor(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()) / 1000);
+  try {
+    const spent = await openaiSpentSince(adminKey, startSec);
+    return { balanceUsd: hasBaseline ? baseline - spent : null, spentUsd: spent, since: from.toISOString(), error: null };
+  } catch (e) {
+    return { balanceUsd: null, spentUsd: null, since: from.toISOString(), error: errMsg(e) };
+  }
+}
+
 async function fetchDataforseo(login: string, password: string): Promise<PartnerCredits["dataforseo"]> {
   if (!login || !password) return { ok: false, balanceUsd: null, error: "Chưa cấu hình DataforSEO" };
   try {
@@ -138,20 +183,21 @@ async function readCache(): Promise<PartnerCredits | null> {
 export async function getPartnerCredits(force = false): Promise<PartnerCredits> {
   const [cached, s, apifyCfg] = await Promise.all([readCache(), readSettings(), readApifyConfig()]);
   const credsHash = createHash("sha256")
-    .update(JSON.stringify([s.anthropicApiKey, s.openaiApiKey, s.dataforseoLogin, s.dataforseoPassword, apifyCfg.activeId, apifyCfg.accounts.map((a) => a.token)]))
+    .update(JSON.stringify([s.anthropicApiKey, s.openaiApiKey, s.openaiAdminKey, s.openaiBaselineUsd, s.openaiBaselineAt, s.dataforseoLogin, s.dataforseoPassword, apifyCfg.activeId, apifyCfg.accounts.map((a) => a.token)]))
     .digest("hex");
   // Cache còn hạn khi: chưa quá 15', cùng bộ key, và đã có field ai (bản cũ trước khi có OpenAI thì không).
   if (!force && cached?.ai && cached.credsHash === credsHash && Date.now() - new Date(cached.fetchedAt).getTime() < CREDITS_TTL_MS) return cached;
 
-  const [apify, claude, openai, dataforseo] = await Promise.all([
+  const [apify, claude, openai, openaiBalance, dataforseo] = await Promise.all([
     fetchApify(apifyCfg),
     fetchClaude(s.anthropicApiKey),
     fetchOpenai(s.openaiApiKey),
+    fetchOpenaiBalance(s.openaiAdminKey, s.openaiBaselineUsd, s.openaiBaselineAt),
     fetchDataforseo(s.dataforseoLogin, s.dataforseoPassword),
   ]);
   // Cùng thứ tự với Wayback actor: OpenAI chính, Claude dự phòng.
   const active: AiProvider | null = openai.ok ? "openai" : claude.ok ? "claude" : null;
-  const fresh: PartnerCredits = { fetchedAt: new Date().toISOString(), credsHash, apify, ai: { active, claude, openai }, dataforseo };
+  const fresh: PartnerCredits = { fetchedAt: new Date().toISOString(), credsHash, apify, ai: { active, claude, openai, openaiBalance }, dataforseo };
   try {
     await supabase().from(TABLE).upsert({ key: KEY, value: fresh, updated_at: fresh.fetchedAt }, { onConflict: "key" });
   } catch { /* không lưu được cache — vẫn trả số mới */ }
