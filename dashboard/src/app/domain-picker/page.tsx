@@ -734,10 +734,11 @@ export default function DomainPickerPage() {
     lastTickAt: string | null; ageMin: number | null; healthy: boolean;
     backlog: { rating: number; gname: number; wayback: number };
     last: { ratingSent: number; gnameKicked: number; waybackDispatched: number; waybackActive?: number; ingestedResults: number };
+    lastHour?: { wayback: number; gname: number; rated: number } | null;
   } | null>(null);
   const [bgBuyable, setBgBuyable] = useState<number | null>(null);
   useEffect(() => {
-    const loadStatus = () => fetch("/api/pipeline/status", { cache: "no-store" })
+    const loadStatus = () => fetch("/api/pipeline/status?throughput=1", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null)).then((s) => { if (s && !s.error) setBg(s); }).catch(() => {});
     // Đếm domain đáng mua (giống tiêu chí Bước 6: Tốt/TB + ≥1 ref DR≥70). Query nặng hơn → 5 phút/lần.
     const loadBuyable = () => fetch("/api/picker/resume?hours=72", { cache: "no-store" })
@@ -966,19 +967,23 @@ export default function DomainPickerPage() {
               </Button>
             )}
           </div>
-          <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            {/* Số "xong trong 1 giờ" nhảy liên tục; số "chờ" là hàng đợi (vào ≈ ra nên gần như đứng yên). */}
             {([
-              ["Wayback đang chạy", bg.last.waybackActive ?? bg.last.waybackDispatched, "text-blue-600"],
-              ["Chờ Wayback", bg.backlog.wayback, "text-sky-600"],
-              ["Chờ check Gname", bg.backlog.gname, "text-amber-600"],
-              ["Chờ chấm rating", bg.backlog.rating, "text-violet-600"],
-              ["Chấm rating (tick trước)", bg.last.ratingSent, "text-violet-600"],
-              ["Đáng mua (72h)", bgBuyable ?? 0, "text-emerald-600"],
-            ] as const).map(([l, v, c]) => (
-              <div key={l} className="rounded-lg border px-3 py-2"><p className="text-[11px] text-muted-foreground uppercase">{l}</p><p className={cn("text-xl font-bold", c)}>{v.toLocaleString()}</p></div>
+              ["Wayback đang chạy", bg.last.waybackActive ?? bg.last.waybackDispatched, "text-blue-600", null],
+              ["Wayback xong (1 giờ)", bg.lastHour?.wayback ?? null, "text-sky-600", `chờ ${bg.backlog.wayback.toLocaleString()}`],
+              ["Check Gname (1 giờ)", bg.lastHour?.gname ?? null, "text-amber-600", `chờ ${bg.backlog.gname.toLocaleString()}`],
+              ["Chấm rating (1 giờ)", bg.lastHour?.rated ?? null, "text-violet-600", `chờ ${bg.backlog.rating.toLocaleString()}`],
+              ["Đáng mua (72h)", bgBuyable ?? 0, "text-emerald-600", null],
+            ] as const).map(([l, v, c, sub]) => (
+              <div key={l} className="rounded-lg border px-3 py-2">
+                <p className="text-[11px] text-muted-foreground uppercase">{l}</p>
+                <p className={cn("text-xl font-bold", c)}>{v == null ? "—" : v.toLocaleString()}</p>
+                {sub && <p className="text-[11px] text-muted-foreground">{sub}</p>}
+              </div>
             ))}
           </div>
-          <p className="text-[11px] text-muted-foreground">Pipeline nền chạy trên VPS kể cả khi không mở trang. Tick trước: gửi Wayback {bg.last.waybackDispatched} · nhận {bg.last.ingestedResults} kết quả Wayback · đẩy {bg.last.gnameKicked} domain sang check Gname · chấm {bg.last.ratingSent} rating. Các ô bên dưới chỉ tính lô bạn nhập trong trang này.</p>
+          <p className="text-[11px] text-muted-foreground">Pipeline nền chạy trên VPS kể cả khi không mở trang. Tick trước: gửi Wayback {bg.last.waybackDispatched} · nhận {bg.last.ingestedResults} kết quả Wayback · đẩy {bg.last.gnameKicked} domain sang check Gname · chấm {bg.last.ratingSent} rating. “Chờ” là hàng đợi: Gname liên tục đưa domain mua được vào hàng chờ Wayback và check lại domain chờ quá 24h, nên số chờ gần như đứng yên — xem số “xong (1 giờ)” để biết pipeline có chạy. Các ô bên dưới chỉ tính lô bạn nhập trong trang này.</p>
         </div>
       )}
 
