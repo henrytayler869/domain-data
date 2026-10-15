@@ -24,6 +24,7 @@ export async function readDb(): Promise<DbEntry[]> {
       .from(TABLE)
       .select("domain,dr")
       .order("dr", { ascending: false })
+      .order("domain", { ascending: true }) // tiebreak theo khoá chính: ORDER BY phải duy nhất thì range() mới không sót/trùng dòng giữa các trang
       .range(offset, offset + PAGE - 1);
     if (error) throw new Error(error.message);
     if (!data || data.length === 0) break;
@@ -46,6 +47,7 @@ export async function readTrafficMap(): Promise<{ domain: string; traffic: numbe
       .from(TABLE)
       .select("domain,traffic")
       .not("traffic", "is", null)
+      .order("domain", { ascending: true }) // ORDER BY theo khoá chính: không có thì range() sót/trùng dòng giữa các trang
       .range(offset, offset + PAGE - 1);
     if (error) throw new Error(error.message);
     if (!data || data.length === 0) break;

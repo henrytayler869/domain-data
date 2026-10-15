@@ -27,7 +27,7 @@ export async function POST() {
     {
       const PAGE = 1000; let from = 0;
       for (;;) {
-        const { data, error } = await sb.from("target_assessment").select("target_domain").ilike("category", "%API%error%").is("excluded_at", null).range(from, from + PAGE - 1);
+        const { data, error } = await sb.from("target_assessment").select("target_domain").ilike("category", "%API%error%").is("excluded_at", null).order("target_domain").range(from, from + PAGE - 1);
         if (error) throw new Error(error.message);
         if (!data || !data.length) break;
         errRows.push(...(data as typeof errRows));

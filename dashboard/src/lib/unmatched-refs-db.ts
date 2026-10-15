@@ -70,6 +70,7 @@ export async function readUnmatchedRefs(): Promise<UnmatchedRef[]> {
       .from(TABLE)
       .select("*")
       .order("seen_count", { ascending: false })
+      .order("domain", { ascending: true }) // tiebreak theo khoá chính: ORDER BY phải duy nhất thì range() mới không sót/trùng dòng giữa các trang
       .range(offset, offset + PAGE - 1);
     if (error) throw new Error(error.message);
     if (!data || data.length === 0) break;

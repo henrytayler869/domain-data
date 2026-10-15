@@ -34,6 +34,7 @@ export async function readAll(): Promise<RefBlacklistEntry[]> {
       .from(TABLE)
       .select("*")
       .order("added_at", { ascending: false })
+      .order("domain", { ascending: true }) // tiebreak theo khoá chính: ORDER BY phải duy nhất thì range() mới không sót/trùng dòng giữa các trang
       .range(offset, offset + PAGE - 1);
     if (error) throw new Error(error.message);
     if (!data || data.length === 0) break;

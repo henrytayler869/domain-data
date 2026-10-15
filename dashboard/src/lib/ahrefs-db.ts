@@ -61,6 +61,7 @@ export async function readAll(): Promise<AhrefsResultRow[]> {
       .select("*")
       .order("target_domain", { ascending: true })
       .order("domain_rating", { ascending: false })
+      .order("ref_domain", { ascending: true }) // tiebreak theo khoá chính: ORDER BY phải duy nhất thì range() mới không sót/trùng dòng giữa các trang
       .range(offset, offset + PAGE - 1);
     if (error) throw new Error(error.message);
     if (!data || data.length === 0) break;
@@ -98,6 +99,7 @@ async function readAllAssessments(): Promise<Map<string, AssessmentDbRow>> {
     const { data, error } = await sb
       .from(ASSESS_TABLE)
       .select("*")
+      .order("target_domain", { ascending: true }) // ORDER BY theo khoá chính: không có thì range() sót/trùng dòng giữa các trang
       .range(offset, offset + PAGE - 1);
     if (error) throw new Error(error.message);
     if (!data || data.length === 0) break;
@@ -195,6 +197,7 @@ export async function readTargetSummaryFor(targetsRaw: string[]): Promise<Target
         .select("*")
         .in("target_domain", slice)
         .order("target_domain", { ascending: true })
+        .order("ref_domain", { ascending: true }) // tiebreak theo khoá chính: ORDER BY phải duy nhất thì range() mới không sót/trùng dòng giữa các trang
         .range(offset, offset + PAGE - 1);
       if (error) throw new Error(error.message);
       if (!data || data.length === 0) break;
@@ -308,6 +311,7 @@ export async function listCheckedTargets(): Promise<string[]> {
     const { data, error } = await sb
       .from(TABLE)
       .select("target_domain")
+      .order("target_domain", { ascending: true }).order("ref_domain", { ascending: true }) // ORDER BY theo khoá chính: không có thì range() sót/trùng dòng giữa các trang
       .range(offset, offset + PAGE - 1);
     if (error) throw new Error(error.message);
     if (!data || data.length === 0) break;
@@ -327,6 +331,7 @@ export async function listCheckedTargets(): Promise<string[]> {
     const { data, error } = await sb
       .from(ASSESS_TABLE)
       .select("target_domain,category,excluded_at")
+      .order("target_domain", { ascending: true }) // ORDER BY theo khoá chính: không có thì range() sót/trùng dòng giữa các trang
       .range(offset, offset + PAGE - 1);
     if (error) throw new Error(error.message);
     if (!data || data.length === 0) break;
@@ -370,7 +375,7 @@ export async function listCheckedAmong(targetsRaw: string[]): Promise<string[]> 
     while (true) {
       const { data, error } = await sb
         .from(TABLE).select("target_domain").in("target_domain", slice)
-        .order("target_domain", { ascending: true }).range(offset, offset + PAGE - 1);
+        .order("target_domain", { ascending: true }).order("ref_domain", { ascending: true }).range(offset, offset + PAGE - 1);
       if (error) throw new Error(error.message);
       if (!data || data.length === 0) break;
       for (const r of data as { target_domain: string }[]) refSet.add(r.target_domain);

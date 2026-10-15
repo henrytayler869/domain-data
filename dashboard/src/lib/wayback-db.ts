@@ -100,6 +100,7 @@ export async function readAllResults(): Promise<WaybackRow[]> {
       .from(RESULTS_TABLE)
       .select("*")
       .order("checked_at", { ascending: false })
+      .order("target_domain", { ascending: true }) // tiebreak theo khoá chính: ORDER BY phải duy nhất thì range() mới không sót/trùng dòng giữa các trang
       .range(offset, offset + PAGE - 1);
     if (error) throw new Error(error.message);
     if (!data || data.length === 0) break;
@@ -173,6 +174,7 @@ export async function listCheckedDomains(): Promise<CheckedDomain[]> {
     const { data, error } = await sb
       .from(RESULTS_TABLE)
       .select("target_domain,has_betting,has_adult,snapshot_count,error_reason")
+      .order("target_domain", { ascending: true }) // ORDER BY theo khoá chính: không có thì range() sót/trùng dòng giữa các trang
       .range(offset, offset + PAGE - 1);
     if (error) return out; // bảng có thể chưa tồn tại
     if (!data || data.length === 0) break;
