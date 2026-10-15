@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { RefreshCw, Loader2, ExternalLink, Send, Save, CheckCircle2, AlertTriangle, XCircle, ClipboardCheck } from "lucide-react";
+import { RefreshCw, Loader2, ExternalLink, Save, CheckCircle2, AlertTriangle, XCircle, ClipboardCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -15,7 +15,6 @@ interface Readiness {
   costUsd: { apify: number; openai: number; dfsIfNoAhrefs: number; total: number };
   tools: ToolRow[]; checks: CheckRow[];
 }
-interface Ops { hasTelegramToken: boolean; telegramTokenHint: string; telegramChatId: string; vpsExpiresAt: string | null }
 
 const LEVEL_UI: Record<Level, { icon: typeof CheckCircle2; cls: string; text: string }> = {
   ok: { icon: CheckCircle2, cls: "text-emerald-600", text: "Đủ" },
@@ -36,9 +35,6 @@ export default function CampaignPage() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const [ops, setOps] = useState<Ops | null>(null);
-  const [tgToken, setTgToken] = useState("");
-  const [tgChat, setTgChat] = useState("");
   const [vpsDate, setVpsDate] = useState("");
   const [opsMsg, setOpsMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -58,7 +54,7 @@ export default function CampaignPage() {
     try {
       const d = await (await fetch("/api/ops", { cache: "no-store" })).json();
       if (d.error) return;
-      setOps(d); setTgChat(d.telegramChatId ?? ""); setVpsDate(d.vpsExpiresAt ?? "");
+      setVpsDate(d.vpsExpiresAt ?? "");
     } catch { /* ignore */ }
   }, []);
 
@@ -74,17 +70,9 @@ export default function CampaignPage() {
       const r = await fetch("/api/ops", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error);
-      setOpsMsg({ ok: true, text: okText }); setTgToken(""); await loadOps(); load();
+      setOpsMsg({ ok: true, text: okText }); await loadOps(); load();
     } catch (e) { setOpsMsg({ ok: false, text: e instanceof Error ? e.message : "Lưu lỗi" }); }
     finally { setBusy(false); }
-  };
-
-  const testTelegram = async () => {
-    setBusy(true); setOpsMsg(null);
-    try {
-      const d = await (await fetch("/api/ops/telegram-test", { method: "POST" })).json();
-      setOpsMsg(d.ok ? { ok: true, text: "Đã gửi tin thử — kiểm tra Telegram" } : { ok: false, text: d.error ?? "Gửi lỗi" });
-    } finally { setBusy(false); }
   };
 
   const bad = data ? [...data.tools, ...data.checks].filter((x) => x.level === "bad").length : 0;
@@ -171,26 +159,8 @@ export default function CampaignPage() {
         </div>
       )}
 
-      {/* Telegram + VPS */}
+      {/* Hạn VPS */}
       <div className="grid md:grid-cols-2 gap-5">
-        <div className="rounded-xl border bg-card p-4 flex flex-col gap-3">
-          <div>
-            <p className="text-sm font-medium">Cảnh báo Telegram</p>
-            <p className="text-xs text-muted-foreground">Báo khi sắp hết tiền (Apify, OpenAI, Ahrefs, DataForSEO), Wayback/pipeline dừng, VPS sắp hết hạn, và khi đợt quét xong.</p>
-          </div>
-          <div>
-            <label className="block text-xs font-medium mb-1">Bot token</label>
-            <Input type="password" value={tgToken} onChange={(e) => setTgToken(e.target.value)} placeholder={ops?.hasTelegramToken ? `Đang lưu ${ops.telegramTokenHint} — để trống = giữ nguyên` : "123456:ABC… (lấy từ @BotFather)"} />
-          </div>
-          <div>
-            <label className="block text-xs font-medium mb-1">Chat ID</label>
-            <Input value={tgChat} onChange={(e) => setTgChat(e.target.value)} placeholder="vd 123456789 hoặc -100… (nhóm)" />
-          </div>
-          <div className="flex gap-2">
-            <Button size="sm" onClick={() => saveOps({ telegramBotToken: tgToken, telegramChatId: tgChat }, "Đã lưu Telegram")} disabled={busy} className="gap-1.5"><Save className="h-3.5 w-3.5" />Lưu</Button>
-            <Button size="sm" variant="outline" onClick={testTelegram} disabled={busy || !ops?.hasTelegramToken} className="gap-1.5"><Send className="h-3.5 w-3.5" />Gửi thử</Button>
-          </div>
-        </div>
         <div className="rounded-xl border bg-card p-4 flex flex-col gap-3">
           <div>
             <p className="text-sm font-medium">Hạn VPS</p>
@@ -206,9 +176,9 @@ export default function CampaignPage() {
       <div className="rounded-xl border bg-card p-4 text-sm flex flex-col gap-1.5">
         <p className="font-medium mb-1">Các bước chạy 1 đợt quét</p>
         <p>1. Nhập số domain ở trên → nạp tiền các dòng <b>Thiếu</b> (bấm “Nạp tiền”), rồi “Làm mới số dư” tới khi hết đỏ.</p>
-        <p>2. Kiểm tra vận hành đều <b>Đủ</b> (cron chạy, Gname kết nối, OpenAI key dùng được, Telegram đã cấu hình).</p>
+        <p>2. Kiểm tra vận hành đều <b>Đủ</b> (cron chạy, Gname kết nối, OpenAI key dùng được).</p>
         <p>3. Vào <b>Domain Picker</b> → dán/upload danh sách domain → <b>Chạy pipeline</b>. Có thể đóng trang, pipeline nền tự chạy tiếp.</p>
-        <p>4. Theo dõi khung <b>Pipeline nền</b> trên Domain Picker hoặc chờ Telegram. Khi có tin “Đợt quét đã xong” → Domain Picker → <b>Khôi phục từ DB</b> để xem domain đáng mua.</p>
+        <p>4. Theo dõi khung <b>Pipeline nền</b> trên Domain Picker (thanh đỏ trên đầu trang báo khi Wayback dừng / hết credit). Khi số “chờ Wayback” và “chờ chấm rating” về 0 là xong → Domain Picker → <b>Khôi phục từ DB</b> để xem domain đáng mua.</p>
         <p>5. Xong đợt: cân nhắc tạm ngưng các gói trả theo tháng (Apify, Ahrefs) tới đợt sau.</p>
       </div>
     </div>

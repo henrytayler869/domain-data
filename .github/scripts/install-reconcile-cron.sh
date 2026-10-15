@@ -16,25 +16,8 @@ set -euo pipefail
 export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
 # Tham số 1 = "wayback" → tick NHẸ (chỉ sweep + nạp slot Wayback); bỏ trống → tick đầy đủ.
 QS=""; [ "${1:-}" = "wayback" ] && QS="?only=wayback"
-
-# Tick lỗi (container chết / HTTP lỗi) → app không tự báo được → báo Telegram từ VPS.
-# Cần /root/telegram.env (TG_TOKEN=..., TG_CHAT=...). Tối đa 1 tin / 3 giờ.
-notify_fail() {
-  local ENVF="$HOME/telegram.env" STAMP="$HOME/.tick-fail-notified"
-  [ -f "$ENVF" ] || return 0
-  # shellcheck disable=SC1090
-  . "$ENVF"
-  [ -n "${TG_TOKEN:-}" ] && [ -n "${TG_CHAT:-}" ] || return 0
-  if [ -f "$STAMP" ] && [ $(( $(date +%s) - $(stat -c %Y "$STAMP") )) -lt 10800 ]; then return 0; fi
-  touch "$STAMP"
-  curl -s -m 15 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    --data-urlencode "chat_id=${TG_CHAT}" \
-    --data-urlencode "text=🔴 DomainData: tick pipeline LỖI trên VPS ($1). Dashboard có thể đã sập — kiểm tra: cd /opt/n8n && docker compose ps" >/dev/null || true
-}
-
 CID="$(cd /opt/n8n && docker compose ps -q dashboard)"
-[ -n "$CID" ] || { echo "$(date -Is) ERROR: dashboard container not found"; notify_fail "container dashboard không chạy"; exit 1; }
-trap 'notify_fail "gọi /api/n8n/wayback-dispatch thất bại"' ERR
+[ -n "$CID" ] || { echo "$(date -Is) ERROR: dashboard container not found"; exit 1; }
 docker exec -i -e TICK_QS="$QS" "$CID" node <<'NODE'
 const port = process.env.PORT || 3000;
 const token = process.env.N8N_API_TOKEN;

@@ -20,7 +20,6 @@
  */
 
 import { supabase } from "./supabase";
-import { runAlerts } from "./alerts";
 import { readGnamePricing } from "./gname-pricing";
 import { listPendingRuns, createRun } from "./wayback-db";
 import { pollAndIngestRun } from "./wayback-poll";
@@ -263,8 +262,6 @@ export async function dispatchTick(opts: { waybackOnly?: boolean } = {}): Promis
     },
   };
   await writeReconcileState(state).catch(() => {});
-  // Cảnh báo Telegram (sắp hết tiền / dừng / đợt quét xong) — tự nuốt lỗi, không làm hỏng tick.
-  await runAlerts(state, opts.waybackOnly ? "light" : "full");
 
   return {
     ingestedRuns, ingestedResults,

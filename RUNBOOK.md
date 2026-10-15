@@ -15,7 +15,7 @@ Danh sách domain ──► Gname: còn mua được? giá ≤ $26 ──► Way
 ```
 
 - Chạy **nền trên VPS** bằng cron — đóng trình duyệt vẫn chạy:
-  - tick đầy đủ mỗi 20 phút: chấm rating, check Gname, gửi Wayback, gửi cảnh báo Telegram
+  - tick đầy đủ mỗi 20 phút: chấm rating, check Gname, gửi Wayback
   - tick nhẹ mỗi 5 phút: nạp lại slot Wayback trống (40 run song song)
 - Tốc độ: Gname ~1.500 domain/giờ · Wayback ~200 domain/giờ (khâu chậm nhất) · rating ~100–2.000/giờ.
 
@@ -57,26 +57,26 @@ Trang **Chuẩn bị đợt quét** tính lại theo tỉ lệ thực tế trong
    - *Pipeline nền đang chạy* — nếu đỏ xem mục 7.3.
    - *Gname kết nối được* — nếu đỏ thường do **IP VPS chưa whitelist** (mục 7.2).
    - *OpenAI key dùng được*.
-   - *Telegram đã cấu hình* — để được báo khi có chuyện.
 4. Kiểm tra **hạn VPS** đủ cho số ngày chạy (+ vài ngày dư).
 
 ## 5. Chạy đợt quét
 
 1. **Domain Picker** → dán hoặc upload danh sách (Spamzilla export / text) → **Chạy pipeline**.
 2. Có thể đóng trang. Theo dõi ở khung **Pipeline nền** (Domain Picker) — số "xong (1 giờ)" phải nhảy; số "chờ" đứng yên là bình thường (hàng đợi vào ≈ ra).
-3. Telegram sẽ báo khi: sắp hết tiền, Wayback/pipeline dừng, VPS sắp hết hạn, **đợt quét xong**.
+3. Không có thông báo đẩy — **vào kiểm tra 1–2 lần/ngày**: thanh đỏ trên đầu mọi trang báo khi Wayback dừng / hết credit / cron ngừng; trang **Chuẩn bị đợt quét** → “Làm mới số dư” để xem còn đủ tiền không.
+4. **Xong đợt** khi “chờ Wayback” và “chờ chấm rating” trong khung Pipeline nền về 0.
 
-## 6. Khi nhận cảnh báo Telegram
+## 6. Khi thấy cảnh báo / thiếu tiền
 
-| Tin | Làm gì |
+| Dấu hiệu (thanh đỏ hoặc trang Chuẩn bị đợt quét) | Làm gì |
 |---|---|
-| 🔴 Wayback ĐANG DỪNG: Apify hết credit | Nạp Apify hoặc thêm tài khoản Apify khác trong Cài đặt. Tối đa 5 phút sau tự chạy lại. |
-| 🔴 Wayback ĐANG DỪNG: OpenAI hết credit / key lỗi | Nạp OpenAI. Đổi key thì đổi **cả 2 chỗ**: Cài đặt → OpenAI **và** env `OPENAI_API_KEY` trên actor Apify (rồi Build actor). |
-| 🟠 Apify sắp hết | Nạp trước khi về 0. |
-| 🟠 Ahrefs còn ít unit | Bình thường sẽ tự chuyển DataForSEO — đảm bảo DataForSEO có ≥ $10, hoặc chờ ngày làm mới unit. |
-| 🔴 Gname không kết nối được | Thêm IP VPS vào whitelist API trên Gname (mục 7.2). |
-| 🔴 Tick đầy đủ đã ngừng / tick pipeline LỖI trên VPS | Mục 7.3. |
-| 🎉 Đợt quét đã xong | Domain Picker → **Khôi phục từ DB** → chọn mua. Sau đó mục 8. |
+| Wayback tạm dừng: Apify hết credit | Nạp Apify hoặc thêm tài khoản Apify khác trong Cài đặt. Tối đa 5 phút sau tự chạy lại. |
+| Wayback tạm dừng: OpenAI hết credit / key lỗi | Nạp OpenAI. Đổi key thì đổi **cả 2 chỗ**: Cài đặt → OpenAI **và** env `OPENAI_API_KEY` trên actor Apify (rồi Build actor). |
+| Apify “Cần xem”/“Thiếu” | Nạp trước khi về 0. |
+| Ahrefs còn ít unit | Bình thường sẽ tự chuyển DataForSEO — đảm bảo DataForSEO có ≥ $10, hoặc chờ ngày làm mới unit. |
+| Gname không kết nối được | Thêm IP VPS vào whitelist API trên Gname (mục 7.2). |
+| “Bộ điều phối tự lành không chạy” / tick ngừng | Mục 7.3. |
+| Hết hàng chờ (đợt quét xong) | Domain Picker → **Khôi phục từ DB** → chọn mua. Sau đó mục 8. |
 
 ## 7. Sự cố thường gặp
 
@@ -121,6 +121,5 @@ Deploy = push vào `dashboard/**` trên `main` → GitHub Actions `deploy.yml` b
 | VPS | `177.5.66.86` (Singapore, Ubuntu 22.04, 4 core / 8 GB) |
 | Thư mục | `/opt/n8n` (compose: dashboard, n8n, caddy) · `/opt/domaindata/db` (Postgres + PostgREST + proxy) |
 | Cron | `/root/reconcile-tick.sh` (log `/root/reconcile-tick*.log`) |
-| Telegram dự phòng khi dashboard sập | `/root/telegram.env` với `TG_TOKEN=…` và `TG_CHAT=…` |
 | Wayback actor | Apify `welcomed_sunshine~wayback-machine-actor` (source chỉ có trên Apify) |
 | Mọi key/token | Lưu trong DB (bảng `app_settings`), nhập qua trang **Cài đặt** |

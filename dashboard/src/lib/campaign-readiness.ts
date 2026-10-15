@@ -1,6 +1,6 @@
 /**
  * "Chuẩn bị đợt quét" — gom số dư mọi công cụ trả tiền + checklist vận hành, và ước tính
- * chi phí cho N domain sắp quét. Dùng cho trang /campaign và cảnh báo Telegram.
+ * chi phí cho N domain sắp quét. Dùng cho trang /campaign.
  *
  * Phễu (tỉ lệ đọc LIVE từ DB): N domain → Gname check (miễn phí) → % mua được → Wayback
  * (Apify + OpenAI) → % clean → chấm rating (Ahrefs unit, hết thì DataForSEO) → % Tốt/TB.
@@ -47,7 +47,7 @@ export interface Readiness {
   costUsd: { apify: number; openai: number; dfsIfNoAhrefs: number; total: number };
   tools: ToolRow[];
   checks: CheckRow[];
-  // Số thô cho cảnh báo Telegram
+  // Số thô (tiện kiểm tra / mở rộng)
   raw: { apifyRemainingUsd: number | null; dfsBalanceUsd: number | null; ahrefsRemainingUnits: number | null; openaiOk: boolean | null; gnameOk: boolean | null; vpsDaysLeft: number | null };
 }
 
@@ -189,8 +189,6 @@ export async function computeReadiness(n: number, opts: { forceCredits?: boolean
       detail: state.waybackPaused === "apify_credit" ? "Dừng vì Apify hết credit" : state.waybackPaused === "ai_credit" ? "Dừng vì OpenAI hết credit / key lỗi" : "Bình thường" },
     { key: "gname", label: "Gname kết nối được (IP VPS đã whitelist)", level: gname.ok ? "ok" : "bad", detail: gname.detail },
     { key: "openai", label: "OpenAI key dùng được", level: openai.ok ? "ok" : "bad", detail: openai.detail },
-    { key: "telegram", label: "Đã cấu hình Telegram nhận cảnh báo", level: ops.telegramBotToken && ops.telegramChatId ? "ok" : "warn",
-      detail: ops.telegramBotToken && ops.telegramChatId ? "Sẽ báo khi sắp hết tiền / pipeline dừng / đợt quét xong" : "Chưa có — nhập ở mục Cảnh báo Telegram bên dưới" },
   ];
 
   return {
