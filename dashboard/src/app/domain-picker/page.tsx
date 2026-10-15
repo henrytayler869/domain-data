@@ -727,6 +727,30 @@ export default function DomainPickerPage() {
     finally { setResuming(false); }
   }, [toast]);
 
+  // ── Pipeline NỀN (reconciler trên VPS, chạy kể cả khi không mở trang) ────────
+  // Các ô "Tiến trình pipeline" bên dưới chỉ phản ánh lô nhập TRONG TAB này; pipeline
+  // nền thì xem ở đây: tồn đọng từng tầng + domain đáng mua nó đã tìm được (72h).
+  const [bg, setBg] = useState<{
+    lastTickAt: string | null; ageMin: number | null; healthy: boolean;
+    backlog: { rating: number; gname: number; wayback: number };
+    last: { ratingSent: number; gnameKicked: number; waybackDispatched: number; waybackActive?: number; ingestedResults: number };
+  } | null>(null);
+  const [bgBuyable, setBgBuyable] = useState<number | null>(null);
+  useEffect(() => {
+    const loadStatus = () => fetch("/api/pipeline/status", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null)).then((s) => { if (s && !s.error) setBg(s); }).catch(() => {});
+    // Đếm domain đáng mua (giống tiêu chí Bước 6: Tốt/TB + ≥1 ref DR≥70). Query nặng hơn → 5 phút/lần.
+    const loadBuyable = () => fetch("/api/picker/resume?hours=72", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null)).then((c) => {
+        if (!c?.candidates) return;
+        const cands = c.candidates as { rating: string | null; refs?: { dr: number }[] }[];
+        setBgBuyable(cands.filter((x) => /TỐT|TRUNG BÌNH/.test(x.rating ?? "") && (x.refs ?? []).some((r) => r.dr >= 70)).length);
+      }).catch(() => {});
+    loadStatus(); loadBuyable();
+    const a = setInterval(loadStatus, 60_000), b = setInterval(loadBuyable, 300_000);
+    return () => { clearInterval(a); clearInterval(b); };
+  }, []);
+
   // ── Watchlist (xem xét mua sau) ─────────────────────────────────────────────
   const loadWatchlist = useCallback(async () => {
     try {
@@ -924,6 +948,37 @@ export default function DomainPickerPage() {
               {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}Chạy pipeline
             </Button>
           </div>
+        </div>
+      )}
+
+      {/* Pipeline nền (reconciler) — luôn hiện, độc lập với lô nhập trong tab */}
+      {bg && (
+        <div className="rounded-xl border bg-card p-4 flex flex-col gap-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="text-sm font-medium">Pipeline nền</p>
+            <span className={cn("text-xs inline-flex items-center gap-1", bg.healthy ? "text-emerald-600" : "text-rose-600")}>
+              {bg.healthy ? <Loader2 className="h-3 w-3 animate-spin" /> : "⚠️"}
+              {bg.healthy ? "đang chạy" : "đã dừng"} · tick gần nhất {bg.ageMin ?? "?"} phút trước (mỗi 20 phút)
+            </span>
+            {bgBuyable != null && bgBuyable > 0 && (
+              <Button size="sm" variant="outline" onClick={resumeFromDb} disabled={resuming} className="ml-auto gap-1.5 h-7 text-emerald-700 border-emerald-300 hover:bg-emerald-50">
+                {resuming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Eye className="h-3.5 w-3.5" />}Xem {bgBuyable} domain đáng mua
+              </Button>
+            )}
+          </div>
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
+            {([
+              ["Wayback đang chạy", bg.last.waybackActive ?? bg.last.waybackDispatched, "text-blue-600"],
+              ["Chờ Wayback", bg.backlog.wayback, "text-sky-600"],
+              ["Chờ check Gname", bg.backlog.gname, "text-amber-600"],
+              ["Chờ chấm rating", bg.backlog.rating, "text-violet-600"],
+              ["Chấm rating (tick trước)", bg.last.ratingSent, "text-violet-600"],
+              ["Đáng mua (72h)", bgBuyable ?? 0, "text-emerald-600"],
+            ] as const).map(([l, v, c]) => (
+              <div key={l} className="rounded-lg border px-3 py-2"><p className="text-[11px] text-muted-foreground uppercase">{l}</p><p className={cn("text-xl font-bold", c)}>{v.toLocaleString()}</p></div>
+            ))}
+          </div>
+          <p className="text-[11px] text-muted-foreground">Pipeline nền chạy trên VPS kể cả khi không mở trang. Tick trước: gửi Wayback {bg.last.waybackDispatched} · nhận {bg.last.ingestedResults} kết quả Wayback · đẩy {bg.last.gnameKicked} domain sang check Gname · chấm {bg.last.ratingSent} rating. Các ô bên dưới chỉ tính lô bạn nhập trong trang này.</p>
         </div>
       )}
 

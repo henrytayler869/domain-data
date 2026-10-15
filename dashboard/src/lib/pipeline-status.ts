@@ -14,7 +14,7 @@ import { supabase } from "./supabase";
 const TABLE = "app_settings";
 const KEY = "pipeline_reconcile";
 
-// Tick chạy mỗi ~20-30' (N8N Schedule). Quá 2× ngưỡng này mà không có tick mới →
+// Tick chạy mỗi 20' (cron trên VPS). Quá 2× ngưỡng này mà không có tick mới →
 // coi như bộ điều phối đã dừng → cảnh báo đỏ trên webapp.
 export const TICK_STALE_MINUTES = 75;
 
@@ -35,7 +35,7 @@ export interface ReconcileState {
   tookMs: number;                 // thời lượng tick gần nhất
   backlog: ReconcileBacklog;
   creditFlag: CreditFlag;
-  lastRatingSendAt: string | null;// lần cuối gửi domain qua N8N để rating
+  lastRatingSendAt: string | null;// lần cuối chấm rating (có domain được chấm)
   lastGnameJobId: string | null;  // gate job Gname gần nhất reconciler kick off
   // Wayback tạm dừng vì hết credit (null = chạy bình thường). Khi dừng, mỗi tick chỉ gửi
   // 1 run dò (1 domain) — nạp credit xong là tick sau chạy lại, không phải chờ.
@@ -48,6 +48,7 @@ export interface ReconcileState {
     ratingProbe: boolean;         // tick này chỉ gửi probe (nghi hết credit)
     gnameKicked: number;          // domain đẩy vào gate job Gname
     waybackDispatched: number;    // domain tạo Wayback run mới
+    waybackActive?: number;       // Wayback run đang chạy sau tick (tick cũ chưa có field này)
     ingestedResults: number;      // kết quả Wayback thu về
   };
 }

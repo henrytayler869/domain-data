@@ -240,6 +240,7 @@ export async function dispatchTick(): Promise<DispatchSummary> {
       ratingProbe: rating.probe,
       gnameKicked: gname.kicked,
       waybackDispatched: dispatchedDomains,
+      waybackActive: active + dispatched,
       ingestedResults,
     },
   };
