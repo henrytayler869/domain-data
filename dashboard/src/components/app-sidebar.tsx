@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { TrendingUp, LayoutDashboard, Database, Filter, Boxes, Settings, LogOut, Users, ShoppingCart, PieChart, Sprout } from "lucide-react";
+import { TrendingUp, LayoutDashboard, Database, Filter, Boxes, Settings, LogOut, Users, ShoppingCart, PieChart, Sprout, ClipboardCheck } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
 
 const dashboardItems = [
   { title: "Tổng quan", href: "/dashboard", icon: PieChart },
+  { title: "Chuẩn bị đợt quét", href: "/campaign", icon: ClipboardCheck },
 ];
 
 const catcherItems = [

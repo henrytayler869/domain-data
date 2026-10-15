@@ -80,6 +80,22 @@ export async function ahrefsCreditOk(token: string): Promise<boolean> {
   } catch { return false; }   // lỗi mạng/token → coi như không dùng được → thử token kế / DFS
 }
 
+/** Số unit đã dùng / giới hạn của workspace (tool miễn phí). null = token lỗi. */
+export async function ahrefsUnits(token: string): Promise<{ usage: number; limit: number; resetAt: string | null; plan: string | null } | null> {
+  try {
+    const payload = (await mcpCall(token, "subscription-info-limits-and-usage", {}, 98)) ?? {};
+    if (payload.__error) return null;
+    const lu = (payload.limits_and_usage as Record<string, unknown>) ?? payload;
+    if (lu.units_usage_workspace == null || lu.units_limit_workspace == null) return null;
+    return {
+      usage: Number(lu.units_usage_workspace),
+      limit: Number(lu.units_limit_workspace),
+      resetAt: (lu.usage_reset_date as string) ?? null,
+      plan: (lu.subscription as string) ?? null,
+    };
+  } catch { return null; }
+}
+
 /** Referring domains (đã lọc DR≥minDr) kèm DR + is_spam. Ném lỗi nếu MCP báo lỗi. */
 export async function ahrefsRefDomains(token: string, target: string, minDr = 70): Promise<AhrefsRef[]> {
   const payload = (await mcpCall(token, "site-explorer-referring-domains", {
