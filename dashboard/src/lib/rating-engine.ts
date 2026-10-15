@@ -55,9 +55,10 @@ async function classify(apiKey: string, input: {
     `Domain: ${input.domain}\n` +
     `Ref domain khớp DB: ${input.refs_count} (max DR ${input.max_dr}, DR>90: ${input.dk1_count})\n` +
     `Ref domains: ${input.refs_string}\n` +
-    `Top anchors: ${input.anchors_compact}\n` +
-    // Ghi rõ "không có": để trống thì gpt-4o-mini hiểu nhầm là có lỗi → trả category "API error"
-    `API error: ${input.api_error || "không có"}\n\n` +
+    `Top anchors: ${input.anchors_compact || "(không có)"}\n` +
+    // KHÔNG gửi dòng "API error": lỗi API thật đã xử lý tất định trong decide() trước khi gọi model;
+    // gửi kèm (kể cả "không có") thì gpt-4o-mini vẫn đôi khi trả category "API error" + detail "<error>".
+    `\n` +
     `Phân loại. Trả về JSON: {"rating":"...","category":"...","detail":"..."}`;
   const res = await fetch(OPENAI_URL, {
     method: "POST",
@@ -84,7 +85,11 @@ async function decide(apiKey: string, domain: string, matched: Ref[], anchorsCom
   const dk1Count = matched.filter((m) => m.dr > 90).length;
   if (apiError) return { rating: "⚠️ RỦI RO", category: "API error", detail: apiError };
   if (matched.length === 0) return { rating: "⚠️ RỦI RO", category: "No matched backlinks", detail: "Không có ref nào khớp DB" };
-  const out = await classify(apiKey, { domain, refs_count: matched.length, max_dr: maxDr, dk1_count: dk1Count, refs_string: refsString, anchors_compact: anchorsCompact, api_error: null });
+  const input = { domain, refs_count: matched.length, max_dr: maxDr, dk1_count: dk1Count, refs_string: refsString, anchors_compact: anchorsCompact, api_error: null };
+  let out = await classify(apiKey, input);
+  // Model tự bịa "API error" (không có lỗi thật) → hỏi lại tối đa 2 lần.
+  for (let i = 0; i < 2 && out.category === "API error"; i++) out = await classify(apiKey, input);
+  if (out.category === "API error") out = { rating: "⚠️ RỦI RO", category: "Parse error", detail: "Model trả 'API error' dù không có lỗi" };
   const isErr = out.category === "API error" || out.category === "Parse error";
   return { rating: out.rating, category: out.category, detail: isErr ? out.detail : `DR>90:${dk1Count} | ${refsString}` };
 }
