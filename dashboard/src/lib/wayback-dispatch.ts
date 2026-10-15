@@ -55,6 +55,9 @@ const tldOf = (d: string) => d.split(".").pop() ?? "";
 const isGoodRating = (r: string | null) => !!r && (r.includes("TỐT") || r.includes("TRUNG BÌNH"));
 
 // Phân trang 1 query PostgREST (query đã build sẵn bởi caller) — trả tối đa 1000 dòng.
+// build() PHẢI có .order(<khoá duy nhất>): không ORDER BY thì Postgres không giữ thứ tự
+// giữa các trang (nhất là bảng đang bị upsert) → row bị bỏ sót/trùng giữa trang. Đã gây
+// lỗi: domain có wayback_results rơi khỏi `checked` → bị gửi Wayback lại tới 21 lần.
 async function pageAll<T>(build: () => { range: (a: number, b: number) => PromiseLike<{ data: unknown; error: { message: string } | null }> }): Promise<T[]> {
   const out: T[] = [];
   const PAGE = 1000;
@@ -126,13 +129,13 @@ export async function dispatchTick(opts: { waybackOnly?: boolean } = {}): Promis
   const availCutoff = new Date(Date.now() - AVAIL_WINDOW_H * 3600 * 1000).toISOString();
 
   const gnameRows = await pageAll<{ domain: string; status: string; drop_eta: string | null }>(
-    () => sb.from("gname_checks").select("domain,status,drop_eta").in("status", ["available", "backorder"]).gte("checked_at", availCutoff),
+    () => sb.from("gname_checks").select("domain,status,drop_eta").in("status", ["available", "backorder"]).gte("checked_at", availCutoff).order("domain"),
   );
   const acquirable = new Map<string, { status: string; dropEta: string | null }>();
   for (const r of gnameRows) acquirable.set(String(r.domain).toLowerCase(), { status: r.status, dropEta: r.drop_eta });
 
   const wbRows = await pageAll<{ target_domain: string; snapshot_count: number | null; has_betting: boolean | null; has_adult: boolean | null }>(
-    () => sb.from("wayback_results").select("target_domain,snapshot_count,has_betting,has_adult"),
+    () => sb.from("wayback_results").select("target_domain,snapshot_count,has_betting,has_adult").order("target_domain"),
   );
   const checked = new Set<string>();
   const clean = new Set<string>();
@@ -164,7 +167,7 @@ export async function dispatchTick(opts: { waybackOnly?: boolean } = {}): Promis
   {
     const since = new Date(Date.now() - WB_FAIL_WINDOW_H * 3600 * 1000).toISOString();
     const failed = await pageAll<{ targets: string[]; status: string; error: string | null }>(
-      () => sb.from("wayback_runs").select("targets,status,error").in("status", ["TIMED-OUT", "FAILED", "ABORTED"]).gte("started_at", since),
+      () => sb.from("wayback_runs").select("targets,status,error").in("status", ["TIMED-OUT", "FAILED", "ABORTED"]).gte("started_at", since).order("run_id"),
     );
     for (const r of failed) {
       // Run fail vì AI (OpenAI) hết credit / key lỗi KHÔNG phải lỗi của domain → không tính vào số lần thử
@@ -303,7 +306,7 @@ async function ratingBackfill(
   // placeholder ("DFS pending"), detail null, hoặc detail khác → là domain thật sự
   // chưa/đang chờ rating.
   const nullRating = await pageAll<{ target_domain: string; updated_at: string; detail: string | null }>(
-    () => sb.from("target_assessment").select("target_domain,updated_at,detail").is("rating", null).is("excluded_at", null),
+    () => sb.from("target_assessment").select("target_domain,updated_at,detail").is("rating", null).is("excluded_at", null).order("target_domain"),
   );
   for (const r of nullRating) {
     if ((r.detail ?? "").trim() === "DataforSEO checked") continue;
@@ -311,7 +314,7 @@ async function ratingBackfill(
   }
 
   const apiErr = await pageAll<{ target_domain: string; updated_at: string }>(
-    () => sb.from("target_assessment").select("target_domain,updated_at").ilike("category", "%API%error%").is("excluded_at", null),
+    () => sb.from("target_assessment").select("target_domain,updated_at").ilike("category", "%API%error%").is("excluded_at", null).order("target_domain"),
   );
   for (const r of apiErr) noteOldest(String(r.target_domain).toLowerCase(), r.updated_at);
 
@@ -399,7 +402,7 @@ async function gnameBackfill(wbChecked: Set<string>): Promise<GnameResult> {
   const good = new Set<string>();
   for (const kw of ["%TỐT%", "%TRUNG BÌNH%"]) {
     const rows = await pageAll<{ target_domain: string }>(
-      () => sb.from("target_assessment").select("target_domain").ilike("rating", kw).is("excluded_at", null),
+      () => sb.from("target_assessment").select("target_domain").ilike("rating", kw).is("excluded_at", null).order("target_domain"),
     );
     for (const r of rows) good.add(String(r.target_domain).toLowerCase());
   }
@@ -408,7 +411,7 @@ async function gnameBackfill(wbChecked: Set<string>): Promise<GnameResult> {
 
   // Đã mua (domain_inventory) → không cần check Gname.
   const owned = new Set<string>();
-  for (const r of await pageAll<{ domain: string }>(() => sb.from("domain_inventory").select("domain"))) {
+  for (const r of await pageAll<{ domain: string }>(() => sb.from("domain_inventory").select("domain").order("domain"))) {
     owned.add(String(r.domain).toLowerCase());
   }
 
@@ -445,7 +448,7 @@ async function gnameBackfill(wbChecked: Set<string>): Promise<GnameResult> {
   //    ký thì rớt (khỏi phí wayback), còn available thì ở lại + được scan.
   //    gname_checks upsert 1 dòng/domain → status=available + checked_at<cutoff = latest stale.
   const availStale = await pageAll<{ domain: string; checked_at: string }>(
-    () => sb.from("gname_checks").select("domain,checked_at").eq("status", "available").lt("checked_at", staleCutoffISO),
+    () => sb.from("gname_checks").select("domain,checked_at").eq("status", "available").lt("checked_at", staleCutoffISO).order("domain"),
   );
   for (const r of availStale) {
     const d = String(r.domain).toLowerCase();
