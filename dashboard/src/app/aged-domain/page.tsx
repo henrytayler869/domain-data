@@ -571,8 +571,8 @@ export default function AgedDomainPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Backlink DB</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Kho dữ liệu tham chiếu <strong>Domain → DR (+ traffic)</strong> để Domain Picker & n8n đối chiếu backlink.
-          Việc check backlink nay chạy qua <strong>n8n (DataforSEO)</strong> — không gọi API trực tiếp trên web.
+          Kho dữ liệu tham chiếu <strong>Domain → DR (+ traffic)</strong> để Domain Picker & bộ chấm rating đối chiếu backlink.
+          Việc check backlink chạy tự động trong pipeline chấm rating <strong>(Ahrefs / DataForSEO)</strong>.
         </p>
       </div>
 
@@ -809,7 +809,7 @@ export default function AgedDomainPage() {
           <div className="border-t px-6 pb-6">
             <p className="text-xs text-muted-foreground pt-4 pb-4 leading-relaxed">
               Cơ sở dữ liệu domain tham chiếu <strong>(Domain → DR, traffic)</strong>.
-              Domain Picker & workflow n8n đối chiếu ref domain với DB này để lấy DR/traffic.
+              Domain Picker & bộ chấm rating đối chiếu ref domain với DB này để lấy DR/traffic.
               Bổ sung dữ liệu bằng <strong>Thêm</strong> / <strong>Import CSV</strong> / <strong>Backfill từ Ahrefs</strong>.
             </p>
 

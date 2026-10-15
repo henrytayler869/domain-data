@@ -1824,7 +1824,7 @@ export default function InventoryPage() {
   );
 }
 
-// ─── Tab Check Lỗi: domain "API error" → gửi lại N8N check lại ──────────────────
+// ─── Tab Check Lỗi: domain "API error" → chấm lại rating trong webapp ─────────────
 type ApiErrorRow = { domain: string; rating: string | null; category: string | null; detail: string | null; wayback: { snapshotCount: number | null; hasBetting: boolean; hasAdult: boolean } | null; inflight?: boolean };
 
 function wbBadge(r: ApiErrorRow) {
@@ -1867,13 +1867,13 @@ function ApiErrorTab({ showToast }: { showToast: (m: string, e?: boolean) => voi
 
   const recheck = useCallback(async (domains: string[]) => {
     if (!domains.length) return;
-    if (!confirm(`Gửi lại ${domains.length} domain tới N8N để check lại DataForSEO?`)) return;
+    if (!confirm(`Chấm lại rating ${domains.length} domain (Ahrefs/DataForSEO + Claude Haiku)?`)) return;
     setRechecking(true);
     try {
       const r = await fetch("/api/inventory/api-errors/recheck", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains }) });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error);
-      showToast(`✅ Đã gửi lại ${d.sent} domain → N8N check lại (rating mới sẽ về sau)`);
+      showToast(`✅ Đã chấm lại ${d.sent} domain${d.queued ? ` · ${d.queued} domain xếp hàng chấm nền` : ""}`);
       await load();
     } catch (e) { showToast(`❌ ${e instanceof Error ? e.message : "lỗi"}`, true); }
     finally { setRechecking(false); }
@@ -1896,7 +1896,7 @@ function ApiErrorTab({ showToast }: { showToast: (m: string, e?: boolean) => voi
     finally { setExcluding(false); }
   }, [nonClean, showToast, load]);
 
-  // Chưa check Wayback → Gname check → available thì gửi Wayback (KHÔNG gửi N8N).
+  // Chưa check Wayback → Gname check → available thì gửi Wayback (KHÔNG chấm rating).
   const processUnchecked = useCallback(async () => {
     if (!uncheckedCount) return;
     setProcessing(true);
@@ -1921,7 +1921,7 @@ function ApiErrorTab({ showToast }: { showToast: (m: string, e?: boolean) => voi
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><AlertTriangle className="h-6 w-6 text-amber-500" />Check Lỗi</h1>
-          <p className="text-sm text-muted-foreground mt-1">Domain bị <b>API error</b> lúc chấm DataForSEO/Ahrefs — gửi lại N8N để chấm lại.</p>
+          <p className="text-sm text-muted-foreground mt-1">Domain bị <b>API error</b> lúc chấm DataForSEO/Ahrefs — chọn domain rồi chấm lại rating.</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <Button size="sm" variant="outline" onClick={load} disabled={loading} className="gap-1.5">{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}Tải lại</Button>
@@ -1931,7 +1931,7 @@ function ApiErrorTab({ showToast }: { showToast: (m: string, e?: boolean) => voi
             </Button>
           )}
           {uncheckedCount > 0 && (
-            <Button size="sm" variant="outline" onClick={processUnchecked} disabled={processing} className="gap-1.5 text-blue-600 border-blue-200 hover:bg-blue-50" title="Chưa check Wayback → check Gname → available thì gửi Wayback (không gửi N8N)">
+            <Button size="sm" variant="outline" onClick={processUnchecked} disabled={processing} className="gap-1.5 text-blue-600 border-blue-200 hover:bg-blue-50" title="Chưa check Wayback → check Gname → available thì gửi Wayback (không chấm rating)">
               {processing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}Chạy lại chưa check ({uncheckedCount})
             </Button>
           )}

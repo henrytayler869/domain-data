@@ -11,7 +11,7 @@ import { parseCsv, parseUnifiedCsv } from "@/lib/picker-csv";
 // ─── Pipeline AUTO 5 bước ─────────────────────────────────────────────────────
 // 1 Nhập → 2 Lọc mới (đã mua/flagged/no-snap/đã check Wayback·DFS·Ahrefs)
 // → 3 RDAP mua được? + giá (chỉ giá ≤ $26 đi tiếp) → 4 Wayback (chỉ Clean)
-// → 5 gửi Clean tới DataForSEO (webhook N8N). Tất cả tự chạy sau khi bấm 1 nút.
+// → 5 chấm rating Clean ngay trong webapp (Ahrefs/DataForSEO + Claude Haiku). Tất cả tự chạy sau khi bấm 1 nút.
 
 type Step = 1 | 2 | 3 | 4 | 5 | 6;
 const STEPS: { id: Step; label: string }[] = [
@@ -164,7 +164,7 @@ export default function DomainPickerPage() {
 
   // Bước 6 — Đáng mua
   const [ratings, setRatings] = useState<Record<string, string | null>>({});
-  const [details, setDetails] = useState<Record<string, string | null>>({}); // ref-summary (DK1/DK2) từ N8N
+  const [details, setDetails] = useState<Record<string, string | null>>({}); // ref-summary (DK1/DK2) từ rating engine
   // Ref thật (bảng ahrefs_results) trả về từ "Khôi phục từ DB". Rating mới ghi `detail` dạng
   // văn xuôi (không còn "domain (DR NN)") → parse detail ra 0 ref → ưu tiên map này.
   const [dbRefs, setDbRefs] = useState<Record<string, { domain: string; dr: number }[]>>({});
@@ -347,7 +347,7 @@ export default function DomainPickerPage() {
     () => afterExclude.filter((d) => { const s = rdap[d]?.status; return !!s && s !== "registered"; }),
     [afterExclude, rdap],
   );
-  // Đã gửi qua DataForSEO (N8N) nhưng CHƯA nhận rating về → số domain còn đang chờ.
+  // Đã gửi chấm rating nhưng CHƯA có rating về (phần dư chấm nền) → số domain còn đang chờ.
   const dfsPending = useMemo(
     () => cleanDomains.filter((d) => !(d in ratings)).length,
     [cleanDomains, ratings],
@@ -370,15 +370,15 @@ export default function DomainPickerPage() {
       const res = await fetch("/api/picker/dataforseo", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains }) });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error);
-      setWebhookStatus("ok"); setWebhookMsg(`Đã gửi ${d.sent} domain tới N8N`); toast(`✅ Gửi ${d.sent} domain → DataForSEO (N8N)`);
+      setWebhookStatus("ok"); const msg = `Đã chấm rating ${d.sent} domain${d.queued ? ` · ${d.queued} domain xếp hàng chấm nền` : ""}`; setWebhookMsg(msg); toast(`✅ ${msg}`);
       setDone((p) => new Set(p).add(5)); setStep(6); // auto sang Bước 6 → tự poll kết quả
     } catch (e) {
       setWebhookStatus("error"); setWebhookMsg(e instanceof Error ? e.message : "Lỗi");
-      toast(`⚠️ Webhook: ${e instanceof Error ? e.message : "lỗi"}`, true);
+      toast(`⚠️ Chấm rating lỗi: ${e instanceof Error ? e.message : "lỗi"}`, true);
     }
   }, [toast]);
 
-  // ── Bước 6: lấy rating DataForSEO (N8N ghi vào target_assessment) ──
+  // ── Bước 6: lấy rating (rating engine ghi vào target_assessment) ──
   const loadRatings = useCallback(async (domains: string[]) => {
     if (!domains.length) return;
     setLoadingRatings(true);
@@ -511,7 +511,7 @@ export default function DomainPickerPage() {
     if (!running && engaged) { setDone((p) => new Set(p).add(4).add(5)); setStep(6); setWebhookStatus("idle"); toast("Không có domain Clean để gửi", true); }
   }, [step, wbStarted, gatingDone, gated, wbByDomain, inFlightWb, toast]);
 
-  // ── Bước 6 AUTO-POLL: N8N chạy xong ghi rating → tự lấy (mỗi 15s, tối đa ~10 phút) ──
+  // ── Bước 6 AUTO-POLL: phần chấm nền xong ghi rating → tự lấy (mỗi 15s, tối đa ~10 phút) ──
   useEffect(() => {
     if (step !== 6 || !cleanDomains.length) return;
     pollRef.current = 0;
@@ -525,7 +525,7 @@ export default function DomainPickerPage() {
     return () => clearInterval(id);
   }, [step, cleanDomains, loadRatings]);
 
-  // ── Nhận ĐỦ rating từ DataForSEO (N8N) → toast 1 lần cho mỗi lô (reset khi có lô mới/chờ tiếp) ──
+  // ── Nhận ĐỦ rating → toast 1 lần cho mỗi lô (reset khi có lô mới/chờ tiếp) ──
   const dfsDoneRef = useRef(false);
   useEffect(() => {
     if (!cleanDomains.length) { dfsDoneRef.current = false; return; }
@@ -533,7 +533,7 @@ export default function DomainPickerPage() {
     if (pending > 0) { dfsDoneRef.current = false; return; }   // còn chờ → cho phép báo lại khi xong
     if (!dfsDoneRef.current) {
       dfsDoneRef.current = true;
-      toast(`✅ Đã nhận đủ kết quả DataForSEO (${cleanDomains.length} domain)`);
+      toast(`✅ Đã nhận đủ kết quả rating (${cleanDomains.length} domain)`);
     }
   }, [cleanDomains, ratings, toast]);
 
@@ -709,7 +709,7 @@ export default function DomainPickerPage() {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error);
       const cands: { domain: string; gnameStatus: "available" | "backorder"; dropEta: string | null; rating: string | null; category: string | null; detail: string | null; refs?: { domain: string; dr: number }[] }[] = d.candidates ?? [];
-      if (!cands.length) { toast("Chưa có domain mua được nào để khôi phục (72h qua) — chờ rating N8N rồi bấm lại", true); return; }
+      if (!cands.length) { toast("Chưa có domain mua được nào để khôi phục (72h qua) — chờ chấm rating xong rồi bấm lại", true); return; }
       const doms = cands.map((c) => c.domain);
       setGated(doms);
       setWbResults(cands.map((c) => ({ targetDomain: c.domain, snapshotCount: 1, hasBetting: false, hasAdult: false, errorReason: null })));
@@ -828,7 +828,7 @@ export default function DomainPickerPage() {
     <div className="flex flex-col gap-5 p-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Domain Picker</h1>
-        <p className="text-sm text-muted-foreground mt-1">Pipeline tự động: nhập → lọc mới → mua được?+giá (≤${MAX_PRICE}) → Wayback → gửi Clean qua DataForSEO (N8N).</p>
+        <p className="text-sm text-muted-foreground mt-1">Pipeline tự động: nhập → lọc mới → mua được?+giá (≤${MAX_PRICE}) → Wayback → chấm rating Clean (Ahrefs/DataForSEO + Claude Haiku).</p>
       </div>
 
       <PartnerCreditCards />
@@ -933,7 +933,7 @@ export default function DomainPickerPage() {
           <div className="flex items-center gap-2">
             <p className="text-sm font-medium">Tiến trình pipeline</p>
             {running && <span className="text-xs text-blue-600 inline-flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" />đang chạy…</span>}
-            {dfsPending > 0 && webhookStatus !== "error" && <span className="text-xs text-violet-600 inline-flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" />Đang chờ {dfsPending} kết quả DataForSEO…</span>}
+            {dfsPending > 0 && webhookStatus !== "error" && <span className="text-xs text-violet-600 inline-flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" />Đang chờ {dfsPending} kết quả rating…</span>}
           </div>
           <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
             <Stat l="Nhập" v={raw.length} />
@@ -973,15 +973,15 @@ export default function DomainPickerPage() {
           {step === 5 && (
             <div className="rounded-lg border bg-muted/30 p-3 flex flex-col gap-2">
               <div className="flex items-center gap-2 text-sm">
-                {webhookStatus === "sending" && <><Loader2 className="h-4 w-4 animate-spin text-blue-600" />Đang gửi {cleanDomains.length} domain Clean tới N8N…</>}
+                {webhookStatus === "sending" && <><Loader2 className="h-4 w-4 animate-spin text-blue-600" />Đang chấm rating {cleanDomains.length} domain Clean…</>}
                 {webhookStatus === "ok" && <span className="text-emerald-700 font-medium">✅ {webhookMsg}</span>}
-                {webhookStatus === "error" && <span className="text-rose-600">⚠️ Webhook lỗi: {webhookMsg}. Cấu hình URL trong Cài đặt, hoặc Copy thủ công.</span>}
+                {webhookStatus === "error" && <span className="text-rose-600">⚠️ Chấm rating lỗi: {webhookMsg}. Kiểm tra Anthropic key + Ahrefs/DataForSEO trong Cài đặt, hoặc Copy thủ công.</span>}
                 {webhookStatus === "idle" && <span className="text-muted-foreground">Không có domain Clean.</span>}
               </div>
               {cleanDomains.length > 0 && (
                 <div className="flex items-center gap-2">
                   <Button size="sm" variant="outline" onClick={copyClean} className="gap-1.5"><Copy className="h-3.5 w-3.5" />Copy {cleanDomains.length} Clean</Button>
-                  <Button size="sm" variant="outline" onClick={() => sendWebhook(cleanDomains)} disabled={webhookStatus === "sending"} className="gap-1.5"><Send className="h-3.5 w-3.5" />Gửi lại webhook</Button>
+                  <Button size="sm" variant="outline" onClick={() => sendWebhook(cleanDomains)} disabled={webhookStatus === "sending"} className="gap-1.5"><Send className="h-3.5 w-3.5" />Chấm lại</Button>
                   <Button size="sm" onClick={() => { setDone((p) => new Set(p).add(5)); setStep(6); }} className="ml-auto gap-1.5 bg-foreground text-background">→ Đáng mua (Bước 6)</Button>
                 </div>
               )}
@@ -1008,7 +1008,7 @@ export default function DomainPickerPage() {
               </Button>
             )}
           </div>
-          <p className="text-[11px] text-muted-foreground">N8N chạy DataForSEO xong POST rating về <code>/api/n8n/ingest-rating</code> → Bước 6 <b>tự lấy (poll 15s)</b>. Hoặc Upload file kết quả thủ công.</p>
+          <p className="text-[11px] text-muted-foreground">Rating chấm ngay trong webapp (tối đa 40 domain/lần); phần dư được điều phối tự lành chấm nền mỗi ~20 phút → Bước 6 <b>tự lấy (poll 15s)</b>. Hoặc Upload file kết quả thủ công.</p>
 
           {buyNote && <div className={cn("rounded-md px-3 py-2 text-sm border", buyNote.ok ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-rose-50 text-rose-700 border-rose-300")}>{buyNote.msg}</div>}
 
@@ -1018,9 +1018,9 @@ export default function DomainPickerPage() {
                 <span className="text-muted-foreground">Chưa có domain — chạy pipeline hoặc upload file kết quả.</span>
               ) : cleanDomains.some((d) => !(d in ratings)) ? (
                 pollExhausted ? (
-                  <span className="text-rose-600">{`Hết thời gian chờ — còn ${cleanDomains.filter((d) => !(d in ratings)).length}/${cleanDomains.length} domain chưa có kết quả. Kiểm tra N8N (node Ingest Rating) rồi bấm "Lấy lại".`}</span>
+                  <span className="text-rose-600">{`Hết thời gian chờ — còn ${cleanDomains.filter((d) => !(d in ratings)).length}/${cleanDomains.length} domain chưa có kết quả. Phần dư đang được chấm nền (mỗi ~20 phút) — bấm "Lấy lại" sau.`}</span>
                 ) : (
-                  <><Loader2 className="h-4 w-4 animate-spin text-blue-600" /><span className="text-muted-foreground">{`Đang chờ kết quả DataForSEO từ N8N: còn ${cleanDomains.filter((d) => !(d in ratings)).length}/${cleanDomains.length} domain (tự cập nhật mỗi 15s)…`}</span></>
+                  <><Loader2 className="h-4 w-4 animate-spin text-blue-600" /><span className="text-muted-foreground">{`Đang chờ kết quả rating: còn ${cleanDomains.filter((d) => !(d in ratings)).length}/${cleanDomains.length} domain (tự cập nhật mỗi 15s)…`}</span></>
                 )
               ) : (
                 <span className="text-amber-600">Đã nhận kết quả tất cả {cleanDomains.length} domain — <b>0 domain đáng mua</b> (đều Rủi Ro / không đạt Tốt+Trung bình).</span>
