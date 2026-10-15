@@ -9,8 +9,9 @@
  * trả số dư → chỉ biết còn/hết credit qua 1 lệnh thử max_tokens=1 (chi phí ~0).
  */
 
+import { createHash } from "node:crypto";
 import { supabase } from "./supabase";
-import { readApifyConfig, readSettings } from "./settings";
+import { readApifyConfig, readSettings, type ApifyConfig } from "./settings";
 
 const TABLE = "app_settings";
 const KEY = "partner_credits";
@@ -29,6 +30,7 @@ export interface AiStatus { ok: boolean; status: "ok" | "no_credit" | "invalid_k
 
 export interface PartnerCredits {
   fetchedAt: string;
+  credsHash?: string;   // dấu vân tay các key lúc lấy số — đổi key trong Settings → cache hết hạn ngay
   apify: { ok: boolean; accounts: ApifyCredit[]; error: string | null };
   ai: { active: AiProvider | null; claude: AiStatus; openai: AiStatus };
   dataforseo: { ok: boolean; balanceUsd: number | null; error: string | null };
@@ -36,9 +38,8 @@ export interface PartnerCredits {
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-async function fetchApify(): Promise<PartnerCredits["apify"]> {
+async function fetchApify(cfg: ApifyConfig): Promise<PartnerCredits["apify"]> {
   try {
-    const cfg = await readApifyConfig();
     if (!cfg.accounts.length) return { ok: false, accounts: [], error: "Chưa cấu hình tài khoản Apify" };
     const accounts = await Promise.all(cfg.accounts.map(async (a): Promise<ApifyCredit> => {
       const base = { label: a.label, active: a.id === cfg.activeId, usageUsd: null, limitUsd: null };
@@ -135,20 +136,22 @@ async function readCache(): Promise<PartnerCredits | null> {
 
 /** Trả cache nếu còn trong 15' (trừ khi force) — hết hạn thì gọi lại 3 partner và lưu. */
 export async function getPartnerCredits(force = false): Promise<PartnerCredits> {
-  const cached = await readCache();
-  // cached.ai thiếu = bản cache cũ (trước khi có OpenAI) → coi như hết hạn.
-  if (!force && cached?.ai && Date.now() - new Date(cached.fetchedAt).getTime() < CREDITS_TTL_MS) return cached;
+  const [cached, s, apifyCfg] = await Promise.all([readCache(), readSettings(), readApifyConfig()]);
+  const credsHash = createHash("sha256")
+    .update(JSON.stringify([s.anthropicApiKey, s.openaiApiKey, s.dataforseoLogin, s.dataforseoPassword, apifyCfg.activeId, apifyCfg.accounts.map((a) => a.token)]))
+    .digest("hex");
+  // Cache còn hạn khi: chưa quá 15', cùng bộ key, và đã có field ai (bản cũ trước khi có OpenAI thì không).
+  if (!force && cached?.ai && cached.credsHash === credsHash && Date.now() - new Date(cached.fetchedAt).getTime() < CREDITS_TTL_MS) return cached;
 
-  const s = await readSettings();
   const [apify, claude, openai, dataforseo] = await Promise.all([
-    fetchApify(),
+    fetchApify(apifyCfg),
     fetchClaude(s.anthropicApiKey),
     fetchOpenai(s.openaiApiKey),
     fetchDataforseo(s.dataforseoLogin, s.dataforseoPassword),
   ]);
   // Cùng thứ tự với Wayback actor: OpenAI chính, Claude dự phòng.
   const active: AiProvider | null = openai.ok ? "openai" : claude.ok ? "claude" : null;
-  const fresh: PartnerCredits = { fetchedAt: new Date().toISOString(), apify, ai: { active, claude, openai }, dataforseo };
+  const fresh: PartnerCredits = { fetchedAt: new Date().toISOString(), credsHash, apify, ai: { active, claude, openai }, dataforseo };
   try {
     await supabase().from(TABLE).upsert({ key: KEY, value: fresh, updated_at: fresh.fetchedAt }, { onConflict: "key" });
   } catch { /* không lưu được cache — vẫn trả số mới */ }
