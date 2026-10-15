@@ -11,7 +11,7 @@ import { parseCsv, parseUnifiedCsv } from "@/lib/picker-csv";
 // ─── Pipeline AUTO 5 bước ─────────────────────────────────────────────────────
 // 1 Nhập → 2 Lọc mới (đã mua/flagged/no-snap/đã check Wayback·DFS·Ahrefs)
 // → 3 RDAP mua được? + giá (chỉ giá ≤ $26 đi tiếp) → 4 Wayback (chỉ Clean)
-// → 5 chấm rating Clean ngay trong webapp (Ahrefs/DataForSEO + Claude Haiku). Tất cả tự chạy sau khi bấm 1 nút.
+// → 5 chấm rating Clean ngay trong webapp (Ahrefs/DataForSEO + OpenAI gpt-4o-mini). Tất cả tự chạy sau khi bấm 1 nút.
 
 type Step = 1 | 2 | 3 | 4 | 5 | 6;
 const STEPS: { id: Step; label: string }[] = [
@@ -828,7 +828,7 @@ export default function DomainPickerPage() {
     <div className="flex flex-col gap-5 p-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Domain Picker</h1>
-        <p className="text-sm text-muted-foreground mt-1">Pipeline tự động: nhập → lọc mới → mua được?+giá (≤${MAX_PRICE}) → Wayback → chấm rating Clean (Ahrefs/DataForSEO + Claude Haiku).</p>
+        <p className="text-sm text-muted-foreground mt-1">Pipeline tự động: nhập → lọc mới → mua được?+giá (≤${MAX_PRICE}) → Wayback → chấm rating Clean (Ahrefs/DataForSEO + OpenAI gpt-4o-mini).</p>
       </div>
 
       <PartnerCreditCards />
@@ -975,7 +975,7 @@ export default function DomainPickerPage() {
               <div className="flex items-center gap-2 text-sm">
                 {webhookStatus === "sending" && <><Loader2 className="h-4 w-4 animate-spin text-blue-600" />Đang chấm rating {cleanDomains.length} domain Clean…</>}
                 {webhookStatus === "ok" && <span className="text-emerald-700 font-medium">✅ {webhookMsg}</span>}
-                {webhookStatus === "error" && <span className="text-rose-600">⚠️ Chấm rating lỗi: {webhookMsg}. Kiểm tra Anthropic key + Ahrefs/DataForSEO trong Cài đặt, hoặc Copy thủ công.</span>}
+                {webhookStatus === "error" && <span className="text-rose-600">⚠️ Chấm rating lỗi: {webhookMsg}. Kiểm tra OpenAI key + Ahrefs/DataForSEO trong Cài đặt, hoặc Copy thủ công.</span>}
                 {webhookStatus === "idle" && <span className="text-muted-foreground">Không có domain Clean.</span>}
               </div>
               {cleanDomains.length > 0 && (

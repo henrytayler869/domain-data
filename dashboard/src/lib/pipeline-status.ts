@@ -39,7 +39,7 @@ export interface ReconcileState {
   lastGnameJobId: string | null;  // gate job Gname gần nhất reconciler kick off
   // Wayback tạm dừng vì hết credit (null = chạy bình thường). Khi dừng, mỗi tick chỉ gửi
   // 1 run dò (1 domain) — nạp credit xong là tick sau chạy lại, không phải chờ.
-  waybackPaused: "claude_credit" | "apify_credit" | null;
+  waybackPaused: "ai_credit" | "apify_credit" | null;
   alerts: string[];               // cảnh báo hiện thanh đỏ trên webapp (rỗng = ổn)
   // Tóm tắt hành động tick gần nhất (để hiển thị / debug).
   last: {

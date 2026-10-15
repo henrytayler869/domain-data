@@ -67,7 +67,7 @@ export async function pollAndIngestRun(runId: string): Promise<PollResult> {
     await updateRun(runId, { ingested_at: new Date().toISOString() });
     ingested = { count, autoExcluded, autoExcludedDomains: toExclude, flaggedCount: flagged.length, noSnapshotCount: noSnapshot.length };
   } else if (["FAILED", "TIMED-OUT", "ABORTED"].includes(live.status) && !dbRow.error) {
-    // Ghi kèm statusMessage để reconciler phân biệt "Claude hết credit" với lỗi quét thật
+    // Ghi kèm statusMessage để reconciler phân biệt "AI hết credit" với lỗi quét thật
     await updateRun(runId, { error: `Apify status: ${live.status}${live.statusMessage ? ` — ${live.statusMessage}` : ""}` });
   }
 

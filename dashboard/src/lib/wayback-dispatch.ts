@@ -23,7 +23,7 @@ import { supabase } from "./supabase";
 import { readGnamePricing } from "./gname-pricing";
 import { listPendingRuns, createRun } from "./wayback-db";
 import { pollAndIngestRun } from "./wayback-poll";
-import { startWaybackRun, countActiveRuns, CLAUDE_UNAVAILABLE_RE } from "./apify-wayback";
+import { startWaybackRun, countActiveRuns, AI_UNAVAILABLE_RE } from "./apify-wayback";
 import { readSettings, ensureUsableApifyAccount, activeApifyUsable, type Settings } from "./settings";
 import { rateDomains } from "./rating-engine";
 import { startGateJob } from "./gname-gate";
@@ -42,7 +42,7 @@ const AVAIL_WINDOW_H = 24;      // available cache còn hạn
 
 // ── Rating (RE-ARM + credit-aware) ────────────────────────────────────────────
 const RATING_BATCH = 30;        // domain / tick — rating giờ chạy ĐỒNG BỘ trong webapp
-// (DataForSEO + Haiku mỗi domain) nên batch nhỏ để tick không quá lâu (trước = 140 cho N8N async)
+// (DataForSEO + gpt-4o-mini mỗi domain) nên batch nhỏ để tick không quá lâu (trước = 140 cho N8N async)
 const RATING_REARM_MIN = 45;    // placeholder cũ hơn ngần này → chấm lại (chống mất)
 const RATING_PROBE = 15;        // khi nghi hết credit: chỉ chấm bấy nhiêu để dò
 const CREDIT_SENT_COOLDOWN_MIN = 90; // "đã gửi gần đây" để suy đoán credit
@@ -160,9 +160,9 @@ export async function dispatchTick(): Promise<DispatchSummary> {
       () => sb.from("wayback_runs").select("targets,status,error").in("status", ["TIMED-OUT", "FAILED", "ABORTED"]).gte("started_at", since),
     );
     for (const r of failed) {
-      // Run fail vì Claude hết credit KHÔNG phải lỗi của domain → không tính vào số lần thử
+      // Run fail vì AI (OpenAI) hết credit / key lỗi KHÔNG phải lỗi của domain → không tính vào số lần thử
       // (nếu tính, hết credit 2h là domain bị "tạm bỏ" 48h dù đã nạp tiền).
-      if (CLAUDE_UNAVAILABLE_RE.test(r.error ?? "")) continue;
+      if (AI_UNAVAILABLE_RE.test(r.error ?? "")) continue;
       for (const t of (r.targets ?? [])) {
         const d = String(t).toLowerCase();
         failCounts.set(d, (failCounts.get(d) ?? 0) + 1);
@@ -192,7 +192,7 @@ export async function dispatchTick(): Promise<DispatchSummary> {
 
   // ── Hết credit → TẠM DỪNG Wayback (không đốt số lần thử của domain) ──────────
   // Apify: account active chắc chắn hết credit (sau khi đã thử đổi account) → không gửi gì.
-  // Claude: run XONG gần nhất fail vì "Claude unavailable" → chỉ gửi 1 run dò (1 domain)
+  // AI: run XONG gần nhất fail vì "AI unavailable" → chỉ gửi 1 run dò (1 domain)
   //   mỗi tick; run dò thành công (đã nạp credit) → tick sau chạy lại bình thường.
   let waybackPaused: ReconcileState["waybackPaused"] = null;
   if ((await activeApifyUsable()) === false) {
@@ -201,15 +201,15 @@ export async function dispatchTick(): Promise<DispatchSummary> {
   } else {
     const { data: lastDone } = await sb.from("wayback_runs").select("status,error")
       .not("finished_at", "is", null).order("finished_at", { ascending: false }).limit(1).maybeSingle();
-    if (lastDone && CLAUDE_UNAVAILABLE_RE.test(lastDone.error ?? "")) {
-      waybackPaused = "claude_credit";
-      alerts.push("Claude (Anthropic) hết credit / key lỗi — Wayback tạm dừng, mỗi tick chỉ gửi 1 run dò. Nạp credit Anthropic để chạy lại.");
+    if (lastDone && AI_UNAVAILABLE_RE.test(lastDone.error ?? "")) {
+      waybackPaused = "ai_credit";
+      alerts.push("AI (OpenAI) hết credit / key lỗi — Wayback tạm dừng, mỗi tick chỉ gửi 1 run dò. Nạp credit OpenAI hoặc kiểm tra OPENAI_API_KEY trên actor để chạy lại.");
     }
   }
 
   const active = await countActiveRuns();
   const maxRuns = waybackPaused === "apify_credit" ? 0 : Math.max(0, CAP - active); // mỗi run = 1 slot concurrency
-  const toSend = waybackPaused === "claude_credit" ? groups.slice(0, 1).map((g) => g.slice(0, 1)) : groups;
+  const toSend = waybackPaused === "ai_credit" ? groups.slice(0, 1).map((g) => g.slice(0, 1)) : groups;
   let dispatched = 0, dispatchedDomains = 0, waybackRetried = 0;
   for (const g of toSend.slice(0, maxRuns)) {
     try {
@@ -318,10 +318,10 @@ async function ratingBackfill(
 
   const backlog = need.size;
   if (!backlog) return { backlog: 0, reArmed: 0, sent: 0, probe: false, creditFlag: "idle" };
-  // Rating chạy trong webapp qua Claude Haiku → cần Anthropic key + ÍT NHẤT 1 nguồn ref
+  // Rating chạy trong webapp qua OpenAI gpt-4o-mini → cần OpenAI key + ÍT NHẤT 1 nguồn ref
   // (Ahrefs MCP token ưu tiên, hoặc DataForSEO creds fallback).
   const hasRefSource = !!(settings.ahrefsToken1 || settings.ahrefsToken2 || settings.ahrefsToken3 || (settings.dataforseoLogin && settings.dataforseoPassword));
-  if (!settings.anthropicApiKey || !hasRefSource) {
+  if (!settings.openaiApiKey || !hasRefSource) {
     return { backlog, reArmed: 0, sent: 0, probe: false, creditFlag: "unknown" };
   }
 
@@ -357,7 +357,7 @@ async function ratingBackfill(
   const toSend = eligible.slice(0, batchSize).map(([d]) => d);
   const reArmed = eligible.slice(0, batchSize).filter(([, ts]) => ts !== null).length;
 
-  // Chấm ĐỒNG BỘ trong webapp: DataForSEO (ref + anchors) → Claude Haiku → ghi
+  // Chấm ĐỒNG BỘ trong webapp: Ahrefs/DataForSEO (ref + anchors) → gpt-4o-mini → ghi
   // target_assessment/ahrefs_results ngay. Không còn placeholder "DFS pending" vì
   // rating thật ghi luôn trong lượt này. Lỗi/hết credit → rated=0, tick sau dò lại.
   let sent = 0;
@@ -366,7 +366,7 @@ async function ratingBackfill(
       ahrefsTokens: [settings.ahrefsToken1, settings.ahrefsToken2, settings.ahrefsToken3].filter(Boolean),
       dfsLogin: settings.dataforseoLogin,
       dfsPassword: settings.dataforseoPassword,
-      anthropicApiKey: settings.anthropicApiKey,
+      openaiApiKey: settings.openaiApiKey,
     });
     sent = r.rated;
   } catch { /* lỗi cả batch → sent=0, probe tick sau */ }

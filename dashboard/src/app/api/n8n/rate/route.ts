@@ -5,7 +5,7 @@ import { readTargetSummaryFor } from "@/lib/ahrefs-db";
 
 /**
  * POST /api/n8n/rate   Body: { domains: string[] }
- *   Chấm rating 1 danh sách domain NGAY (Ahrefs ưu tiên → fallback DataForSEO → Haiku),
+ *   Chấm rating 1 danh sách domain NGAY (Ahrefs ưu tiên → fallback DataForSEO → gpt-4o-mini),
  *   đọc lại kết quả trả về. Dùng để test/chấm tay 1 batch nhỏ. Token-authed (gọi nội bộ).
  *
  * Auth: Authorization: Bearer <N8N_API_TOKEN> (giống các route /api/n8n/*).
@@ -29,7 +29,7 @@ export async function POST(request: NextRequest) {
       ahrefsTokens: [s.ahrefsToken1, s.ahrefsToken2, s.ahrefsToken3].filter(Boolean),
       dfsLogin: s.dataforseoLogin,
       dfsPassword: s.dataforseoPassword,
-      anthropicApiKey: s.anthropicApiKey,
+      openaiApiKey: s.openaiApiKey,
     });
 
     // Đọc lại rating vừa ghi để xem kết quả.

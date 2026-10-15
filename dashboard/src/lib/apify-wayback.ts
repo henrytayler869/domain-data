@@ -43,11 +43,12 @@ export interface ApifyRunMeta {
   datasetId: string | null;
   startedAt: string | null;
   finishedAt: string | null;
-  statusMessage?: string | null; // lý do actor tự fail (vd "Claude unavailable (no_credit) …")
+  statusMessage?: string | null; // lý do actor tự fail (vd "AI unavailable at startup (openai: quota_exceeded) …")
 }
 
 /** Actor tự fail vì AI không dùng được (hết credit / key lỗi) — xem actor src/main.js. */
-export const CLAUDE_UNAVAILABLE_RE = /Claude unavailable/i;
+// "Claude unavailable" = message của build actor cũ (trước khi bỏ Claude)
+export const AI_UNAVAILABLE_RE = /(AI|Claude) unavailable/i;
 
 export interface WaybackResultItem {
   domain: string;

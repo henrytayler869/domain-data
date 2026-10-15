@@ -1867,7 +1867,7 @@ function ApiErrorTab({ showToast }: { showToast: (m: string, e?: boolean) => voi
 
   const recheck = useCallback(async (domains: string[]) => {
     if (!domains.length) return;
-    if (!confirm(`Chấm lại rating ${domains.length} domain (Ahrefs/DataForSEO + Claude Haiku)?`)) return;
+    if (!confirm(`Chấm lại rating ${domains.length} domain (Ahrefs/DataForSEO + OpenAI gpt-4o-mini)?`)) return;
     setRechecking(true);
     try {
       const r = await fetch("/api/inventory/api-errors/recheck", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains }) });

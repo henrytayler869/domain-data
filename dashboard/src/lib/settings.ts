@@ -17,7 +17,8 @@ export interface Settings {
   dataforseoLogin: string;
   dataforseoPassword: string; // stored server-side only
   n8nWebhookUrl: string;      // webhook N8N nhận domain Clean → DataForSEO (legacy; rating giờ chạy trong webapp)
-  anthropicApiKey: string;    // stored server-side only — dùng cho rating (Claude Haiku) chạy thẳng trong webapp
+  openaiApiKey: string;       // stored server-side only — rating (OpenAI gpt-4o-mini) chạy thẳng trong webapp
+  anthropicApiKey: string;    // legacy (rating trước đây dùng Claude Haiku) — giữ để lưu không mất, không còn dùng
   ahrefsToken1: string;       // MCP token Ahrefs #1 (ưu tiên) — server-side only
   ahrefsToken2: string;       // MCP token Ahrefs #2 (dự phòng) — server-side only
   ahrefsToken3: string;       // MCP token Ahrefs #3 (dự phòng) — server-side only
@@ -27,6 +28,7 @@ const envDefaults = (): Settings => ({
   dataforseoLogin: process.env.DATAFORSEO_LOGIN ?? "",
   dataforseoPassword: process.env.DATAFORSEO_PASSWORD ?? "",
   n8nWebhookUrl: process.env.N8N_WEBHOOK_URL ?? "",
+  openaiApiKey: process.env.OPENAI_API_KEY ?? "",
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
   ahrefsToken1: process.env.AHREFS_MCP_TOKEN_1 ?? "",
   ahrefsToken2: process.env.AHREFS_MCP_TOKEN_2 ?? "",
@@ -38,11 +40,12 @@ async function readFromSupabase(): Promise<Settings | null> {
   const { data, error } = await sb.from(TABLE).select("value").eq("key", KEY).maybeSingle();
   if (error) throw new Error(error.message);
   const v = (data?.value ?? null) as Partial<Settings> | null;
-  if (!v || (!v.dataforseoLogin && !v.dataforseoPassword && !v.n8nWebhookUrl && !v.anthropicApiKey && !v.ahrefsToken1 && !v.ahrefsToken2 && !v.ahrefsToken3)) return null;
+  if (!v || (!v.dataforseoLogin && !v.dataforseoPassword && !v.n8nWebhookUrl && !v.openaiApiKey && !v.anthropicApiKey && !v.ahrefsToken1 && !v.ahrefsToken2 && !v.ahrefsToken3)) return null;
   return {
     dataforseoLogin: v.dataforseoLogin ?? "",
     dataforseoPassword: v.dataforseoPassword ?? "",
     n8nWebhookUrl: v.n8nWebhookUrl ?? "",
+    openaiApiKey: v.openaiApiKey ?? "",
     anthropicApiKey: v.anthropicApiKey ?? "",
     ahrefsToken1: v.ahrefsToken1 ?? "",
     ahrefsToken2: v.ahrefsToken2 ?? "",
@@ -84,6 +87,7 @@ async function readLegacyApify(): Promise<Settings | null> {
       dataforseoLogin: v.dataforseoLogin ?? "",
       dataforseoPassword: v.dataforseoPassword ?? "",
       n8nWebhookUrl: "",
+      openaiApiKey: "",
       anthropicApiKey: "",
       ahrefsToken1: "",
       ahrefsToken2: "",
@@ -123,6 +127,10 @@ export async function writeSettings(settings: Partial<Settings>): Promise<void> 
         : current.dataforseoPassword,
     n8nWebhookUrl: settings.n8nWebhookUrl ?? current.n8nWebhookUrl,
     // Chỉ ghi đè khi có giá trị mới (giống password) — lưu field khác không xoá key.
+    openaiApiKey:
+      settings.openaiApiKey?.trim()
+        ? settings.openaiApiKey
+        : current.openaiApiKey,
     anthropicApiKey:
       settings.anthropicApiKey?.trim()
         ? settings.anthropicApiKey

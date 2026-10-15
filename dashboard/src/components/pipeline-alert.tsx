@@ -6,14 +6,14 @@ interface PipelineStatus {
   alerts?: string[];
   healthy?: boolean;
   ageMin?: number | null;
-  waybackPaused?: "claude_credit" | "apify_credit" | null;
+  waybackPaused?: "ai_credit" | "apify_credit" | null;
 }
 
 const POLL_MS = 2 * 60 * 1000;
 
 /**
  * Thanh cảnh báo đỏ trên mọi trang khi bộ điều phối tự lành gặp sự cố:
- * hết credit Claude/Apify (Wayback tạm dừng), Apify từ chối tạo run, hoặc tick ngừng chạy.
+ * hết credit AI (OpenAI)/Apify (Wayback tạm dừng), Apify từ chối tạo run, hoặc tick ngừng chạy.
  * Không có sự cố → không hiện gì.
  */
 export function PipelineAlert() {

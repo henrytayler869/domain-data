@@ -6,8 +6,7 @@ import { upsertAssessments } from "@/lib/ahrefs-db";
 /**
  * POST /api/picker/dataforseo
  *   Body: { domains: string[] }
- *   Chấm rating danh sách domain Clean NGAY trong webapp (DataForSEO + Claude Haiku),
- *   thay cho việc gửi webhook N8N trước đây.
+ *   Chấm rating danh sách domain Clean NGAY trong webapp (Ahrefs/DataForSEO + OpenAI gpt-4o-mini).
  *
  * Route này đi qua trình duyệt → Cloudflare (giới hạn ~100s) nên chỉ chấm đồng bộ tối đa
  * CAP domain/lần; phần dư đánh dấu "DFS pending" để reconciler (cron nội bộ) chấm dần.
@@ -24,9 +23,9 @@ export async function POST(request: NextRequest) {
 
     const s = await readSettings();
     const hasRefSource = !!(s.ahrefsToken1 || s.ahrefsToken2 || s.ahrefsToken3 || (s.dataforseoLogin && s.dataforseoPassword));
-    if (!s.anthropicApiKey || !hasRefSource) {
+    if (!s.openaiApiKey || !hasRefSource) {
       return NextResponse.json(
-        { error: "Chưa cấu hình Anthropic API key + (Ahrefs token hoặc DataForSEO) trong Cài đặt" },
+        { error: "Chưa cấu hình OpenAI API key + (Ahrefs token hoặc DataForSEO) trong Cài đặt" },
         { status: 400 },
       );
     }
@@ -38,7 +37,7 @@ export async function POST(request: NextRequest) {
       ahrefsTokens: [s.ahrefsToken1, s.ahrefsToken2, s.ahrefsToken3].filter(Boolean),
       dfsLogin: s.dataforseoLogin,
       dfsPassword: s.dataforseoPassword,
-      anthropicApiKey: s.anthropicApiKey,
+      openaiApiKey: s.openaiApiKey,
     });
 
     // Phần dư → placeholder "DFS pending" cho reconciler chấm ở các tick sau (không mất domain).

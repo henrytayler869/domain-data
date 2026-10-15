@@ -1,13 +1,13 @@
 /**
- * Rating engine — CHẠY THẲNG TRONG WEBAPP (thay workflow N8N). Ưu tiên Ahrefs (MCP),
+ * Rating engine — CHẠY THẲNG TRONG WEBAPP. Ưu tiên Ahrefs (MCP),
  * hết credit cả các token Ahrefs mới fallback DataForSEO.
  *
  * Ahrefs path (giống "Ahref Checker (Kelly)" của N8N):
- *   referring-domains (DR sẵn) + anchors qua MCP → Claude Haiku phân loại → ghi DB.
+ *   referring-domains (DR sẵn) + anchors qua MCP → OpenAI gpt-4o-mini phân loại → ghi DB.
  * DFS path (fallback, giống "DataforSEO Backlink Checker"):
- *   referring_domains (KHÔNG có DR) → đối chiếu backlink_db lấy DR → anchors (ĐK1/ĐK2) → Haiku → ghi.
+ *   referring_domains (KHÔNG có DR) → đối chiếu backlink_db lấy DR → anchors (ĐK1/ĐK2) → gpt-4o-mini → ghi.
  *
- * Creds đọc từ Settings: ahrefsMcpTokens[] (ưu tiên, theo thứ tự) + DataForSEO + Anthropic key.
+ * Creds đọc từ Settings: ahrefsMcpTokens[] (ưu tiên, theo thứ tự) + DataForSEO + OpenAI key.
  */
 
 import { readDb, readTrafficMap } from "./backlink-db";
@@ -20,12 +20,12 @@ import { ahrefsCreditOk, ahrefsRefDomains, ahrefsAnchors } from "./ahrefs-mcp";
 
 const DFS_REFDOMAINS = "https://api.dataforseo.com/v3/backlinks/referring_domains/live";
 const DFS_ANCHORS = "https://api.dataforseo.com/v3/backlinks/anchors/live";
-const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_MODEL = "claude-haiku-4-5";   // Claude Haiku 4.5 — giống node N8N
+const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
+const OPENAI_MODEL = "gpt-4o-mini";
 const CONCURRENCY = 5;
 const MIN_DR = 70;                              // ref DR≥70 = ĐK1 (>90) hoặc ĐK2 (70-89)
 
-// Prompt phân loại — sao y node "Classify" trong workflow N8N.
+// Prompt phân loại (giữ nguyên tiêu chí từ thời N8N).
 const SYSTEM_PROMPT = `Bạn phân loại chất lượng aged domain dựa trên hồ sơ Referring Domain (DR đã đối chiếu DB) + Anchor text. Trả về DUY NHẤT 1 JSON object (không markdown, không \`\`\`), format:
 {"rating":"...","category":"...","detail":"..."}
 
@@ -42,12 +42,12 @@ Nếu refs_count=0: rating="⚠️ RỦI RO", category="No matched backlinks", d
 category: ngắn gọn (vd: 'Clean brand niche', 'Gambling anchors', 'Mixed/foreign anchors').
 detail: 1-2 câu, nêu top 3-5 anchor + ngôn ngữ + brand hint + max DR.`;
 
-export interface RateCreds { ahrefsTokens: string[]; dfsLogin: string; dfsPassword: string; anthropicApiKey: string }
+export interface RateCreds { ahrefsTokens: string[]; dfsLogin: string; dfsPassword: string; openaiApiKey: string }
 export interface RateResult { rated: number; source: "ahrefs" | "dfs" | "none"; errors: string[] }
 
 type Ref = { domain: string; dr: number };
 
-// ─── Claude Haiku classify (dùng chung cả 2 path) ───────────────────────────────
+// ─── OpenAI gpt-4o-mini classify (dùng chung cả 2 path) ─────────────────────────
 async function classify(apiKey: string, input: {
   domain: string; refs_count: number; max_dr: number; dk1_count: number; refs_string: string; anchors_compact: string; api_error: string | null;
 }): Promise<{ rating: string; category: string; detail: string }> {
@@ -56,17 +56,21 @@ async function classify(apiKey: string, input: {
     `Ref domain khớp DB: ${input.refs_count} (max DR ${input.max_dr}, DR>90: ${input.dk1_count})\n` +
     `Ref domains: ${input.refs_string}\n` +
     `Top anchors: ${input.anchors_compact}\n` +
-    `API error: ${input.api_error ?? ""}\n\n` +
+    // Ghi rõ "không có": để trống thì gpt-4o-mini hiểu nhầm là có lỗi → trả category "API error"
+    `API error: ${input.api_error || "không có"}\n\n` +
     `Phân loại. Trả về JSON: {"rating":"...","category":"...","detail":"..."}`;
-  const res = await fetch(ANTHROPIC_URL, {
+  const res = await fetch(OPENAI_URL, {
     method: "POST",
-    headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-    body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 512, system: SYSTEM_PROMPT, messages: [{ role: "user", content: userText }] }),
+    headers: { Authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      model: OPENAI_MODEL, max_tokens: 512, temperature: 0, response_format: { type: "json_object" },
+      messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content: userText }],
+    }),
     signal: AbortSignal.timeout(30_000),
   });
-  if (!res.ok) throw new Error(`Anthropic HTTP ${res.status}`);
-  const data = (await res.json()) as { content?: { type: string; text?: string }[] };
-  const text = (data.content ?? []).filter((b) => b.type === "text").map((b) => b.text ?? "").join("").trim();
+  if (!res.ok) throw new Error(`OpenAI HTTP ${res.status}`);
+  const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+  const text = (data.choices?.[0]?.message?.content ?? "").trim();
   const m = text.match(/\{[\s\S]*\}/);
   if (!m) return { rating: "⚠️ RỦI RO", category: "Parse error", detail: "Could not parse classify output" };
   const parsed = JSON.parse(m[0]) as { rating?: string; category?: string; detail?: string };
@@ -183,7 +187,7 @@ async function rateViaDfs(domains: string[], creds: RateCreds, blacklist: Set<st
       } catch { /* anchors phụ trợ */ }
     }
     const plain: Ref[] = matched.map((m) => ({ domain: m.domain, dr: m.dr }));
-    const r = await decide(creds.anthropicApiKey, domain, plain, anchorsCompact, apiError);
+    const r = await decide(creds.openaiApiKey, domain, plain, anchorsCompact, apiError);
     await writeRating(domain, plain, r);
   }, errors);
 }
@@ -192,7 +196,7 @@ async function rateViaDfs(domains: string[], creds: RateCreds, blacklist: Set<st
 export async function rateDomains(domainsRaw: string[], creds: RateCreds): Promise<RateResult> {
   const domains = Array.from(new Set(domainsRaw.map((d) => d.trim().toLowerCase()).filter((d) => /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/.test(d))));
   if (!domains.length) return { rated: 0, source: "none", errors: [] };
-  if (!creds.anthropicApiKey) return { rated: 0, source: "none", errors: ["Thiếu Anthropic API key"] };
+  if (!creds.openaiApiKey) return { rated: 0, source: "none", errors: ["Thiếu OpenAI API key"] };
 
   const errors: string[] = [];
   const userBl = await readRefBlacklist().catch(() => []);
@@ -203,7 +207,7 @@ export async function rateDomains(domainsRaw: string[], creds: RateCreds): Promi
   for (const token of creds.ahrefsTokens) {
     if (!token?.trim()) continue;
     if (await ahrefsCreditOk(token.trim())) {
-      const rated = await rateViaAhrefs(domains, token.trim(), creds.anthropicApiKey, blacklist, errors);
+      const rated = await rateViaAhrefs(domains, token.trim(), creds.openaiApiKey, blacklist, errors);
       return { rated, source: "ahrefs", errors };
     }
   }

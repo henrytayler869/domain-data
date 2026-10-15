@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 
 /**
  * GET /api/partner-credits[?force=1]
- *   → credit Apify / Claude / DataforSEO (cache 15' trong DB; force=1 bỏ qua cache).
+ *   → credit Apify / DataforSEO (cache 15' trong DB; force=1 bỏ qua cache).
  *   Session-gated qua proxy.
  */
 export async function GET(request: NextRequest) {

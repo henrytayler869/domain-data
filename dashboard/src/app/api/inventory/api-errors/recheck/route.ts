@@ -5,8 +5,8 @@ import { upsertAssessments } from "@/lib/ahrefs-db";
 
 /**
  * POST /api/inventory/api-errors/recheck   Body: { domains: string[] }
- *   Chấm lại danh sách domain (bị "API error") NGAY trong webapp (DataForSEO + Claude
- *   Haiku), thay cho webhook N8N. Chấm đồng bộ tối đa CAP domain (Cloudflare ~100s);
+ *   Chấm lại danh sách domain (bị "API error") NGAY trong webapp (Ahrefs/DataForSEO +
+ *   OpenAI gpt-4o-mini). Chấm đồng bộ tối đa CAP domain (Cloudflare ~100s);
  *   phần dư đánh dấu "DFS pending" → rời tab Check Lỗi ngay + reconciler chấm dần.
  */
 const SYNC_CAP = 40;
@@ -19,8 +19,8 @@ export async function POST(request: NextRequest) {
 
     const s = await readSettings();
     const hasRefSource = !!(s.ahrefsToken1 || s.ahrefsToken2 || s.ahrefsToken3 || (s.dataforseoLogin && s.dataforseoPassword));
-    if (!s.anthropicApiKey || !hasRefSource) {
-      return NextResponse.json({ error: "Chưa cấu hình Anthropic API key + (Ahrefs token hoặc DataForSEO) trong Cài đặt" }, { status: 400 });
+    if (!s.openaiApiKey || !hasRefSource) {
+      return NextResponse.json({ error: "Chưa cấu hình OpenAI API key + (Ahrefs token hoặc DataForSEO) trong Cài đặt" }, { status: 400 });
     }
 
     const toRateNow = domains.slice(0, SYNC_CAP);
@@ -36,7 +36,7 @@ export async function POST(request: NextRequest) {
       ahrefsTokens: [s.ahrefsToken1, s.ahrefsToken2, s.ahrefsToken3].filter(Boolean),
       dfsLogin: s.dataforseoLogin,
       dfsPassword: s.dataforseoPassword,
-      anthropicApiKey: s.anthropicApiKey,
+      openaiApiKey: s.openaiApiKey,
     });
 
     return NextResponse.json({ ok: true, sent: r.rated, queued: overflow.length, errors: r.errors });
