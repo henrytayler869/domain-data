@@ -9,6 +9,12 @@
 
 const MCP_URL = "https://api.ahrefs.com/mcp/mcp";
 
+// Unit tối thiểu phải còn để chấm 1 domain (refdomains ~400 + anchors) — dưới mức này coi như hết.
+const MIN_UNITS_HEADROOM = 1000;
+
+/** Lỗi do token hết unit/quota (khác lỗi của domain) → nên chuyển token kế / DFS. */
+export const AHREFS_QUOTA_RE = /units? limit|quota|insufficient|payment required|402/i;
+
 // Parse JSON-RPC từ body (SSE `data:` lines hoặc JSON thuần) — sao y N8N.
 function extractJsonRpc(raw: string): { result?: unknown; error?: { message?: string } } | null {
   if (!raw) return null;
@@ -64,8 +70,10 @@ export async function ahrefsCreditOk(token: string): Promise<boolean> {
     // CHỈ so khi CẢ usage lẫn limit non-null. Ahrefs để units_limit_api_key = null
     // (không giới hạn riêng theo api key) → Number(null)=0 sẽ khiến usage>=0 luôn đúng
     // = báo hết credit nhầm. Phải guard null trước (giống Eval Credit của N8N).
+    // Còn ÍT unit (vd 44) vẫn < limit nhưng 1 lượt refdomains cần ~400 → coi như hết,
+    // nếu không mọi domain sẽ ra "API error: units limit reached" mà không fallback DFS.
     const overLimit = (usage: unknown, limit: unknown) =>
-      usage != null && limit != null && Number(usage) >= Number(limit);
+      usage != null && limit != null && Number(usage) + MIN_UNITS_HEADROOM >= Number(limit);
     if (overLimit(lu.units_usage_workspace, lu.units_limit_workspace)) return false;
     if (overLimit(lu.units_usage_api_key, lu.units_limit_api_key)) return false;
     return true;

@@ -16,7 +16,7 @@ import { REF_BLACKLIST_SET } from "./picker-csv";
 import { readAll as readRefBlacklist } from "./ref-blacklist-db";
 import { upsertUnmatchedRefs } from "./unmatched-refs-db";
 import { upsertRows, upsertAssessments } from "./ahrefs-db";
-import { ahrefsCreditOk, ahrefsRefDomains, ahrefsAnchors } from "./ahrefs-mcp";
+import { ahrefsCreditOk, ahrefsRefDomains, ahrefsAnchors, AHREFS_QUOTA_RE } from "./ahrefs-mcp";
 
 const DFS_REFDOMAINS = "https://api.dataforseo.com/v3/backlinks/referring_domains/live";
 const DFS_ANCHORS = "https://api.dataforseo.com/v3/backlinks/anchors/live";
@@ -95,6 +95,9 @@ async function writeRating(domain: string, matched: Ref[], r: { rating: string; 
   await upsertAssessments([{ targetDomain: domain, rating: r.rating, category: r.category, detail: r.detail, excludedAt: null }]);
 }
 
+// Domain bị hoãn sang nguồn khác (không phải lỗi, không đếm là đã chấm).
+class SkipDomain extends Error {}
+
 // Chạy pool concurrency cho danh sách domain với 1 hàm rate 1 domain.
 async function runPool(domains: string[], rateOne: (d: string) => Promise<void>, errors: string[]): Promise<number> {
   let cursor = 0, rated = 0;
@@ -102,7 +105,10 @@ async function runPool(domains: string[], rateOne: (d: string) => Promise<void>,
     while (cursor < domains.length) {
       const d = domains[cursor++];
       try { await rateOne(d); rated++; }
-      catch (e) { if (errors.length < 5) errors.push(`${d}: ${e instanceof Error ? e.message : "lỗi"}`); }
+      catch (e) {
+        if (e instanceof SkipDomain) continue;
+        if (errors.length < 5) errors.push(`${d}: ${e instanceof Error ? e.message : "lỗi"}`);
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, domains.length) }, () => worker()));
@@ -110,14 +116,20 @@ async function runPool(domains: string[], rateOne: (d: string) => Promise<void>,
 }
 
 // ─── Ahrefs path ────────────────────────────────────────────────────────────────
-async function rateViaAhrefs(domains: string[], token: string, apiKey: string, blacklist: Set<string>, errors: string[]): Promise<number> {
-  return runPool(domains, async (domain) => {
+// Token hết unit giữa chừng → domain đó KHÔNG ghi "API error" mà trả về `leftover`
+// để chấm bằng token kế / DFS (trước đây cả batch thành API error, không fallback).
+async function rateViaAhrefs(domains: string[], token: string, apiKey: string, blacklist: Set<string>, errors: string[]): Promise<{ rated: number; leftover: string[] }> {
+  const leftover: string[] = [];
+  let exhausted = false;
+  const rated = await runPool(domains, async (domain) => {
+    if (exhausted) { leftover.push(domain); throw new SkipDomain(); }
     let matched: Ref[] = [];
     let apiError: string | null = null;
     try {
       const refs = await ahrefsRefDomains(token, domain, MIN_DR);
       matched = refs.filter((r) => !r.isSpam && !blacklist.has(r.domain)).map((r) => ({ domain: r.domain, dr: r.dr }));
     } catch (e) { apiError = e instanceof Error ? e.message : "ahrefs refdomains error"; }
+    if (apiError && AHREFS_QUOTA_RE.test(apiError)) { exhausted = true; leftover.push(domain); throw new SkipDomain(); }
 
     let anchorsCompact = "";
     if (!apiError && matched.length) {
@@ -127,6 +139,7 @@ async function rateViaAhrefs(domains: string[], token: string, apiKey: string, b
     const r = await decide(apiKey, domain, matched, anchorsCompact, apiError);
     await writeRating(domain, matched, r);
   }, errors);
+  return { rated, leftover };
 }
 
 // ─── DataForSEO path (fallback) ──────────────────────────────────────────────────
@@ -203,20 +216,25 @@ export async function rateDomains(domainsRaw: string[], creds: RateCreds): Promi
   const blacklist = new Set<string>(REF_BLACKLIST_SET);
   for (const e of userBl) blacklist.add(e.domain.toLowerCase());
 
-  // 1) Ahrefs trước — dùng token đầu tiên CÒN credit (theo thứ tự).
+  // 1) Ahrefs trước — lần lượt các token CÒN credit; token hết unit giữa chừng → phần còn lại sang token kế.
+  let remaining = domains;
+  let rated = 0;
+  let source: RateResult["source"] = "none";
   for (const token of creds.ahrefsTokens) {
+    if (!remaining.length) break;
     if (!token?.trim()) continue;
     if (await ahrefsCreditOk(token.trim())) {
-      const rated = await rateViaAhrefs(domains, token.trim(), creds.openaiApiKey, blacklist, errors);
-      return { rated, source: "ahrefs", errors };
+      const r = await rateViaAhrefs(remaining, token.trim(), creds.openaiApiKey, blacklist, errors);
+      rated += r.rated; remaining = r.leftover; source = "ahrefs";
     }
   }
+  if (!remaining.length) return { rated, source, errors };
 
-  // 2) Hết credit Ahrefs (hoặc chưa cấu hình) → DataForSEO.
+  // 2) Hết credit Ahrefs (hoặc chưa cấu hình) → DataForSEO cho phần còn lại.
   if (creds.dfsLogin && creds.dfsPassword) {
-    const rated = await rateViaDfs(domains, creds, blacklist, errors);
+    rated += await rateViaDfs(remaining, creds, blacklist, errors);
     return { rated, source: "dfs", errors };
   }
 
-  return { rated: 0, source: "none", errors: [...errors, "Ahrefs hết credit và chưa cấu hình DataForSEO"] };
+  return { rated, source, errors: [...errors, "Ahrefs hết credit và chưa cấu hình DataForSEO"] };
 }
