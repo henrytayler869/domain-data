@@ -4,8 +4,9 @@
  * Cache 15' trong app_settings (key="partner_credits") — dùng chung mọi tab/người xem,
  * nên dù mở nhiều tab thì mỗi partner cũng chỉ bị gọi tối đa 1 lần / 15'.
  *
- * Claude: Anthropic KHÔNG có API trả số dư credit còn lại → chỉ biết còn/hết credit
- * qua 1 lệnh thử max_tokens=1 (chi phí ~0). Số dư xem tại console.anthropic.com.
+ * AI: Wayback actor dùng Claude chính, OpenAI dự phòng → card hiện provider ĐANG CHẠY
+ * (Claude nếu còn dùng được, không thì OpenAI). Cả Anthropic lẫn OpenAI đều KHÔNG có API
+ * trả số dư → chỉ biết còn/hết credit qua 1 lệnh thử max_tokens=1 (chi phí ~0).
  */
 
 import { supabase } from "./supabase";
@@ -23,10 +24,13 @@ export interface ApifyCredit {
   error: string | null;
 }
 
+export type AiProvider = "claude" | "openai";
+export interface AiStatus { ok: boolean; status: "ok" | "no_credit" | "invalid_key" | "not_configured" | "error"; error: string | null }
+
 export interface PartnerCredits {
   fetchedAt: string;
   apify: { ok: boolean; accounts: ApifyCredit[]; error: string | null };
-  claude: { ok: boolean; status: "ok" | "no_credit" | "invalid_key" | "not_configured" | "error"; error: string | null };
+  ai: { active: AiProvider | null; claude: AiStatus; openai: AiStatus };
   dataforseo: { ok: boolean; balanceUsd: number | null; error: string | null };
 }
 
@@ -58,7 +62,7 @@ async function fetchApify(): Promise<PartnerCredits["apify"]> {
   }
 }
 
-async function fetchClaude(apiKey: string): Promise<PartnerCredits["claude"]> {
+async function fetchClaude(apiKey: string): Promise<AiStatus> {
   if (!apiKey) return { ok: false, status: "not_configured", error: "Chưa có Anthropic API key" };
   try {
     const r = await fetch("https://api.anthropic.com/v1/messages", {
@@ -74,6 +78,28 @@ async function fetchClaude(apiKey: string): Promise<PartnerCredits["claude"]> {
     const msg: string = body?.error?.message ?? `HTTP ${r.status}`;
     if (r.status === 401 || r.status === 403) return { ok: false, status: "invalid_key", error: msg };
     if (/credit balance/i.test(msg)) return { ok: false, status: "no_credit", error: msg };
+    return { ok: false, status: "error", error: msg };
+  } catch (e) {
+    return { ok: false, status: "error", error: errMsg(e) };
+  }
+}
+
+async function fetchOpenai(apiKey: string): Promise<AiStatus> {
+  if (!apiKey) return { ok: false, status: "not_configured", error: "Chưa có OpenAI API key" };
+  try {
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      // Cùng model với Wayback actor — probe 1 token.
+      body: JSON.stringify({ model: "gpt-4o-mini", max_tokens: 1, messages: [{ role: "user", content: "hi" }] }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (r.ok) return { ok: true, status: "ok", error: null };
+    const body = await r.json().catch(() => ({}));
+    const msg: string = body?.error?.message ?? `HTTP ${r.status}`;
+    if (body?.error?.code === "insufficient_quota") return { ok: false, status: "no_credit", error: msg };
+    if (r.status === 401 || r.status === 403) return { ok: false, status: "invalid_key", error: msg };
     return { ok: false, status: "error", error: msg };
   } catch (e) {
     return { ok: false, status: "error", error: errMsg(e) };
@@ -110,15 +136,19 @@ async function readCache(): Promise<PartnerCredits | null> {
 /** Trả cache nếu còn trong 15' (trừ khi force) — hết hạn thì gọi lại 3 partner và lưu. */
 export async function getPartnerCredits(force = false): Promise<PartnerCredits> {
   const cached = await readCache();
-  if (!force && cached && Date.now() - new Date(cached.fetchedAt).getTime() < CREDITS_TTL_MS) return cached;
+  // cached.ai thiếu = bản cache cũ (trước khi có OpenAI) → coi như hết hạn.
+  if (!force && cached?.ai && Date.now() - new Date(cached.fetchedAt).getTime() < CREDITS_TTL_MS) return cached;
 
   const s = await readSettings();
-  const [apify, claude, dataforseo] = await Promise.all([
+  const [apify, claude, openai, dataforseo] = await Promise.all([
     fetchApify(),
     fetchClaude(s.anthropicApiKey),
+    fetchOpenai(s.openaiApiKey),
     fetchDataforseo(s.dataforseoLogin, s.dataforseoPassword),
   ]);
-  const fresh: PartnerCredits = { fetchedAt: new Date().toISOString(), apify, claude, dataforseo };
+  // Cùng thứ tự với Wayback actor: Claude chính, OpenAI dự phòng.
+  const active: AiProvider | null = claude.ok ? "claude" : openai.ok ? "openai" : null;
+  const fresh: PartnerCredits = { fetchedAt: new Date().toISOString(), apify, ai: { active, claude, openai }, dataforseo };
   try {
     await supabase().from(TABLE).upsert({ key: KEY, value: fresh, updated_at: fresh.fetchedAt }, { onConflict: "key" });
   } catch { /* không lưu được cache — vẫn trả số mới */ }

@@ -6,15 +6,26 @@ import { cn } from "@/lib/utils";
 
 // Shape khớp GET /api/partner-credits. Định nghĩa local để không kéo lib server vào bundle client.
 interface ApifyCredit { label: string; active: boolean; usageUsd: number | null; limitUsd: number | null; error: string | null }
+type AiProvider = "claude" | "openai";
+interface AiStatus { ok: boolean; status: "ok" | "no_credit" | "invalid_key" | "not_configured" | "error"; error: string | null }
 interface PartnerCredits {
   fetchedAt: string;
   apify: { ok: boolean; accounts: ApifyCredit[]; error: string | null };
-  claude: { ok: boolean; status: "ok" | "no_credit" | "invalid_key" | "not_configured" | "error"; error: string | null };
+  ai: { active: AiProvider | null; claude: AiStatus; openai: AiStatus };
   dataforseo: { ok: boolean; balanceUsd: number | null; error: string | null };
 }
 
 const POLL_MS = 15 * 60 * 1000;
 const LOW_USD = 5; // còn dưới $5 → tô vàng
+
+const AI_NAME: Record<AiProvider, string> = { claude: "Claude", openai: "OpenAI" };
+const AI_BILLING: Record<AiProvider, string> = {
+  claude: "https://console.anthropic.com/settings/billing",
+  openai: "https://platform.openai.com/settings/organization/billing/overview",
+};
+const AI_STATUS: Record<AiStatus["status"], string> = {
+  ok: "Còn credit", no_credit: "Hết credit", invalid_key: "Key lỗi", not_configured: "Chưa cấu hình", error: "Lỗi kiểm tra",
+};
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
 const remainingOf = (a: ApifyCredit) => (a.usageUsd != null && a.limitUsd != null ? Math.max(0, a.limitUsd - a.usageUsd) : null);
@@ -65,10 +76,10 @@ export function PartnerCreditCards() {
   const activeLeft = active ? remainingOf(active) : null;
   const totalLeft = accounts.reduce((s, a) => s + (remainingOf(a) ?? 0), 0);
 
-  const claude = data?.claude;
-  const claudeText = !claude ? "…" : {
-    ok: "Còn credit", no_credit: "Hết credit", invalid_key: "Key lỗi", not_configured: "Chưa cấu hình", error: "Lỗi kiểm tra",
-  }[claude.status];
+  // Provider đang chạy (Claude chính, OpenAI dự phòng); hỏng cả 2 → hiện Claude (provider chính).
+  const ai = data?.ai;
+  const aiShown: AiProvider = ai?.active ?? "claude";
+  const aiOther: AiProvider = aiShown === "claude" ? "openai" : "claude";
 
   const dfs = data?.dataforseo;
   const updated = data ? new Date(data.fetchedAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" }) : null;
@@ -89,11 +100,16 @@ export function PartnerCreditCards() {
           ))}
         />
         <Card
-          title="Claude API"
-          href="https://console.anthropic.com/settings/billing"
-          value={claudeText}
-          valueClass={claude ? (claude.ok ? "text-emerald-700" : "text-red-600") : ""}
-          sub={claude?.ok ? "Anthropic không có API xem số dư — bấm tiêu đề để xem" : claude?.error ?? undefined}
+          title={`AI · ${AI_NAME[aiShown]}${ai?.active ? " (đang chạy)" : ""}`}
+          href={AI_BILLING[aiShown]}
+          value={!ai ? "…" : AI_STATUS[ai[aiShown].status]}
+          valueClass={ai ? (ai[aiShown].ok ? "text-emerald-700" : "text-red-600") : ""}
+          sub={ai && (
+            <>
+              {ai[aiShown].ok ? "Không có API xem số dư — bấm tiêu đề để xem" : ai[aiShown].error}
+              {" · "}{AI_NAME[aiOther]}: {AI_STATUS[ai[aiOther].status]}
+            </>
+          )}
         />
         <Card
           title="DataforSEO"

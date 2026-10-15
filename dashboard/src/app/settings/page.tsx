@@ -30,6 +30,8 @@ interface SettingsData {
   n8nWebhookUrl: string;
   hasAnthropicKey: boolean;
   anthropicKeyHint: string;
+  hasOpenaiKey: boolean;
+  openaiKeyHint: string;
   hasAhrefs1: boolean;
   ahrefs1Hint: string;
   hasAhrefs2: boolean;
@@ -95,6 +97,11 @@ export default function SettingsPage() {
   const [showAnthropicKey, setShowAnthropicKey] = useState(false);
   const [savingAnthropic, setSavingAnthropic] = useState(false);
   const [anthropicStatus, setAnthropicStatus] = useState<"idle" | "ok" | "error">("idle");
+
+  const [openaiKey, setOpenaiKey] = useState("");
+  const [showOpenaiKey, setShowOpenaiKey] = useState(false);
+  const [savingOpenai, setSavingOpenai] = useState(false);
+  const [openaiStatus, setOpenaiStatus] = useState<"idle" | "ok" | "error">("idle");
 
   const [ahrefs1, setAhrefs1] = useState("");
   const [ahrefs2, setAhrefs2] = useState("");
@@ -233,6 +240,16 @@ export default function SettingsPage() {
       if (!res.ok) throw new Error((await res.json()).error);
       setAnthropicStatus("ok"); setAnthropicKey(""); await loadSettings(); setTimeout(() => setAnthropicStatus("idle"), 3000);
     } catch { setAnthropicStatus("error"); } finally { setSavingAnthropic(false); }
+  };
+
+  const saveOpenai = async () => {
+    if (!openaiKey.trim()) return;
+    setSavingOpenai(true); setOpenaiStatus("idle");
+    try {
+      const res = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ openaiApiKey: openaiKey.trim() }) });
+      if (!res.ok) throw new Error((await res.json()).error);
+      setOpenaiStatus("ok"); setOpenaiKey(""); await loadSettings(); setTimeout(() => setOpenaiStatus("idle"), 3000);
+    } catch { setOpenaiStatus("error"); } finally { setSavingOpenai(false); }
   };
 
   const saveAhrefs = async () => {
@@ -505,6 +522,52 @@ export default function SettingsPage() {
           {anthropicStatus === "error" && <div className="flex items-center gap-2 text-sm text-destructive"><XCircle className="h-4 w-4" />Lưu lỗi</div>}
           <Button onClick={saveAnthropic} disabled={savingAnthropic || !anthropicKey.trim()} className="gap-2">
             {savingAnthropic ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Lưu
+          </Button>
+        </div>
+      </div>
+
+      {/* OpenAI (AI dự phòng của Wayback actor — webapp chỉ dùng để xem credit) card */}
+      <div className="rounded-xl border bg-card shadow-sm">
+        <div className="flex items-center gap-3 px-6 py-4 border-b">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10">
+            <KeyRound className="h-5 w-5 text-primary" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold">OpenAI API — AI dự phòng (Wayback)</h2>
+            <p className="text-xs text-muted-foreground">Dán cùng key với env OPENAI_API_KEY của Wayback actor trên Apify — để card credit trên Domain Picker biết OpenAI còn credit không.</p>
+          </div>
+          {saved && (
+            <span className={cn("ml-auto inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border",
+              saved.hasOpenaiKey ? "text-emerald-600 bg-emerald-50 border-emerald-200" : "text-amber-600 bg-amber-50 border-amber-200")}>
+              <span className={cn("w-1.5 h-1.5 rounded-full inline-block", saved.hasOpenaiKey ? "bg-emerald-500" : "bg-amber-500")} />
+              {saved.hasOpenaiKey ? "Đã cấu hình" : "Chưa cấu hình"}
+            </span>
+          )}
+        </div>
+        <div className="px-6 py-5 space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1.5">API Key</label>
+            <div className="relative">
+              <Input
+                type={showOpenaiKey ? "text" : "password"}
+                value={openaiKey}
+                onChange={(e) => setOpenaiKey(e.target.value)}
+                placeholder={saved?.hasOpenaiKey ? "Để trống = giữ nguyên" : "sk-..."}
+                autoComplete="off"
+              />
+              <button type="button" onClick={() => setShowOpenaiKey((v) => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground text-xs">
+                {showOpenaiKey ? "Ẩn" : "Hiện"}
+              </button>
+            </div>
+            {saved?.hasOpenaiKey && (
+              <p className="text-xs text-muted-foreground mt-1.5">Hiện lưu: <code className="font-mono bg-muted px-1 rounded">{saved.openaiKeyHint}</code></p>
+            )}
+            <p className="text-xs text-muted-foreground mt-1.5">Lấy tại <a className="text-primary underline" href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">platform.openai.com</a>. Chỉ lưu server-side, không trả lại client.</p>
+          </div>
+          {openaiStatus === "ok" && <div className="flex items-center gap-2 text-sm text-emerald-600"><CheckCircle2 className="h-4 w-4" />Đã lưu</div>}
+          {openaiStatus === "error" && <div className="flex items-center gap-2 text-sm text-destructive"><XCircle className="h-4 w-4" />Lưu lỗi</div>}
+          <Button onClick={saveOpenai} disabled={savingOpenai || !openaiKey.trim()} className="gap-2">
+            {savingOpenai ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Lưu
           </Button>
         </div>
       </div>
