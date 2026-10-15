@@ -14,6 +14,7 @@ import { readDb, readTrafficMap } from "./backlink-db";
 import { rootDomain } from "./root-domain";
 import { REF_BLACKLIST_SET } from "./picker-csv";
 import { readAll as readRefBlacklist } from "./ref-blacklist-db";
+import { upsertUnmatchedRefs } from "./unmatched-refs-db";
 import { upsertRows, upsertAssessments } from "./ahrefs-db";
 import { ahrefsCreditOk, ahrefsRefDomains, ahrefsAnchors } from "./ahrefs-mcp";
 
@@ -150,6 +151,7 @@ async function rateViaDfs(domains: string[], creds: RateCreds, blacklist: Set<st
 
   return runPool(domains, async (domain) => {
     const matched: (Ref & { traffic: number | null })[] = [];
+    const unmatched: string[] = [];
     let apiError: string | null = null;
     try {
       const items = await dfsCall<DfsRefItem>(DFS_REFDOMAINS, auth, domain, 100);
@@ -159,11 +161,17 @@ async function rateViaDfs(domains: string[], creds: RateCreds, blacklist: Set<st
         if (!ref || seen.has(ref) || blacklist.has(ref)) continue;
         seen.add(ref);
         const dr = drMap.get(ref);
-        if (dr == null) continue;
+        if (dr == null) { unmatched.push(ref); continue; }
         matched.push({ domain: ref, dr, traffic: trafficMap.get(ref) ?? null });
       }
       matched.sort((a, b) => b.dr - a.dr);
     } catch (e) { apiError = `refdomains: ${e instanceof Error ? e.message : "fetch error"}`; }
+
+    // Lưu ref chưa có trong backlink_db (đã loại blacklist) để check DR sau. Lỗi chỉ log.
+    if (unmatched.length) {
+      await upsertUnmatchedRefs(unmatched).catch((e) =>
+        console.error(`[rating] upsertUnmatchedRefs ${domain}: ${e instanceof Error ? e.message : e}`));
+    }
 
     const dk1 = matched.some((m) => m.dr > 90);
     const dk2 = !dk1 && matched.some((m) => m.dr >= 70 && m.dr <= 89 && (m.traffic ?? 0) >= 1_000_000);
