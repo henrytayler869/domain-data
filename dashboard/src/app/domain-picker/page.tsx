@@ -3,6 +3,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { Upload, Loader2, Copy, RotateCcw, Rocket, Send, ShoppingCart, RefreshCw, Ban, Eye, Trash2 } from "lucide-react";
 import { GnameAccountSelect, useGnameAccount } from "@/components/gname-account-select";
+import { PartnerCreditCards } from "@/components/partner-credits";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { parseCsv, parseUnifiedCsv } from "@/lib/picker-csv";
@@ -829,6 +830,8 @@ export default function DomainPickerPage() {
         <h1 className="text-2xl font-bold tracking-tight">Domain Picker</h1>
         <p className="text-sm text-muted-foreground mt-1">Pipeline tự động: nhập → lọc mới → mua được?+giá (≤${MAX_PRICE}) → Wayback → gửi Clean qua DataForSEO (N8N).</p>
       </div>
+
+      <PartnerCreditCards />
 
       {/* Stepper */}
       <div className="flex items-center gap-1 flex-wrap">
