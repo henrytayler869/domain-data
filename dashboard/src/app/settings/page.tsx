@@ -526,14 +526,14 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* OpenAI (AI dự phòng của Wayback actor — webapp chỉ dùng để xem credit) card */}
+      {/* OpenAI (AI chính của Wayback actor — webapp chỉ dùng để xem credit) card */}
       <div className="rounded-xl border bg-card shadow-sm">
         <div className="flex items-center gap-3 px-6 py-4 border-b">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10">
             <KeyRound className="h-5 w-5 text-primary" />
           </div>
           <div>
-            <h2 className="text-sm font-semibold">OpenAI API — AI dự phòng (Wayback)</h2>
+            <h2 className="text-sm font-semibold">OpenAI API — AI Wayback</h2>
             <p className="text-xs text-muted-foreground">Dán cùng key với env OPENAI_API_KEY của Wayback actor trên Apify — để card credit trên Domain Picker biết OpenAI còn credit không.</p>
           </div>
           {saved && (

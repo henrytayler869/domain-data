@@ -18,7 +18,7 @@ export interface Settings {
   dataforseoPassword: string; // stored server-side only
   n8nWebhookUrl: string;      // webhook N8N nhận domain Clean → DataForSEO (legacy; rating giờ chạy trong webapp)
   anthropicApiKey: string;    // stored server-side only — dùng cho rating (Claude Haiku) chạy thẳng trong webapp
-  openaiApiKey: string;       // stored server-side only — AI dự phòng của Wayback actor; webapp chỉ dùng để xem credit
+  openaiApiKey: string;       // stored server-side only — AI chính của Wayback actor; webapp chỉ dùng để xem credit
   ahrefsToken1: string;       // MCP token Ahrefs #1 (ưu tiên) — server-side only
   ahrefsToken2: string;       // MCP token Ahrefs #2 (dự phòng) — server-side only
   ahrefsToken3: string;       // MCP token Ahrefs #3 (dự phòng) — server-side only

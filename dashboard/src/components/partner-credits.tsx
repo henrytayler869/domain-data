@@ -76,9 +76,9 @@ export function PartnerCreditCards() {
   const activeLeft = active ? remainingOf(active) : null;
   const totalLeft = accounts.reduce((s, a) => s + (remainingOf(a) ?? 0), 0);
 
-  // Provider đang chạy (Claude chính, OpenAI dự phòng); hỏng cả 2 → hiện Claude (provider chính).
+  // Provider đang chạy (OpenAI chính, Claude dự phòng); hỏng cả 2 → hiện OpenAI (provider chính).
   const ai = data?.ai;
-  const aiShown: AiProvider = ai?.active ?? "claude";
+  const aiShown: AiProvider = ai?.active ?? "openai";
   const aiOther: AiProvider = aiShown === "claude" ? "openai" : "claude";
 
   const dfs = data?.dataforseo;

@@ -4,7 +4,7 @@
  * Cache 15' trong app_settings (key="partner_credits") — dùng chung mọi tab/người xem,
  * nên dù mở nhiều tab thì mỗi partner cũng chỉ bị gọi tối đa 1 lần / 15'.
  *
- * AI: Wayback actor dùng Claude chính, OpenAI dự phòng → card hiện provider ĐANG CHẠY
+ * AI: Wayback actor chạy OpenAI là chính, Claude dự phòng → card hiện provider ĐANG CHẠY
  * (Claude nếu còn dùng được, không thì OpenAI). Cả Anthropic lẫn OpenAI đều KHÔNG có API
  * trả số dư → chỉ biết còn/hết credit qua 1 lệnh thử max_tokens=1 (chi phí ~0).
  */
@@ -146,8 +146,8 @@ export async function getPartnerCredits(force = false): Promise<PartnerCredits> 
     fetchOpenai(s.openaiApiKey),
     fetchDataforseo(s.dataforseoLogin, s.dataforseoPassword),
   ]);
-  // Cùng thứ tự với Wayback actor: Claude chính, OpenAI dự phòng.
-  const active: AiProvider | null = claude.ok ? "claude" : openai.ok ? "openai" : null;
+  // Cùng thứ tự với Wayback actor: OpenAI chính, Claude dự phòng.
+  const active: AiProvider | null = openai.ok ? "openai" : claude.ok ? "claude" : null;
   const fresh: PartnerCredits = { fetchedAt: new Date().toISOString(), apify, ai: { active, claude, openai }, dataforseo };
   try {
     await supabase().from(TABLE).upsert({ key: KEY, value: fresh, updated_at: fresh.fetchedAt }, { onConflict: "key" });
