@@ -30,12 +30,6 @@ interface SettingsData {
   n8nWebhookUrl: string;
   hasAnthropicKey: boolean;
   anthropicKeyHint: string;
-  hasOpenaiKey: boolean;
-  openaiKeyHint: string;
-  hasOpenaiAdminKey: boolean;
-  openaiAdminKeyHint: string;
-  openaiBaselineUsd: string;
-  openaiBaselineAt: string;
   hasAhrefs1: boolean;
   ahrefs1Hint: string;
   hasAhrefs2: boolean;
@@ -101,13 +95,6 @@ export default function SettingsPage() {
   const [showAnthropicKey, setShowAnthropicKey] = useState(false);
   const [savingAnthropic, setSavingAnthropic] = useState(false);
   const [anthropicStatus, setAnthropicStatus] = useState<"idle" | "ok" | "error">("idle");
-
-  const [openaiKey, setOpenaiKey] = useState("");
-  const [showOpenaiKey, setShowOpenaiKey] = useState(false);
-  const [savingOpenai, setSavingOpenai] = useState(false);
-  const [openaiStatus, setOpenaiStatus] = useState<"idle" | "ok" | "error">("idle");
-  const [openaiAdminKey, setOpenaiAdminKey] = useState("");
-  const [openaiBaseline, setOpenaiBaseline] = useState("");
 
   const [ahrefs1, setAhrefs1] = useState("");
   const [ahrefs2, setAhrefs2] = useState("");
@@ -246,23 +233,6 @@ export default function SettingsPage() {
       if (!res.ok) throw new Error((await res.json()).error);
       setAnthropicStatus("ok"); setAnthropicKey(""); await loadSettings(); setTimeout(() => setAnthropicStatus("idle"), 3000);
     } catch { setAnthropicStatus("error"); } finally { setSavingAnthropic(false); }
-  };
-
-  const openaiDirty = !!(openaiKey.trim() || openaiAdminKey.trim() || openaiBaseline.trim());
-  const saveOpenai = async () => {
-    if (!openaiDirty) return;
-    if (openaiBaseline.trim() && !Number.isFinite(Number(openaiBaseline.trim()))) { setOpenaiStatus("error"); return; }
-    setSavingOpenai(true); setOpenaiStatus("idle");
-    try {
-      // Chỉ gửi field có nhập — server giữ nguyên field để trống.
-      const body: Record<string, string> = {};
-      if (openaiKey.trim()) body.openaiApiKey = openaiKey.trim();
-      if (openaiAdminKey.trim()) body.openaiAdminKey = openaiAdminKey.trim();
-      if (openaiBaseline.trim()) body.openaiBaselineUsd = openaiBaseline.trim();
-      const res = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      if (!res.ok) throw new Error((await res.json()).error);
-      setOpenaiStatus("ok"); setOpenaiKey(""); setOpenaiAdminKey(""); setOpenaiBaseline(""); await loadSettings(); setTimeout(() => setOpenaiStatus("idle"), 3000);
-    } catch { setOpenaiStatus("error"); } finally { setSavingOpenai(false); }
   };
 
   const saveAhrefs = async () => {
@@ -535,80 +505,6 @@ export default function SettingsPage() {
           {anthropicStatus === "error" && <div className="flex items-center gap-2 text-sm text-destructive"><XCircle className="h-4 w-4" />Lưu lỗi</div>}
           <Button onClick={saveAnthropic} disabled={savingAnthropic || !anthropicKey.trim()} className="gap-2">
             {savingAnthropic ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Lưu
-          </Button>
-        </div>
-      </div>
-
-      {/* OpenAI (AI chính của Wayback actor — webapp chỉ dùng để xem credit) card */}
-      <div className="rounded-xl border bg-card shadow-sm">
-        <div className="flex items-center gap-3 px-6 py-4 border-b">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10">
-            <KeyRound className="h-5 w-5 text-primary" />
-          </div>
-          <div>
-            <h2 className="text-sm font-semibold">OpenAI API — AI Wayback</h2>
-            <p className="text-xs text-muted-foreground">Dán cùng key với env OPENAI_API_KEY của Wayback actor trên Apify — để card credit trên Domain Picker biết OpenAI còn credit không.</p>
-          </div>
-          {saved && (
-            <span className={cn("ml-auto inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border",
-              saved.hasOpenaiKey ? "text-emerald-600 bg-emerald-50 border-emerald-200" : "text-amber-600 bg-amber-50 border-amber-200")}>
-              <span className={cn("w-1.5 h-1.5 rounded-full inline-block", saved.hasOpenaiKey ? "bg-emerald-500" : "bg-amber-500")} />
-              {saved.hasOpenaiKey ? "Đã cấu hình" : "Chưa cấu hình"}
-            </span>
-          )}
-        </div>
-        <div className="px-6 py-5 space-y-4">
-          <div>
-            <label className="block text-sm font-medium mb-1.5">API Key</label>
-            <div className="relative">
-              <Input
-                type={showOpenaiKey ? "text" : "password"}
-                value={openaiKey}
-                onChange={(e) => setOpenaiKey(e.target.value)}
-                placeholder={saved?.hasOpenaiKey ? "Để trống = giữ nguyên" : "sk-..."}
-                autoComplete="off"
-              />
-              <button type="button" onClick={() => setShowOpenaiKey((v) => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground text-xs">
-                {showOpenaiKey ? "Ẩn" : "Hiện"}
-              </button>
-            </div>
-            {saved?.hasOpenaiKey && (
-              <p className="text-xs text-muted-foreground mt-1.5">Hiện lưu: <code className="font-mono bg-muted px-1 rounded">{saved.openaiKeyHint}</code></p>
-            )}
-            <p className="text-xs text-muted-foreground mt-1.5">Lấy tại <a className="text-primary underline" href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">platform.openai.com</a>. Chỉ lưu server-side, không trả lại client.</p>
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1.5">Admin key (để hiện số tiền)</label>
-            <Input
-              type="password"
-              value={openaiAdminKey}
-              onChange={(e) => setOpenaiAdminKey(e.target.value)}
-              placeholder={saved?.hasOpenaiAdminKey ? "Để trống = giữ nguyên" : "sk-admin-..."}
-              autoComplete="off"
-            />
-            {saved?.hasOpenaiAdminKey && (
-              <p className="text-xs text-muted-foreground mt-1.5">Hiện lưu: <code className="font-mono bg-muted px-1 rounded">{saved.openaiAdminKeyHint}</code></p>
-            )}
-            <p className="text-xs text-muted-foreground mt-1.5">OpenAI không có API xem số dư — Admin key đọc chi phí đã tiêu. Tạo tại <a className="text-primary underline" href="https://platform.openai.com/settings/organization/admin-keys" target="_blank" rel="noopener noreferrer">Admin keys</a> (quyền Usage: Read là đủ).</p>
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1.5">Số dư hiện tại ($)</label>
-            <Input
-              inputMode="decimal"
-              value={openaiBaseline}
-              onChange={(e) => setOpenaiBaseline(e.target.value)}
-              placeholder={saved?.openaiBaselineUsd ? `Đang dùng $${saved.openaiBaselineUsd} — nhập số mới khi nạp thêm` : "vd: 25.40"}
-              autoComplete="off"
-            />
-            {saved?.openaiBaselineUsd && saved.openaiBaselineAt && (
-              <p className="text-xs text-muted-foreground mt-1.5">Mốc: ${saved.openaiBaselineUsd} lúc {new Date(saved.openaiBaselineAt).toLocaleString("vi-VN")}</p>
-            )}
-            <p className="text-xs text-muted-foreground mt-1.5">Chép từ <a className="text-primary underline" href="https://platform.openai.com/settings/organization/billing/overview" target="_blank" rel="noopener noreferrer">trang Billing</a>. Card hiện ≈ số này − chi phí từ lúc lưu. Nạp thêm tiền thì nhập lại.</p>
-          </div>
-          {openaiStatus === "ok" && <div className="flex items-center gap-2 text-sm text-emerald-600"><CheckCircle2 className="h-4 w-4" />Đã lưu</div>}
-          {openaiStatus === "error" && <div className="flex items-center gap-2 text-sm text-destructive"><XCircle className="h-4 w-4" />Lưu lỗi</div>}
-          <Button onClick={saveOpenai} disabled={savingOpenai || !openaiDirty} className="gap-2">
-            {savingOpenai ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Lưu
           </Button>
         </div>
       </div>
