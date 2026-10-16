@@ -23,15 +23,16 @@ export interface AnchorFeatures {
 
 const NEUTRAL = /^(about( us)?|home|homepage|website|web ?site|site|here|click here|link|this|read more|more|visit|instagram|facebook|twitter|youtube|linkedin|pinterest|portfolio|blog|contact( us)?|external info|source|official site|homepage link|\(no ?anchor\)|image|img|logo|\s*)$/i;
 const SEO_SPAM = /(backlink|guest ?post|\bseo\b|domain rating|\bdr\b|\bda\b|\btf\b|trust ?flow|majestic|\bmoz\b|rank(ing|s)? higher|authority (link|backlink)|dofollow|link ?building|website worth|site worth|traffic boost|first page)/i;
-// Chủ đề xấu — dùng ranh giới từ để tránh dính "alphabet", "sexton"…
+// Chủ đề xấu — ranh giới từ UNICODE: \b của JS coi "é" là ngoài từ nên "spécialisé" từng
+// khớp "cialis" (shih-tzu-elevage.com bị gắn chủ đề thuốc). Dùng lookaround \p{L}\p{N} + cờ u.
 const BAD_TOPIC = new RegExp([
   "casino", "slots?", "poker", "judi", "togel", "sbobet", "gacor", "bandar", "baccarat", "roulette", "sportsbook",
   "bet(ting|s)?", "1xbet", "betting", "gambl\\w*", "jackpot", "lottery", "toto",
-  "escort", "porn\\w*", "xxx", "sex\\w*", "nude\\w*", "hentai", "camgirl\\w*", "onlyfans",
+  "escort", "porn\\w*", "xxx", "sex", "sexy", "sexual", "sex(cam|chat|shop|toys?)", "nude\\w*", "hentai", "camgirl\\w*", "onlyfans",
   "viagra", "cialis", "levitra", "kamagra", "pharmacy", "pills?", "tramadol", "xanax",
   "replica", "fake (watches|bags)", "payday loans?", "cash loans?",
   "darknet", "dark web",
-].map((w) => `\\b${w}\\b`).join("|") + "|博彩|赌|娱乐城|彩票|色情|av女优|성인|카지노|สล็อต|คาสิโน", "i");
+].map((w) => `(?<![\\p{L}\\p{N}])(?:${w})(?![\\p{L}\\p{N}])`).join("|") + "|博彩|赌|娱乐城|彩票|色情|av女优|성인|카지노|สล็อต|คาสิโน", "iu");
 
 const norm = (s: string) => s.toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]/g, "");
 
@@ -62,9 +63,14 @@ export function resolveAnchorQuality(f: AnchorFeatures, ai: AnchorQuality | null
   const aiBad = ai === "heavy_spam" || ai === "malicious";
   // Có anchor chủ đề xấu đáng kể → tin AI ở mức xấu; AI bảo sạch thì vẫn ít nhất "mixed".
   if (f.bad >= 0.05 || f.badAnchors.length >= 2) return aiBad || ai === "mixed" ? ai! : "mixed";
-  const good = f.brand + f.neutral;
-  if (good >= 0.9) return "clean";
-  if (good >= 0.5) return aiBad && f.other >= 0.3 ? ai! : "minor_spam";
-  // Brand thiểu số: phần lớn là rác SEO / anchor lạ → để AI phân xử giữa mixed và xấu.
+  // Rác SEO tự động ("SEO Authority Backlinks for <domain>"…) bám gần như mọi domain hết hạn →
+  // coi là NHIỄU: tỉ lệ brand tính trên phần anchor CÒN LẠI; có rác SEO (≥5%) thì tối đa minor_spam (TB).
+  const rest = 1 - f.seo;
+  if (rest < 0.02) return "mixed";                          // ~100% rác SEO, không còn anchor nào để xét brand
+  const good = (f.brand + f.neutral) / rest;
+  const otherShare = f.other / rest;
+  if (good >= 0.9) return f.seo >= 0.05 ? "minor_spam" : "clean";
+  if (good >= 0.5) return aiBad && otherShare >= 0.3 ? ai! : "minor_spam";
+  // Brand thiểu số trong phần còn lại: anchor lạ / ngôn ngữ khác áp đảo → AI phân xử mixed hay xấu.
   return aiBad || ai === "mixed" ? ai! : "mixed";
 }

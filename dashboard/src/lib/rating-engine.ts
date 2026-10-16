@@ -115,7 +115,14 @@ async function decide(apiKey: string, domain: string, matched: Ref[], anchors: A
   let out = await classifyAnchors(apiKey, input);
   if (!out) out = await classifyAnchors(apiKey, input);           // JSON lỗi / nhãn lạ → hỏi lại 1 lần
   const q = resolveAnchorQuality(features, out?.q ?? null);
-  const category = out?.category || (q === "clean" ? "Clean brand niche" : q === "minor_spam" ? "Brand + SEO spam anchors" : "Mixed anchors");
+  // Nhãn khớp kết quả cuối: ca code quyết định (sạch / spam nhẹ) dùng nhãn cố định — AI hay
+  // ghi "Mixed/foreign anchors" cho cả domain sạch; ca xấu / lẫn lộn do AI quyết thì giữ nhãn AI.
+  const category =
+    q === "clean" ? "Clean brand niche"
+    : q === "minor_spam" ? "Brand + SEO spam anchors"
+    : q === "unknown" ? "No anchors"
+    : out && out.q === q && out.category ? out.category
+    : q === "mixed" ? "Mixed / SEO spam anchors" : "Spam anchors";
   return { rating: computeRating(q, matched), category, detail: `DR>90:${dk1Count} | ${refsString}` };
 }
 
