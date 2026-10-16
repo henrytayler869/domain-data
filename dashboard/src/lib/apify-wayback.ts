@@ -53,6 +53,8 @@ export interface ApifyRunMeta {
 // số lần thử của domain (16/10/2026: ~2.900 run fail, 409 domain bị "tạm bỏ"). Rate-limit
 // thật thì run dò tick sau thành công → tự chạy lại.
 export const AI_UNAVAILABLE_RE = /(AI|Claude) (unavailable|transient error)/i;
+// Apify tự huỷ run vì tài khoản chạm trần chi tiêu tháng — lỗi tài khoản, không phải lỗi domain.
+export const APIFY_LIMIT_RE = /maximum usage|usage limit|monthly usage/i;
 
 export interface WaybackResultItem {
   domain: string;

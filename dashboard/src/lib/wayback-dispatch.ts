@@ -23,16 +23,16 @@ import { supabase } from "./supabase";
 import { readGnamePricing } from "./gname-pricing";
 import { listPendingRuns, createRun } from "./wayback-db";
 import { pollAndIngestRun } from "./wayback-poll";
-import { startWaybackRun, countActiveRuns, AI_UNAVAILABLE_RE } from "./apify-wayback";
+import { startWaybackRun, countActiveRuns, AI_UNAVAILABLE_RE, APIFY_LIMIT_RE } from "./apify-wayback";
 import { readSettings, ensureUsableApifyAccount, activeApifyUsable, type Settings } from "./settings";
 import { rateDomains } from "./rating-engine";
 import { startGateJob } from "./gname-gate";
 import { readReconcileState, writeReconcileState, type CreditFlag, type ReconcileState } from "./pipeline-status";
 
-const CAP = 75;                 // ≤75 concurrent. Apify cho 128 NHƯNG mỗi run xong reconciler
+const CAP = 110;                // ≤110 concurrent (chừa 18/128 slot cho build/run thử). Mỗi run xong reconciler
 // phải poll + ingest JSONB nặng (content_history/problematic) → CAP=100 dồn nhiều giờ làm
 // NGHẼN Supabase (readAll Kho 2,3s→83s, query treo). Batch 5 (~35'/run) → 75 slot chỉ ~10 run
-// xong mỗi tick 5' (DB self-host VPS) → ~500 domain/giờ. Thấy DB chậm thì hạ lại 40.
+// xong mỗi tick 5' (DB self-host VPS) → ~500 domain/giờ. 2026-10-16 nâng 110 (VPS tải 0,6/4 core, query DB ~15ms). Thấy DB chậm thì hạ lại 75.
 // Quét SÂU (maxSnapshots cao) → 1 run nặng hơn nhiều → phải chia batch NHỎ để không
 // bị Apify timeout. Batch=50 sâu sẽ timeout; batch nhỏ + retry đảm bảo mọi domain xong.
 const BATCH = 5;                // domain / Wayback run (deep → nhỏ). Retry → batch=1.
@@ -173,7 +173,7 @@ export async function dispatchTick(opts: { waybackOnly?: boolean } = {}): Promis
     for (const r of failed) {
       // Run fail vì AI (OpenAI) hết credit / key lỗi KHÔNG phải lỗi của domain → không tính vào số lần thử
       // (nếu tính, hết credit 2h là domain bị "tạm bỏ" 48h dù đã nạp tiền).
-      if (AI_UNAVAILABLE_RE.test(r.error ?? "")) continue;
+      if (AI_UNAVAILABLE_RE.test(r.error ?? "") || APIFY_LIMIT_RE.test(r.error ?? "")) continue;
       for (const t of (r.targets ?? [])) {
         const d = String(t).toLowerCase();
         failCounts.set(d, (failCounts.get(d) ?? 0) + 1);
