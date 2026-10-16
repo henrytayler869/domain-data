@@ -48,7 +48,11 @@ export interface ApifyRunMeta {
 
 /** Actor tự fail vì AI không dùng được (hết credit / key lỗi) — xem actor src/main.js. */
 // "Claude unavailable" = message của build actor cũ (trước khi bỏ Claude)
-export const AI_UNAVAILABLE_RE = /(AI|Claude) unavailable/i;
+// "AI transient error ... (openai: rate_limit)": actor gộp 429 insufficient_quota (HẾT CREDIT)
+// vào rate_limit → phải coi như AI hỏng, không thì reconciler gửi 40 run fail mỗi 5' và đốt
+// số lần thử của domain (16/10/2026: ~2.900 run fail, 409 domain bị "tạm bỏ"). Rate-limit
+// thật thì run dò tick sau thành công → tự chạy lại.
+export const AI_UNAVAILABLE_RE = /(AI|Claude) (unavailable|transient error)/i;
 
 export interface WaybackResultItem {
   domain: string;
