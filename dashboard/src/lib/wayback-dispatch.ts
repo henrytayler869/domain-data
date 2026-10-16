@@ -29,9 +29,10 @@ import { rateDomains } from "./rating-engine";
 import { startGateJob } from "./gname-gate";
 import { readReconcileState, writeReconcileState, type CreditFlag, type ReconcileState } from "./pipeline-status";
 
-const CAP = 40;                 // ≤40 concurrent. Apify cho 128 NHƯNG mỗi run xong reconciler
+const CAP = 75;                 // ≤75 concurrent. Apify cho 128 NHƯNG mỗi run xong reconciler
 // phải poll + ingest JSONB nặng (content_history/problematic) → CAP=100 dồn nhiều giờ làm
-// NGHẼN Supabase (readAll Kho 2,3s→83s, query treo). 40 = throughput khá hơn 30 mà DB thở được.
+// NGHẼN Supabase (readAll Kho 2,3s→83s, query treo). Batch 5 (~35'/run) → 75 slot chỉ ~10 run
+// xong mỗi tick 5' (DB self-host VPS) → ~500 domain/giờ. Thấy DB chậm thì hạ lại 40.
 // Quét SÂU (maxSnapshots cao) → 1 run nặng hơn nhiều → phải chia batch NHỎ để không
 // bị Apify timeout. Batch=50 sâu sẽ timeout; batch nhỏ + retry đảm bảo mọi domain xong.
 const BATCH = 5;                // domain / Wayback run (deep → nhỏ). Retry → batch=1.
