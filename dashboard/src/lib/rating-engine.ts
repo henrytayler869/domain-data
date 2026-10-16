@@ -16,6 +16,8 @@ import { REF_BLACKLIST_SET } from "./picker-csv";
 import { readAll as readRefBlacklist } from "./ref-blacklist-db";
 import { upsertUnmatchedRefs } from "./unmatched-refs-db";
 import { upsertRows, upsertAssessments } from "./ahrefs-db";
+import { RATING } from "./rating-normalize";
+import { analyzeAnchors, resolveAnchorQuality, type AnchorIn, type AnchorQuality } from "./anchor-analysis";
 import { ahrefsCreditOk, ahrefsRefDomains, ahrefsAnchors, AHREFS_QUOTA_RE } from "./ahrefs-mcp";
 
 const DFS_REFDOMAINS = "https://api.dataforseo.com/v3/backlinks/referring_domains/live";
@@ -24,75 +26,97 @@ const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 const OPENAI_MODEL = "gpt-4o-mini";
 const CONCURRENCY = 5;
 const MIN_DR = 70;
-const BACKLINK_DB_ADD_DR = 90;                // ref Ahrefs DR > ngưỡng này → bổ sung vào backlink_db                              // ref DR≥70 = ĐK1 (>90) hoặc ĐK2 (70-89)
+const BACKLINK_DB_ADD_DR = 90;                // ref Ahrefs DR > ngưỡng này → bổ sung vào backlink_db
 
-// Prompt phân loại (giữ nguyên tiêu chí từ thời N8N).
-const SYSTEM_PROMPT = `Bạn phân loại chất lượng aged domain dựa trên hồ sơ Referring Domain (DR đã đối chiếu DB) + Anchor text. Trả về DUY NHẤT 1 JSON object (không markdown, không \`\`\`), format:
-{"rating":"...","category":"...","detail":"..."}
+// AI CHỈ đánh giá chất lượng ANCHOR; rating do code tính (computeRating) theo đúng tiêu chí cũ:
+//   ✅ TỐT        : anchor sạch (brand/niche, không spam, ngôn ngữ nhất quán) + ref DR>90 hoặc nhiều (≥3) ref DR≥70
+//   ⚠️ TRUNG BÌNH : real brand + vài anchor spam nhẹ, hoặc anchor sạch nhưng chỉ có ref DR 70–89 (ít)
+//   ⚠️ RỦI RO     : mixed — anchor ngôn ngữ lạ/casino/loan lẻ tẻ, hoặc ít ref khớp → cần người xem
+//   ❌ XẤU        : nhiều anchor gambling/judi/poker/slot/casino/escort/viagra/cialis/replica/PBN, hoặc bị hack
+//   ❌ RẤT XẤU    : drug marketplace, phishing, black SEO marketplace
+// Trước đây để model tự chọn rating: gpt-4o-mini gần như không bao giờ cho TỐT (9/9 domain sạch có
+// ref DR>90 bị hạ TRUNG BÌNH) và đôi khi viết lệch "✅ TỐI" → bộ lọc bỏ sót.
+const SYSTEM_PROMPT = `Bạn đánh giá CHẤT LƯỢNG ANCHOR TEXT của một aged domain (KHÔNG chấm điểm domain — hệ thống tự tính từ DR). Trả về DUY NHẤT 1 JSON object:
+{"anchor_quality":"...","category":"...","detail":"..."}
 
-RULE rating (chọn 1):
-- "✅ TỐT": anchor brand/niche-relevant, không có spam keyword, ngôn ngữ nhất quán, có ref DR cao (DR>90 hoặc nhiều ref DR≥70).
-- "⚠️ TRUNG BÌNH": real brand + vài anchor minor spam, hoặc max DR 70-89.
-- "⚠️ RỦI RO": mixed — vài anchor ngôn ngữ lạ/casino/loan lẻ tẻ, ít ref khớp, cần human review.
-- "❌ XẤU": nhiều anchor gambling/judi/poker/slot/casino/escort/viagra/cialis/replica/PBN, hoặc hacked.
-- "❌ RẤT XẤU": drug marketplace, phishing, black SEO marketplace.
+anchor_quality (chọn đúng 1):
+- "clean": anchor là brand / tên miền / tên người / chủ đề ngách hợp lý, KHÔNG có từ khoá spam, ngôn ngữ nhất quán.
+- "minor_spam": phần lớn là brand thật nhưng có VÀI anchor spam nhẹ (vd "click here", từ khoá SEO chung chung, 1–2 anchor ngôn ngữ lạ).
+- "mixed": lẫn lộn — nhiều anchor ngôn ngữ lạ, casino/loan/pharma xuất hiện lẻ tẻ, khó kết luận, cần người xem.
+- "heavy_spam": NHIỀU anchor gambling/judi/poker/slot/casino/escort/sex/viagra/cialis/replica/PBN, hoặc dấu hiệu domain bị hack.
+- "malicious": drug marketplace, darknet, phishing, black SEO marketplace.
+- "unknown": không có anchor nào để đánh giá.
 
-Nếu API error: rating="⚠️ RỦI RO", category="API error", detail=<error>.
-Nếu refs_count=0: rating="⚠️ RỦI RO", category="No matched backlinks", detail="Không có ref nào khớp DB".
+Lưu ý khi đánh giá:
+- Nhãn ", spam" cạnh anchor là cờ của Ahrefs về SITE trỏ link (site kém chất lượng), KHÔNG nói gì về nội dung anchor. Anchor là brand / tên miền / tên người thì vẫn là anchor sạch dù có nhãn đó.
+- Anchor rác SEO tự động chứa tên miền (vd "SEO Authority Backlinks for <domain>", "Rank Higher on Google with <domain>", "<domain> website worth", danh bạ tự sinh) là spam liên kết phổ biến, KHÔNG phải chủ đề cá cược/người lớn: tính là "minor_spam" nếu anchor brand vẫn chiếm phần lớn, "mixed" nếu loại này áp đảo.
+- Chỉ chọn "heavy_spam" khi CHỦ ĐỀ anchor là gambling/sex/pharma/replica/PBN… hoặc có dấu hiệu bị hack.
 
-category: ngắn gọn (vd: 'Clean brand niche', 'Gambling anchors', 'Mixed/foreign anchors').
-detail: 1-2 câu, nêu top 3-5 anchor + ngôn ngữ + brand hint + max DR.`;
+category: nhãn ngắn tiếng Anh (vd 'Clean brand niche', 'Gambling anchors', 'Mixed/foreign anchors', 'PBN network').
+detail: 1-2 câu, nêu top 3-5 anchor + ngôn ngữ + brand hint.`;
+
+/** Rating tất định từ chất lượng anchor (AI) + DR các ref sạch đã khớp. */
+export function computeRating(q: AnchorQuality, matched: Ref[]): string {
+  const strong = matched.filter((m) => m.dr >= MIN_DR).length;     // ref DR≥70
+  const dk1 = matched.some((m) => m.dr > 90);
+  switch (q) {
+    case "malicious": return RATING.RAT_XAU;
+    case "heavy_spam": return RATING.XAU;
+    case "mixed": return RATING.RUI_RO;
+    case "minor_spam": return strong >= 1 ? RATING.TRUNG_BINH : RATING.RUI_RO;
+    case "unknown": return strong >= 1 ? RATING.TRUNG_BINH : RATING.RUI_RO;
+    case "clean": return dk1 || strong >= 3 ? RATING.TOT : strong >= 1 ? RATING.TRUNG_BINH : RATING.RUI_RO;
+  }
+}
+
+const ANCHOR_QUALITIES: AnchorQuality[] = ["clean", "minor_spam", "mixed", "heavy_spam", "malicious", "unknown"];
 
 export interface RateCreds { ahrefsTokens: string[]; dfsLogin: string; dfsPassword: string; openaiApiKey: string }
 export interface RateResult { rated: number; source: "ahrefs" | "dfs" | "none"; errors: string[] }
 
 type Ref = { domain: string; dr: number };
 
-// ─── OpenAI gpt-4o-mini classify (dùng chung cả 2 path) ─────────────────────────
-async function classify(apiKey: string, input: {
-  domain: string; refs_count: number; max_dr: number; dk1_count: number; refs_string: string; anchors_compact: string; api_error: string | null;
-}): Promise<{ rating: string; category: string; detail: string }> {
+// ─── OpenAI gpt-4o-mini: đánh giá anchor (dùng chung cả 2 path) ──────────────────
+async function classifyAnchors(apiKey: string, input: { domain: string; refs_string: string; anchors_compact: string }): Promise<{ q: AnchorQuality; category: string; detail: string } | null> {
   const userText =
     `Domain: ${input.domain}\n` +
-    `Ref domain khớp DB: ${input.refs_count} (max DR ${input.max_dr}, DR>90: ${input.dk1_count})\n` +
-    `Ref domains: ${input.refs_string}\n` +
-    `Top anchors: ${input.anchors_compact || "(không có)"}\n` +
-    // KHÔNG gửi dòng "API error": lỗi API thật đã xử lý tất định trong decide() trước khi gọi model;
-    // gửi kèm (kể cả "không có") thì gpt-4o-mini vẫn đôi khi trả category "API error" + detail "<error>".
-    `\n` +
-    `Phân loại. Trả về JSON: {"rating":"...","category":"...","detail":"..."}`;
+    `Ref domains (tham khảo ngữ cảnh): ${input.refs_string}\n` +
+    `Top anchors: ${input.anchors_compact || "(không có)"}\n\n` +
+    `Đánh giá anchor. Trả về JSON: {"anchor_quality":"...","category":"...","detail":"..."}`;
   const res = await fetch(OPENAI_URL, {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
     body: JSON.stringify({
-      model: OPENAI_MODEL, max_tokens: 512, temperature: 0, response_format: { type: "json_object" },
+      model: OPENAI_MODEL, max_tokens: 400, temperature: 0, response_format: { type: "json_object" },
       messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content: userText }],
     }),
     signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) throw new Error(`OpenAI HTTP ${res.status}`);
   const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-  const text = (data.choices?.[0]?.message?.content ?? "").trim();
-  const m = text.match(/\{[\s\S]*\}/);
-  if (!m) return { rating: "⚠️ RỦI RO", category: "Parse error", detail: "Could not parse classify output" };
-  const parsed = JSON.parse(m[0]) as { rating?: string; category?: string; detail?: string };
-  return { rating: parsed.rating ?? "⚠️ RỦI RO", category: parsed.category ?? "", detail: parsed.detail ?? "" };
+  const m = (data.choices?.[0]?.message?.content ?? "").match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  const p = JSON.parse(m[0]) as { anchor_quality?: string; category?: string; detail?: string };
+  const q = String(p.anchor_quality ?? "").trim().toLowerCase() as AnchorQuality;
+  if (!ANCHOR_QUALITIES.includes(q)) return null;
+  return { q, category: p.category ?? "", detail: p.detail ?? "" };
 }
 
-// Từ matched refs + anchors + api_error → {rating, category, detail} (rút gọn case tất định).
-async function decide(apiKey: string, domain: string, matched: Ref[], anchorsCompact: string, apiError: string | null): Promise<{ rating: string; category: string; detail: string }> {
+// Từ matched refs + anchors + api_error → {rating, category, detail}.
+// Chất lượng anchor = đo đạc trong code (anchor-analysis) + ý kiến AI chỉ ở ca mơ hồ / có chủ đề xấu.
+async function decide(apiKey: string, domain: string, matched: Ref[], anchors: AnchorIn[], apiError: string | null): Promise<{ rating: string; category: string; detail: string }> {
   const refsString = matched.map((m) => `${m.domain} (DR ${m.dr})`).join("; ");
-  const maxDr = matched.length ? Math.max(...matched.map((m) => m.dr)) : 0;
   const dk1Count = matched.filter((m) => m.dr > 90).length;
-  if (apiError) return { rating: "⚠️ RỦI RO", category: "API error", detail: apiError };
-  if (matched.length === 0) return { rating: "⚠️ RỦI RO", category: "No matched backlinks", detail: "Không có ref nào khớp DB" };
-  const input = { domain, refs_count: matched.length, max_dr: maxDr, dk1_count: dk1Count, refs_string: refsString, anchors_compact: anchorsCompact, api_error: null };
-  let out = await classify(apiKey, input);
-  // Model tự bịa "API error" (không có lỗi thật) → hỏi lại tối đa 2 lần.
-  for (let i = 0; i < 2 && out.category === "API error"; i++) out = await classify(apiKey, input);
-  if (out.category === "API error") out = { rating: "⚠️ RỦI RO", category: "Parse error", detail: "Model trả 'API error' dù không có lỗi" };
-  const isErr = out.category === "API error" || out.category === "Parse error";
-  return { rating: out.rating, category: out.category, detail: isErr ? out.detail : `DR>90:${dk1Count} | ${refsString}` };
+  if (apiError) return { rating: RATING.RUI_RO, category: "API error", detail: apiError };
+  if (matched.length === 0) return { rating: RATING.RUI_RO, category: "No matched backlinks", detail: "Không có ref nào khớp DB" };
+  const features = analyzeAnchors(domain, anchors);
+  const anchorsCompact = anchors.slice(0, 20).map((a) => `"${a.text}" (x${a.weight})`).join(" | ").slice(0, 1500);
+  const input = { domain, refs_string: refsString, anchors_compact: anchorsCompact };
+  let out = await classifyAnchors(apiKey, input);
+  if (!out) out = await classifyAnchors(apiKey, input);           // JSON lỗi / nhãn lạ → hỏi lại 1 lần
+  const q = resolveAnchorQuality(features, out?.q ?? null);
+  const category = out?.category || (q === "clean" ? "Clean brand niche" : q === "minor_spam" ? "Brand + SEO spam anchors" : "Mixed anchors");
+  return { rating: computeRating(q, matched), category, detail: `DR>90:${dk1Count} | ${refsString}` };
 }
 
 // Ghi ahrefs_results (matched refs) + target_assessment.
@@ -145,12 +169,12 @@ async function rateViaAhrefs(domains: string[], token: string, apiKey: string, b
         console.error(`[rating] mergeRefsKeepMax ${domain}: ${e instanceof Error ? e.message : e}`));
     }
 
-    let anchorsCompact = "";
+    // Cờ is_spam của Ahrefs là về SITE trỏ link, không về nội dung anchor → không đưa vào đánh giá.
+    let anchors: AnchorIn[] = [];
     if (!apiError && matched.length) {
-      const anchors = await ahrefsAnchors(token, domain);
-      anchorsCompact = anchors.map((a) => `"${a.text}" (x${a.refdomains}${a.isSpam ? ", spam" : ""})`).join(" | ").slice(0, 1500);
+      anchors = (await ahrefsAnchors(token, domain)).map((a) => ({ text: a.text, weight: a.refdomains }));
     }
-    const r = await decide(apiKey, domain, matched, anchorsCompact, apiError);
+    const r = await decide(apiKey, domain, matched, anchors, apiError);
     await writeRating(domain, matched, r);
   }, errors);
   return { rated, leftover };
@@ -206,15 +230,15 @@ async function rateViaDfs(domains: string[], creds: RateCreds, blacklist: Set<st
 
     const dk1 = matched.some((m) => m.dr > 90);
     const dk2 = !dk1 && matched.some((m) => m.dr >= 70 && m.dr <= 89 && (m.traffic ?? 0) >= 1_000_000);
-    let anchorsCompact = "";
+    let anchors: AnchorIn[] = [];
     if (!apiError && (dk1 || dk2)) {
       try {
-        const anchors = await dfsCall<DfsAnchorItem>(DFS_ANCHORS, auth, domain, 30);
-        anchorsCompact = anchors.slice(0, 20).map((a) => `${a.anchor ?? ""} (${a.backlinks ?? 0})`).join(" | ").slice(0, 1500);
+        const items = await dfsCall<DfsAnchorItem>(DFS_ANCHORS, auth, domain, 30);
+        anchors = items.slice(0, 20).map((a) => ({ text: a.anchor ?? "", weight: a.backlinks ?? 0 }));
       } catch { /* anchors phụ trợ */ }
     }
     const plain: Ref[] = matched.map((m) => ({ domain: m.domain, dr: m.dr }));
-    const r = await decide(creds.openaiApiKey, domain, plain, anchorsCompact, apiError);
+    const r = await decide(creds.openaiApiKey, domain, plain, anchors, apiError);
     await writeRating(domain, plain, r);
   }, errors);
 }

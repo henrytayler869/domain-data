@@ -4,6 +4,7 @@
  */
 
 import { supabase } from "./supabase";
+import { normalizeRating } from "./rating-normalize";
 
 const TABLE = "ahrefs_results";
 const ASSESS_TABLE = "target_assessment";
@@ -287,7 +288,7 @@ export async function upsertAssessments(
   for (let i = 0; i < rows.length; i += BATCH) {
     const slice = rows.slice(i, i + BATCH).map((r) => ({
       target_domain: r.targetDomain.toLowerCase().trim(),
-      rating: r.rating?.trim() || null,
+      rating: normalizeRating(r.rating),   // "✅ TỐI" → "✅ TỐT"… (xem rating-normalize.ts)
       category: r.category?.trim() || null,
       detail: r.detail?.trim() || null,
       updated_at: new Date().toISOString(),
