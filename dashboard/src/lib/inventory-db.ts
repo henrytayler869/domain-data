@@ -20,6 +20,7 @@ export interface InventoryEntry {
   category: string | null;
   archivedAt: string | null;
   isBackorder: boolean;
+  gnameAccountId: string | null;   // tài khoản Gname đã mua (null = không rõ / mua nơi khác)
   updatedAt: string;
 }
 
@@ -36,6 +37,7 @@ interface DbRow {
   category: string | null;
   archived_at: string | null;
   is_backorder: boolean | null;
+  gname_account_id: string | null;
   updated_at: string;
 }
 
@@ -53,6 +55,7 @@ function rowToEntry(r: DbRow): InventoryEntry {
     category: r.category,
     archivedAt: r.archived_at,
     isBackorder: !!r.is_backorder,
+    gnameAccountId: r.gname_account_id ?? null,
     updatedAt: r.updated_at,
   };
 }
@@ -86,6 +89,7 @@ export interface AddInput {
   rating?: string | null;
   category?: string | null;
   isBackorder?: boolean;
+  gnameAccountId?: string | null;   // chỉ ghi khi có (mua qua Gname) — không xoá giá trị cũ
 }
 
 export async function upsertEntries(entries: AddInput[]): Promise<{ added: number; total: number }> {
@@ -112,7 +116,11 @@ export async function upsertEntries(entries: AddInput[]): Promise<{ added: numbe
   const BATCH = 500;
   const now = new Date().toISOString();
   for (let i = 0; i < norm.length; i += BATCH) {
-    const slice = norm.slice(i, i + BATCH).map((e) => ({
+    // PostgREST upsert cần mọi dòng cùng bộ cột → chỉ thêm gname_account_id khi CẢ batch đều có.
+    const batch = norm.slice(i, i + BATCH);
+    const withAccount = batch.every((e) => e.gnameAccountId !== undefined);
+    const slice = batch.map((e) => ({
+      ...(withAccount ? { gname_account_id: e.gnameAccountId ?? null } : {}),
       domain: e.domain,
       purchase_price: e.purchasePrice,
       notes: e.notes ?? null,

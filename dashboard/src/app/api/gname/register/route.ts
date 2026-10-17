@@ -70,6 +70,7 @@ export async function POST(request: NextRequest) {
         domain: r.domain,
         purchasePrice: r.price,
         isBackorder: r.backorder,
+        gnameAccountId: account.id,   // để Kho lọc theo tài khoản Gname đã trả tiền
         source: meta[r.domain]?.source ?? null,
         rating: meta[r.domain]?.rating ?? null,
         category: meta[r.domain]?.category ?? null,

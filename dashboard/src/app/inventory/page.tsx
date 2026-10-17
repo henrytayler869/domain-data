@@ -123,6 +123,19 @@ export default function InventoryPage() {
   const [wbDetailLoading, setWbDetailLoading] = useState<Set<string>>(new Set());
   const [filterWayback, setFilterWayback] = useState<"flagged" | "clean" | "unchecked">("clean");
   const [filterRating, setFilterRating] = useState<"all" | "tot" | "tb" | "rui" | "xau" | "none">("all");
+  // Lọc theo tài khoản Gname đã mua: "all" | "none" (không rõ / mua nơi khác) | id tài khoản.
+  const [filterAccount, setFilterAccount] = useState<string>("all");
+  const [gnameAccounts, setGnameAccounts] = useState<{ id: string; label: string }[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/settings/gname", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { accounts?: { id: string; label: string }[] } | null) => {
+        if (!cancelled && d?.accounts) setGnameAccounts(d.accounts.map((a) => ({ id: a.id, label: a.label })));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   const blacklistSet = useMemo(
     () => new Set(userBlacklist.map((e) => e.domain.toLowerCase())),
@@ -453,6 +466,8 @@ export default function InventoryPage() {
         if (filterWayback === "clean" && !(wb && !isFlagged)) return false;
         if (filterWayback === "unchecked" && wb) return false;
       }
+      if (filterAccount === "none" && e.gnameAccountId) return false;
+      if (filterAccount !== "all" && filterAccount !== "none" && e.gnameAccountId !== filterAccount) return false;
       if (filterRating !== "all") {
         const rank = ratingRank(assessByDomain.get(e.domain)?.rating ?? e.rating);
         const want = { tot: 4, tb: 3, rui: 2, xau: 1, none: 0 }[filterRating];
@@ -493,7 +508,7 @@ export default function InventoryPage() {
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * sortDir;
       return String(av).localeCompare(String(bv)) * sortDir;
     });
-  }, [dateFiltered, searchTokens, searchSet, filterStatus, filterExpected, filterWayback, filterRating, waybackByDomain, assessByDomain, refsByDomain, sortKey, sortDir]);
+  }, [dateFiltered, searchTokens, searchSet, filterStatus, filterExpected, filterWayback, filterRating, filterAccount, waybackByDomain, assessByDomain, refsByDomain, sortKey, sortDir]);
 
   // Pagination — applied on top of `filtered`
   const totalPages = pageSize > 0 ? Math.max(1, Math.ceil(filtered.length / pageSize)) : 1;
@@ -1190,6 +1205,18 @@ export default function InventoryPage() {
           <option value="xau">❌ XẤU</option>
           <option value="none">— Chưa đánh giá</option>
         </select>
+        {gnameAccounts.length > 0 && (
+          <select
+            value={filterAccount}
+            onChange={(e) => setFilterAccount(e.target.value)}
+            className="h-8 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
+            title="Filter tài khoản Gname đã mua"
+          >
+            <option value="all">Mọi tài khoản</option>
+            {gnameAccounts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+            <option value="none">— Không rõ tài khoản</option>
+          </select>
+        )}
         {(() => {
           // Trigger Wayback for holding + currently-filtered + unchecked domains.
           const candidates = filtered
