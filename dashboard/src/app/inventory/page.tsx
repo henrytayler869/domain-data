@@ -344,13 +344,20 @@ export default function InventoryPage() {
   // Done at the very top so stats + table both honor the filter.
   // Tab "Lưu trữ" = CHỈ domain đã lưu trữ; tab "Kho Domain" = CHỈ domain chưa lưu trữ
   // (tách bảng riêng, không gộp chung nữa).
+  // Filter tài khoản Gname áp ở tầng gốc → thẻ số liệu (tổng domain, chi phí, doanh thu tiềm năng…),
+  // bảng và số đếm tab Lưu trữ đều tính theo tài khoản đang chọn.
+  const accountEntries = useMemo(() => {
+    if (filterAccount === "all") return entries;
+    if (filterAccount === "none") return entries.filter((e) => !e.gnameAccountId);
+    return entries.filter((e) => e.gnameAccountId === filterAccount);
+  }, [entries, filterAccount]);
   const visibleEntries = useMemo(
-    () => (tab === "luutru" ? entries.filter((e) => e.archivedAt) : entries.filter((e) => !e.archivedAt)),
-    [entries, tab],
+    () => (tab === "luutru" ? accountEntries.filter((e) => e.archivedAt) : accountEntries.filter((e) => !e.archivedAt)),
+    [accountEntries, tab],
   );
   const archivedCount = useMemo(
-    () => entries.filter((e) => e.archivedAt).length,
-    [entries],
+    () => accountEntries.filter((e) => e.archivedAt).length,
+    [accountEntries],
   );
 
   const dateFiltered = useMemo(() => {
@@ -466,8 +473,6 @@ export default function InventoryPage() {
         if (filterWayback === "clean" && !(wb && !isFlagged)) return false;
         if (filterWayback === "unchecked" && wb) return false;
       }
-      if (filterAccount === "none" && e.gnameAccountId) return false;
-      if (filterAccount !== "all" && filterAccount !== "none" && e.gnameAccountId !== filterAccount) return false;
       if (filterRating !== "all") {
         const rank = ratingRank(assessByDomain.get(e.domain)?.rating ?? e.rating);
         const want = { tot: 4, tb: 3, rui: 2, xau: 1, none: 0 }[filterRating];
@@ -508,7 +513,7 @@ export default function InventoryPage() {
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * sortDir;
       return String(av).localeCompare(String(bv)) * sortDir;
     });
-  }, [dateFiltered, searchTokens, searchSet, filterStatus, filterExpected, filterWayback, filterRating, filterAccount, waybackByDomain, assessByDomain, refsByDomain, sortKey, sortDir]);
+  }, [dateFiltered, searchTokens, searchSet, filterStatus, filterExpected, filterWayback, filterRating, waybackByDomain, assessByDomain, refsByDomain, sortKey, sortDir]);
 
   // Pagination — applied on top of `filtered`
   const totalPages = pageSize > 0 ? Math.max(1, Math.ceil(filtered.length / pageSize)) : 1;
