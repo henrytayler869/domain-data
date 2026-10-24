@@ -31,7 +31,7 @@ import type { TargetSummary } from "@/lib/ahrefs-db";
 import type { RefBlacklistEntry } from "@/lib/ref-blacklist-db";
 import { WEAK_VALUATION_MIN, VALUATION_MAX, valuateByRefs } from "@/lib/valuation";
 
-type SortKey = "domain" | "purchasePrice" | "sellPrice" | "expectedSellPrice" | "profit" | "rating" | "refs" | "category" | "purchasedAt" | "soldAt" | "status";
+type SortKey = "domain" | "purchasePrice" | "sellPrice" | "expectedSellPrice" | "profit" | "rating" | "refs" | "category" | "purchasedAt" | "soldAt" | "status" | "account";
 
 interface ToastItem { id: number; message: string; isError: boolean }
 
@@ -136,6 +136,7 @@ export default function InventoryPage() {
       .catch(() => {});
     return () => { cancelled = true; };
   }, []);
+  const accountLabel = useMemo(() => new Map(gnameAccounts.map((a) => [a.id, a.label])), [gnameAccounts]);
 
   const blacklistSet = useMemo(
     () => new Set(userBlacklist.map((e) => e.domain.toLowerCase())),
@@ -493,6 +494,10 @@ export default function InventoryPage() {
         av = profitOf(a) ?? -Infinity; bv = profitOf(b) ?? -Infinity;
       } else if (sortKey === "purchasedAt") {
         av = new Date(a.purchasedAt).getTime(); bv = new Date(b.purchasedAt).getTime();
+      } else if (sortKey === "account") {
+        // "Không rõ" xếp cuối khi tăng dần
+        av = a.gnameAccountId ? (accountLabel.get(a.gnameAccountId) ?? "~") : "~~";
+        bv = b.gnameAccountId ? (accountLabel.get(b.gnameAccountId) ?? "~") : "~~";
       } else if (sortKey === "soldAt") {
         av = a.soldAt ? new Date(a.soldAt).getTime() : -Infinity;
         bv = b.soldAt ? new Date(b.soldAt).getTime() : -Infinity;
@@ -513,7 +518,7 @@ export default function InventoryPage() {
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * sortDir;
       return String(av).localeCompare(String(bv)) * sortDir;
     });
-  }, [dateFiltered, searchTokens, searchSet, filterStatus, filterExpected, filterWayback, filterRating, waybackByDomain, assessByDomain, refsByDomain, sortKey, sortDir]);
+  }, [dateFiltered, searchTokens, searchSet, filterStatus, filterExpected, filterWayback, filterRating, waybackByDomain, assessByDomain, refsByDomain, accountLabel, sortKey, sortDir]);
 
   // Pagination — applied on top of `filtered`
   const totalPages = pageSize > 0 ? Math.max(1, Math.ceil(filtered.length / pageSize)) : 1;
@@ -1512,6 +1517,7 @@ export default function InventoryPage() {
                   <SortTh label="Refs" col="refs" current={sortKey} dir={sortDir} onSort={() => handleSort("refs")} />
                   <th className="px-3 py-3 text-left text-xs font-semibold text-muted-foreground uppercase whitespace-nowrap" title="Wayback Machine: snapshot history + AI flagged content">Wayback</th>
                   <SortTh label="Ngày mua" col="purchasedAt" current={sortKey} dir={sortDir} onSort={() => handleSort("purchasedAt")} />
+                  <SortTh label="Tài khoản" col="account" current={sortKey} dir={sortDir} onSort={() => handleSort("account")} />
                   <th className="w-20" />
                 </tr>
               </thead>
@@ -1710,6 +1716,11 @@ export default function InventoryPage() {
                       <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap">
                         {new Date(e.purchasedAt).toLocaleDateString()}
                       </td>
+                      <td className="px-3 py-2 text-xs whitespace-nowrap" title={e.gnameAccountId ? "Tài khoản Gname đã mua domain này" : "Không thấy trong tài khoản Gname nào (mua nơi khác / đã chuyển / hết hạn)"}>
+                        {e.gnameAccountId
+                          ? <span className="inline-flex items-center rounded-md border px-1.5 py-0.5 font-medium">{accountLabel.get(e.gnameAccountId) ?? "Tài khoản đã xoá"}</span>
+                          : <span className="text-muted-foreground">—</span>}
+                      </td>
                       <td className="px-3 py-2 text-right">
                         <div className="flex items-center justify-end gap-1">
                           {isEditing ? (
@@ -1752,7 +1763,7 @@ export default function InventoryPage() {
                     </tr>
                     {wb && wbExpanded && (
                       <tr className="bg-muted/20 border-b border-border/50">
-                        <td colSpan={12} className="px-6 py-4">
+                        <td colSpan={13} className="px-6 py-4">
                           <WaybackDetail row={wb} loading={wbDetailLoading.has(e.domain)} />
                         </td>
                       </tr>
